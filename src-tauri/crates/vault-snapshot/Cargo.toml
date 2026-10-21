@@ -1,0 +1,29 @@
+[package]
+name = "vault-snapshot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vault-domain.workspace = true
+vault-protocol.workspace = true
+vault-telegram.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+zstd.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tempfile.workspace = true
+tar = "0.4.46"
+
+[dev-dependencies]
+vault-testkit.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

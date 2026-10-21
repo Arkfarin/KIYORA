@@ -31,6 +31,12 @@ tracing = "0.1"
 vault-domain = { path = "crates/vault-domain" }
 vault-protocol = { path = "crates/vault-protocol" }
 vault-db = { path = "crates/vault-db" }
+vault-telegram = { path = "crates/vault-telegram" }
+vault-security = { path = "crates/vault-security" }
+vault-testkit = { path = "crates/vault-testkit" }
+vault-snapshot = { path = "crates/vault-snapshot" }
+vault-sync = { path = "crates/vault-sync" }
+zstd = "0.13"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

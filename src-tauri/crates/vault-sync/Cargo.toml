@@ -1,0 +1,27 @@
+[package]
+name = "vault-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vault-domain.workspace = true
+vault-protocol.workspace = true
+vault-db.workspace = true
+vault-telegram.workspace = true
+vault-snapshot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+vault-testkit.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -47,6 +47,26 @@ pub struct Database {
 }
 
 impl Database {
+    pub fn save_gc_plan(
+        &mut self,
+        plan_id: Uuid,
+        json: &str,
+        completed: &str,
+        status: &str,
+    ) -> Result<(), DbError> {
+        self.connection.execute("INSERT INTO gc_plans VALUES (?1,?2,?3,?4,?5) ON CONFLICT(plan_id) DO UPDATE SET completed_json=excluded.completed_json,status=excluded.status",params![plan_id.to_string(),self.binding.vault_id.to_string(),json,completed,status])?;
+        Ok(())
+    }
+    pub fn gc_plan(&self, plan_id: Uuid) -> Result<Option<(String, String, String)>, DbError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT json,completed_json,status FROM gc_plans WHERE plan_id=?1 AND vault_id=?2",
+                params![plan_id.to_string(), self.binding.vault_id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    }
     pub fn open(path: impl AsRef<Path>, binding: Binding) -> Result<Self, DbError> {
         Self::initialize(Connection::open(path)?, binding)
     }
