@@ -1,9 +1,43 @@
 [package]
 name = "kiyora"
 version = "0.1.0"
-description = "A Tauri App"
+description = "kiyora — personal Telegram music vault"
 authors = ["you"]
 edition = "2024"
+
+[workspace]
+resolver = "3"
+members = [".", "crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+proptest = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs", "io-util", "test-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+vault-domain = { path = "crates/vault-domain" }
+vault-protocol = { path = "crates/vault-protocol" }
+vault-db = { path = "crates/vault-db" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
