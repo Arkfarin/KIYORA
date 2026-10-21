@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "proptest-testing": {
+      "source": "testland/qa",
+      "sourceType": "github",
+      "skillPath": "plugins/qa-property-based/skills/proptest-testing/SKILL.md",
+      "computedHash": "305f75dd1b1a170159b57d5c4c0a41e7aa126fb887a8543161ff1d947c47b96c"
+    },
+    "rust-skills": {
+      "source": "leonardomso/rust-skills",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "9719e9ebd94783d3436ed26156bf9bf2e4c7f63b3220d9d17ff90cba55c92bb8"
+    },
+    "rust-testing": {
+      "source": "JunMystery/Agent-Guidance-Rust",
+      "sourceType": "github",
+      "skillPath": "skills/rust-testing/SKILL.md",
+      "computedHash": "bd66d6441ff6d3a6acb89c902cd6a01bf58410aec3ecbc43d45409b3a3788ac8"
+    },
+    "tauri-ipc": {
+      "source": "full-stack-skills/tauri-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tauri-ipc/SKILL.md",
+      "computedHash": "1de5fcef985c56df5bcd21e147281d34211dc061ca7e17b171900fd7573a4243"
+    },
+    "tauri-mobile": {
+      "source": "full-stack-skills/tauri-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tauri-mobile/SKILL.md",
+      "computedHash": "3a1da42b47ca117962469a8327e3fe03a3c5dacaa9395f6ddbaf5a174dee7aad"
+    },
+    "tauri-security": {
+      "source": "full-stack-skills/tauri-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tauri-security/SKILL.md",
+      "computedHash": "ae6038bc9ddf61328e85928143318c463b12644012091fc5f7f2d91211a7bb06"
+    }
+  }
+}
