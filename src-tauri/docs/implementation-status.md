@@ -98,7 +98,9 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
 - Added `kiyora-cli` for profiles, auth, vault operations, sync, library/search,
   playlist show/add/remove/move, snapshots, GC, backup verification/restore/export,
   local and incoming media import, playback controls and diagnostics.
-  The CLI shares the same backend guards and profile store as Tauri.
+  The CLI shares the same backend guards and profile store as Tauri. `status`,
+  `profiles list`, and `auth status` support machine-readable `--json` output;
+  integration tests parse and verify status and profile JSON.
 - Added `vault-media`: Lofty metadata/artwork inspection, stable staged import,
   SHA-256 duplicate review, Telegram document upload followed by track registration,
   local cache quota/LRU/pins/leases, and desktop Rodio playback controls.

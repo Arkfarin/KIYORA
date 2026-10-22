@@ -56,6 +56,15 @@ fn cli_profile_create_switch_and_status_use_shared_durable_store() {
         String::from_utf8_lossy(&status.stderr)
     );
     assert!(String::from_utf8_lossy(&status.stdout).contains(&id));
+    let status_json = run(&root, &["status", "--json"]);
+    assert!(status_json.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&status_json.stdout).unwrap();
+    assert_eq!(status["context"]["profile_id"], id);
+    assert_eq!(status["mode"], "AUTH_REQUIRED");
+    let profiles_json = run(&root, &["profiles", "list", "--json"]);
+    assert!(profiles_json.status.success());
+    let profiles: serde_json::Value = serde_json::from_slice(&profiles_json.stdout).unwrap();
+    assert_eq!(profiles[0]["profile_id"], id);
 }
 
 #[test]
