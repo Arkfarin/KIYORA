@@ -36,6 +36,9 @@ vault-security = { path = "crates/vault-security" }
 vault-testkit = { path = "crates/vault-testkit" }
 vault-snapshot = { path = "crates/vault-snapshot" }
 vault-sync = { path = "crates/vault-sync" }
+vault-core = { path = "crates/vault-core" }
+vault-media = { path = "crates/vault-media" }
+rpassword = "7"
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -62,6 +65,14 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+vault-core.workspace = true
+vault-domain.workspace = true
+vault-db.workspace = true
+vault-telegram.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+zeroize = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

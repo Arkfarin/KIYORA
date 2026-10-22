@@ -62,17 +62,55 @@ pub struct SyncEngine<T: Telegram> {
 }
 impl<T: Telegram> SyncEngine<T> {
     pub fn new(transport: T, db: Database, device_id: String) -> Self {
-        let binding = db.binding();
+        Self::with_projection(transport, crate::ProjectionReader::new(db), device_id)
+    }
+    pub fn with_projection(
+        transport: T,
+        projection: crate::ProjectionReader,
+        device_id: String,
+    ) -> Self {
+        let binding = projection.binding;
         let updates = transport.subscribe();
         Self {
             transport,
-            db: Arc::new(Mutex::new(db)),
+            db: projection.db,
             binding,
             device_id,
             updates,
             mode: RuntimeMode::Syncing,
             verified: None,
         }
+    }
+    pub fn reader(&self) -> crate::ProjectionReader {
+        crate::ProjectionReader {
+            db: self.db.clone(),
+            binding: self.binding,
+        }
+    }
+    pub fn subscribe(&self) -> broadcast::Receiver<Update> {
+        self.transport.subscribe()
+    }
+    pub async fn reconcile_interrupted_commands(&self) -> Result<(), SyncError> {
+        self.database(|db| db.mark_interrupted_commands_unknown())
+            .await
+    }
+    pub async fn verify(&mut self, cancel: &CancellationToken) -> Result<Recovery, SyncError> {
+        self.sync(cancel).await?;
+        let message = self.latest_commit(cancel).await?;
+        let result = vault_snapshot::recover(
+            &self.transport,
+            self.binding.chat_id,
+            &message,
+            self.binding.owner_id,
+            true,
+            cancel,
+        )
+        .await
+        .map_err(SyncError::from);
+        if let Err(error) = &result {
+            self.fail(error);
+        }
+        result
     }
     pub(crate) async fn database<R: Send + 'static>(
         &self,
@@ -496,6 +534,20 @@ impl<T: Telegram> SyncEngine<T> {
             return self.command(op_id).await?.ok_or(SyncError::Integrity);
         }
         self.command(op_id).await?.ok_or(SyncError::Integrity)
+    }
+    /// Media is uploaded only after the same centralized online check used for
+    /// event mutations. The durable track registration is a separate later EVT.
+    pub async fn upload_document(
+        &mut self,
+        path: std::path::PathBuf,
+        caption: String,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, SyncError> {
+        self.require_online(cancel).await?;
+        self.transport
+            .send_document(self.binding.chat_id, path, caption, cancel)
+            .await
+            .map_err(Into::into)
     }
     pub async fn request_snapshot(
         &mut self,

@@ -1,0 +1,32 @@
+[package]
+name = "vault-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vault-domain.workspace = true
+vault-protocol.workspace = true
+vault-db.workspace = true
+vault-sync.workspace = true
+vault-telegram.workspace = true
+vault-security.workspace = true
+vault-snapshot.workspace = true
+vault-media.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tempfile.workspace = true
+zeroize = "1"
+rpassword.workspace = true
+
+[dev-dependencies]
+vault-testkit.workspace = true
+
+[lints]
+workspace = true

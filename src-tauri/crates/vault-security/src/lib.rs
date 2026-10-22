@@ -71,6 +71,38 @@ impl ProfileStore {
         save_profile(&dir, &profile)?;
         Ok(profile)
     }
+    pub fn active_profile(&self) -> Result<Option<Uuid>, SecurityError> {
+        let path = self.root.join("active-profile");
+        if !path.exists() {
+            return Ok(None);
+        }
+        if fs::symlink_metadata(&path)?.file_type().is_symlink() || fs::metadata(&path)?.len() > 64
+        {
+            return Err(SecurityError::InvalidProfile);
+        }
+        let raw = fs::read_to_string(path)?;
+        let id = raw
+            .trim()
+            .parse::<Uuid>()
+            .map_err(|_| SecurityError::InvalidProfile)?;
+        if id.is_nil() || !self.list()?.iter().any(|profile| profile.profile_id == id) {
+            return Err(SecurityError::InvalidProfile);
+        }
+        Ok(Some(id))
+    }
+    pub fn set_active_profile(&self, id: Uuid) -> Result<(), SecurityError> {
+        if !self.list()?.iter().any(|profile| profile.profile_id == id) {
+            return Err(SecurityError::InvalidProfile);
+        }
+        let mut temp = tempfile::NamedTempFile::new_in(&self.root)?;
+        writeln!(temp, "{id}")?;
+        temp.as_file().sync_all()?;
+        temp.persist(self.root.join("active-profile"))
+            .map_err(|e| SecurityError::Io(e.error))?;
+        #[cfg(unix)]
+        File::open(&self.root)?.sync_all()?;
+        Ok(())
+    }
     pub fn list(&self) -> Result<Vec<Profile>, SecurityError> {
         let mut result = Vec::new();
         for entry in fs::read_dir(self.root.join("profiles"))? {

@@ -50,7 +50,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
 - TDLib official source inspected at commit
   `9d92b49bc5d0d2e29fe518239af647a88f8680e6` (1.8.69); native build next.
 
-## Transport, sync, snapshots and GC (in progress)
+## Transport, sync, snapshots and GC
 
 - Added real `vault-telegram` native JSON worker, auth requests, channel ownership
   and privacy checks, main/archive discovery, confirmed sends, range downloads.
@@ -76,15 +76,41 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
 - Portable metadata/full backup codec passes three tests: roundtrip, no-clobber
   export, media digests, new-vault reference mapping, traversal/link/duplicate/size
   rejection. Restore planning exists; application-service execution is pending.
-- Full workspace clippy (`-D warnings`) and tests pass on Linux: 34 tests passed,
-  one opt-in native smoke ignored. Native build is still in progress.
-- Native Linux tdjson is actively building at the pinned revision. Real account
-  operations remain unverified and have not been attempted.
+- Pinned Linux tdjson build completed, and its credential-free native start/version/
+  close smoke passed. Real Telegram account operations remain unverified and were
+  not attempted.
 
-Remaining: native smoke result; native send/discovery contract tests; live service
-task and Tauri bridge; durable channel-create intent; structured application API;
-CLI; backup service/restore execution; media import/cache/stream/playback; sharing; Android
-native layers; schema fixtures; CI; expanded chaos/load tests and final acceptance.
+## Application service, CLI and local media (in progress)
+
+- Added `vault-core`: bounded actor-backed service, typed API/errors, contextual
+  sequenced events, profile/session fencing, Tauri commands, startup restoration,
+  secure auth-secret handling, vault discovery/attach/create/resume and shared
+  service methods. Frontend files remain untouched.
+- Added `kiyora-cli` for profiles, auth, vault operations, sync, library/search,
+  playlists, snapshots, GC, backup verification/export, media import and diagnostics.
+  The CLI shares the same backend guards and profile store as Tauri.
+- Added `vault-media`: Lofty metadata/artwork inspection, stable staged import,
+  SHA-256 duplicate review, Telegram document upload followed by track registration,
+  local cache quota/LRU/pins/leases, and desktop Rodio playback controls.
+- Desktop playback was checked against generated PCM WAV data without requiring an
+  audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
+- Full `cargo test --workspace` now passes 54 tests; the real-account-free native
+  TDLib smoke test is opt-in/ignored by default. `cargo check --workspace` passes.
+- Android secure storage, Android media session/foreground playback and CPAL
+  Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
+- Streaming/ranged Telegram downloads are available in the adapter, but media
+  download progress/resume/cache coordination is not yet exposed as an application
+  service or CLI operation. Sharing is not implemented.
+- Backup codec can verify/export and create new-vault reference plans; an integrated
+  CLI restore execution flow remains incomplete. Native TDLib account authorization,
+  upload and recovery were not exercised against a real account.
+
+Remaining: finish full workspace clippy after media changes; integrate media range
+download jobs/cache state, playback into application API, sharing, Android native
+layers, backup restore execution, generated schema/fixtures, CI/platform builds,
+expanded chaos/load tests and final acceptance traceability. Windows and Android
+toolchains are unavailable/unverified in this environment. No end-to-end backend
+acceptance gate is claimed complete.
 Sync currently rechecks all post-barrier receipts per catch-up to detect known
 manual deletion. Performance of long tails must be measured before optimizing.
 Initial setup/discovery currently scans history for INIT; cold recovery itself

@@ -21,6 +21,9 @@ fn profile_lock_owner_and_secret_isolation_survive_reopen() {
     let store = ProfileStore::at(dir.path()).unwrap();
     let a = store.create("A".into()).unwrap();
     let b = store.create("B".into()).unwrap();
+    assert_eq!(store.active_profile().unwrap(), None);
+    store.set_active_profile(a.profile_id).unwrap();
+    assert_eq!(store.active_profile().unwrap(), Some(a.profile_id));
     let mut first = store.acquire(a.profile_id).unwrap();
     assert!(matches!(
         store.acquire(a.profile_id),

@@ -51,6 +51,7 @@ pub enum Update {
         message_ids: Vec<MessageId>,
     },
     Disconnected,
+    Connected,
     AuthRequired,
 }
 
@@ -538,11 +539,13 @@ fn parse_update(value: &Value) -> Result<Option<Update>, TelegramError> {
         Some("updateConnectionState") if value["state"]["@type"] != "connectionStateReady" => {
             Some(Update::Disconnected)
         }
+        Some("updateConnectionState") => Some(Update::Connected),
         Some("updateAuthorizationState")
             if value["authorization_state"]["@type"] != "authorizationStateReady" =>
         {
             Some(Update::AuthRequired)
         }
+        Some("updateAuthorizationState") => Some(Update::Connected),
         _ => None,
     })
 }
