@@ -30,6 +30,8 @@ the domain/protocol contract are decimal strings so JavaScript does not round th
 | `backend_play_track` | `session_id`, `track_id`, `source_id` | unit; starts local playback |
 | `backend_playback_state` | `session_id` | current playback state |
 | `backend_control_playback` | `session_id`, tagged action | updated playback state |
+| `backend_logout` | `session_id` | revoke this profile's Telegram authorization |
+| `backend_disconnect` | `session_id` | close the current native worker while preserving TDLib session data |
 | `backend_disconnect` | `session_id` | unit |
 
 `backend_authenticate.input` is tagged as `{ "kind": "phone|code|password|qr|email|email_code", "value": ... }`.

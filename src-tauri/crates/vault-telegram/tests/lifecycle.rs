@@ -6,7 +6,7 @@ use vault_telegram::*;
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn abi_worker_correlates_cancels_times_out_and_closes_before_reopen() {
+async fn abi_worker_correlates_cancels_times_out_logs_out_and_reopens() {
     let dir = tempfile::tempdir().unwrap();
     let lib = dir.path().join("fixture.so");
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixture.c");
@@ -67,7 +67,7 @@ async fn abi_worker_correlates_cancels_times_out_and_closes_before_reopen() {
             .await,
         Err(TelegramError::InvalidInput)
     );
-    client.close().await.unwrap();
+    client.logout().await.unwrap();
     assert_eq!(
         client.call(json!({"@type":"getMe"})).await,
         Err(TelegramError::Closed)

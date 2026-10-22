@@ -47,6 +47,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             backend_play_track,
             backend_playback_state,
             backend_control_playback,
+            backend_logout,
             backend_disconnect
         ])
         .build(tauri::generate_context!())?;
@@ -265,6 +266,13 @@ async fn backend_control_playback(
     action: vault_core::PlaybackAction,
 ) -> Result<vault_media::PlaybackState, ApiError> {
     backend.control_playback(session_id, action).await
+}
+#[tauri::command]
+async fn backend_logout(
+    backend: State<'_, std::sync::Arc<Backend>>,
+    session_id: Uuid,
+) -> Result<(), ApiError> {
+    backend.logout(session_id).await
 }
 #[tauri::command]
 async fn backend_disconnect(

@@ -870,6 +870,28 @@ impl Backend {
         }
         Ok(())
     }
+    pub async fn logout(&self, session_id: Uuid) -> Result<(), ApiError> {
+        let (native, context) = {
+            let mut guard = self.session.lock().await;
+            let session = guard
+                .as_mut()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            check_session(session, session_id)?;
+            if let Some(service) = session.service.take() {
+                service.shutdown().await?;
+            }
+            (session.native.take(), session.context.clone())
+        };
+        if let Some(native) = native
+            && let Err(error) = native.client.logout().await
+        {
+            let _ = native.client.close().await;
+            return Err(ApiError::from(error));
+        }
+        self.events
+            .emit(&context, EventData::Auth(AuthStatus::Closed));
+        Ok(())
+    }
     pub async fn shutdown(&self) -> Result<(), ApiError> {
         let session = self.session.lock().await.take();
         if let Some(session) = session {

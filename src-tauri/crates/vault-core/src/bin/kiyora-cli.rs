@@ -119,7 +119,7 @@ async fn auth(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
             "{:?}",
             backend.auth_status(status.context.session_id).await?
         ),
-        Some("logout") => backend.disconnect(status.context.session_id).await?,
+        Some("logout") => backend.logout(status.context.session_id).await?,
         Some("login") => login(backend, status).await?,
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     }

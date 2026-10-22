@@ -92,7 +92,9 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
 - Added `vault-core`: bounded actor-backed service, typed API/errors, contextual
   sequenced events, profile/session fencing, Tauri commands, startup restoration,
   secure auth-secret handling, vault discovery/attach/create/resume and shared
-  service methods. Frontend files remain untouched.
+  service methods. `auth logout` invokes TDLib `logOut`; `disconnect` only closes
+  the current native worker so a later explicit reconnect can reuse its session.
+  Frontend files remain untouched.
 - Added `kiyora-cli` for profiles, auth, vault operations, sync, library/search,
   playlist show/add/remove/move, snapshots, GC, backup verification/restore/export,
   local and incoming media import, playback controls and diagnostics.
