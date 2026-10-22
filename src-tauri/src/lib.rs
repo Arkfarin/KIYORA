@@ -1,6 +1,6 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let backend = std::sync::Arc::new(vault_core::Backend::default_backend()?);
@@ -45,8 +45,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             backend_vault_request,
             backend_disconnect
         ])
-        .run(tauri::generate_context!())
-        .map_err(Into::into)
+        .build(tauri::generate_context!())?;
+    app.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit)
+            && let Some(backend) = handle.try_state::<std::sync::Arc<vault_core::Backend>>()
+        {
+            let _ = tauri::async_runtime::block_on(backend.shutdown());
+        }
+    });
+    Ok(())
 }
 
 use serde::{Deserialize, Serialize};

@@ -22,6 +22,8 @@ fn cli_help_is_standalone_and_lists_backend_operations() {
     let text = String::from_utf8(result.stdout).unwrap();
     assert!(text.contains("vault discover|attach"));
     assert!(text.contains("backup verify"));
+    assert!(text.contains("library list|search"));
+    assert!(text.contains("share <track-id> <source-id> <recipient-chat-id>"));
 }
 
 #[test]
