@@ -124,7 +124,7 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
   Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
   volume controls; the decoder retains an active cache lease and emits state events.
-- The 2026-10-22 full backend gate reports 60 workspace tests passed and one native
+- The 2026-10-22 full backend gate reports 67 workspace tests passed and one native
   TDLib smoke test ignored by default; the separate opt-in run against pinned
   tdjson 1.8.69 also passes. Formatting, workspace check, all-target clippy with
   denied warnings, CLI smoke and all three API schema comparisons pass.
@@ -138,7 +138,14 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   cancels and joins active download tasks. Partial ranged downloads are durably
   staged in the profile cache, resume from the last complete chunk after reopening,
   and are reported as `PARTIALLY_CACHED`; concurrent jobs for the same source are
-  rejected. Sharing supports one explicitly selected registered
+  rejected. Cache-level writer leases also protect partial files from replacement
+  and cleanup. Active downloads reserve their full size; partial bytes survive
+  reopen in quota/statistics accounting, and explicit cache clearing removes only
+  inactive partial files. Verified partial files are renamed into place without
+  copying their payload; failed index publication restores the partial for retry.
+  Reopen removes unindexed media and owned staging files left by crashes. Regression
+  tests cover these boundaries, pins, LRU eviction and full-file digest failures.
+  Sharing supports one explicitly selected registered
   media source and recipient, checks TDLib `can_be_forwarded`, uses `forwardMessages`
   in copy mode with caption removed, rejects unrelated vault service records, and
   exposes a CLI/API result. Simulator integration confirms only the selected

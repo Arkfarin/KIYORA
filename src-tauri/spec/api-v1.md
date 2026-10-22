@@ -52,7 +52,14 @@ metadata archives directly; full archives require every referenced media file
 in the verified local cache. Backup restore/export progress is emitted as backend
 events.
 Downloads emit byte progress and enter cache only after complete size and SHA-256
-validation. Sharing rejects unrelated control records and checks TDLib forward
+validation. `get_cache_stats` returns complete `entries`, `pinned_entries`,
+`partial_entries`, `partial_bytes`, `reserved_bytes`, `used_bytes` and `quota_bytes`.
+Used bytes include complete files and partial data already written; reserved bytes
+are additional space held for active downloads. Starting a download reserves its
+full expected size and may evict unused, unpinned complete files. Interrupted
+partial files remain resumable and count toward the quota until explicitly cleared.
+Cache clearing skips active downloads and files leased by playback. A competing
+writer for the same source returns `CONFLICT`. Sharing rejects unrelated control records and checks TDLib forward
 permission. Shared library writes require `ONLINE_READY`; local projection reads
 and cache clearing remain available while offline.
 Playback opens an OS output device and retains a verified cache lease while the

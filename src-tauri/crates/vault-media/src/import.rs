@@ -23,6 +23,8 @@ pub enum MediaError {
     Artwork,
     #[error("cache quota cannot be satisfied while files are pinned or in use")]
     CacheFull,
+    #[error("cache source already has an active download")]
+    CacheBusy,
     #[error("cache index is invalid")]
     CacheIndex,
     #[error("download range was incomplete or inconsistent")]

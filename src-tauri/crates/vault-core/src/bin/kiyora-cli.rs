@@ -459,8 +459,14 @@ async fn media(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                 .await?;
             if let VaultResponse::CacheStats(stats) = result {
                 println!(
-                    "entries={} pinned={} used_bytes={} quota_bytes={}",
-                    stats.entries, stats.pinned_entries, stats.used_bytes, stats.quota_bytes
+                    "entries={} pinned={} partial_entries={} partial_bytes={} reserved_bytes={} used_bytes={} quota_bytes={}",
+                    stats.entries,
+                    stats.pinned_entries,
+                    stats.partial_entries,
+                    stats.partial_bytes,
+                    stats.reserved_bytes,
+                    stats.used_bytes,
+                    stats.quota_bytes
                 );
                 Ok(())
             } else {

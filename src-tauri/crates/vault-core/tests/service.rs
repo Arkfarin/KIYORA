@@ -429,12 +429,12 @@ async fn offline_download_uses_verified_cache_progress_status_and_pin() {
         .unwrap();
 
     let resume_key = format!("{track_id}:{source_id}");
-    let (partial_path, _) = cache
-        .prepare_partial_download(&resume_key, 123, 2_500_000, None)
+    let partial_lease = cache
+        .prepare_partial_download(&resume_key, 123, 1_500_000, None)
         .unwrap();
     std::fs::OpenOptions::new()
         .write(true)
-        .open(partial_path)
+        .open(partial_lease.path())
         .unwrap()
         .set_len(1024 * 1024)
         .unwrap();
@@ -443,8 +443,8 @@ async fn offline_download_uses_verified_cache_progress_status_and_pin() {
         .unwrap();
     assert_eq!(partial.state, DownloadState::PartiallyCached);
     assert_eq!(partial.bytes_downloaded, 1024 * 1024);
-    assert_eq!(partial.total_bytes, Some(2_500_000));
-    cache.finish_partial_download(&resume_key).unwrap();
+    assert_eq!(partial.total_bytes, Some(1_500_000));
+    partial_lease.discard().unwrap();
 
     server
         .set_faults(Faults {
@@ -639,6 +639,9 @@ async fn offline_download_uses_verified_cache_progress_status_and_pin() {
         VaultResponse::CacheStats(vault_media::CacheStats {
             entries: 1,
             pinned_entries: 1,
+            partial_entries: 0,
+            partial_bytes: 0,
+            reserved_bytes: 0,
             used_bytes: 16_044,
             quota_bytes: 2_000_000,
         })

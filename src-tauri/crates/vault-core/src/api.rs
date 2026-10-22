@@ -141,6 +141,7 @@ impl From<vault_media::MediaError> for ApiError {
             vault_media::MediaError::Telegram(error) => error.into(),
             vault_media::MediaError::Io(_) => Self::new(ErrorCode::Storage),
             vault_media::MediaError::CacheFull => Self::new(ErrorCode::Storage),
+            vault_media::MediaError::CacheBusy => Self::new(ErrorCode::Conflict),
             vault_media::MediaError::InvalidAudio
             | vault_media::MediaError::TooLarge
             | vault_media::MediaError::Artwork => Self::new(ErrorCode::InvalidInput),

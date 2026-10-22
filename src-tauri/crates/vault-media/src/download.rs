@@ -36,18 +36,26 @@ pub async fn download_to_cache<T: Telegram>(
     {
         return Err(MediaError::Range);
     }
+    if cancel.is_cancelled() {
+        return Err(vault_telegram::TelegramError::Cancelled.into());
+    }
     let total = u64::try_from(file.size).map_err(|_| MediaError::Range)?;
-    let (staged_path, resumed) = cache.prepare_partial_download(
+    let partial = cache.prepare_partial_download(
         &options.cache_key,
         i64::from(file.file_id),
         total,
         options.expected_sha256.as_deref(),
     )?;
-    let mut staged = std::fs::File::open(&staged_path)?;
+    let staged_path = partial.path();
+    let resumed = partial.offset();
+    let mut staged = std::fs::File::open(staged_path)?;
     let mut hasher = Sha256::new();
     let mut hashed = 0u64;
-    let mut hash_buffer = [0u8; 256 * 1024];
+    let mut hash_buffer = vec![0u8; 256 * 1024];
     while hashed < resumed {
+        if cancel.is_cancelled() {
+            return Err(vault_telegram::TelegramError::Cancelled.into());
+        }
         let remaining = usize::try_from((resumed - hashed).min(hash_buffer.len() as u64))
             .map_err(|_| MediaError::Range)?;
         let read = staged.read(&mut hash_buffer[..remaining])?;
@@ -60,7 +68,7 @@ pub async fn download_to_cache<T: Telegram>(
     drop(staged);
     let mut output = tokio::fs::OpenOptions::new()
         .write(true)
-        .open(&staged_path)
+        .open(staged_path)
         .await?;
     output.seek(SeekFrom::Start(resumed)).await?;
     let mut offset = i64::try_from(resumed).map_err(|_| MediaError::Range)?;
@@ -146,17 +154,10 @@ pub async fn download_to_cache<T: Telegram>(
         .as_deref()
         .is_some_and(|expected| expected != digest)
     {
-        cache.finish_partial_download(&options.cache_key)?;
+        partial.discard()?;
         return Err(MediaError::Range);
     }
-    let lease = cache.insert(
-        options.cache_key.clone(),
-        &staged_path,
-        &digest,
-        options.pinned,
-    )?;
-    cache.finish_partial_download(&options.cache_key)?;
-    Ok(lease)
+    partial.publish(&digest, options.pinned)
 }
 
 fn valid_digest(value: &str) -> bool {

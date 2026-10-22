@@ -445,12 +445,25 @@
       "type": "object",
       "required": [
         "entries",
+        "partial_bytes",
+        "partial_entries",
         "pinned_entries",
         "quota_bytes",
+        "reserved_bytes",
         "used_bytes"
       ],
       "properties": {
         "entries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "partial_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "partial_entries": {
           "type": "integer",
           "format": "uint",
           "minimum": 0.0
@@ -465,7 +478,14 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "reserved_bytes": {
+          "description": "Bytes not yet written but reserved by active downloads.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "used_bytes": {
+          "description": "Completed files plus bytes already written by partial downloads.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0.0

@@ -1,4 +1,4 @@
-use crate::MediaError;
+use crate::{MAX_IMPORT_BYTES, MediaError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -37,6 +37,11 @@ pub struct CacheEntry {
 pub struct CacheStats {
     pub entries: usize,
     pub pinned_entries: usize,
+    pub partial_entries: usize,
+    pub partial_bytes: u64,
+    /// Bytes not yet written but reserved by active downloads.
+    pub reserved_bytes: u64,
+    /// Completed files plus bytes already written by partial downloads.
     pub used_bytes: u64,
     pub quota_bytes: u64,
 }
@@ -51,6 +56,7 @@ struct Inner {
     quota: u64,
     index: Index,
     leases: BTreeMap<Uuid, usize>,
+    partial_leases: BTreeMap<String, u64>,
 }
 #[derive(Clone)]
 pub struct CacheManager(Arc<Mutex<Inner>>);
@@ -58,6 +64,38 @@ pub struct CacheLease {
     pub path: PathBuf,
     pub entry: CacheEntry,
     inner: Weak<Mutex<Inner>>,
+}
+/// Exclusive writer and quota reservation for a resumable download. Dropping it
+/// releases the reservation while retaining completed chunks for a later retry.
+pub struct PartialDownloadLease {
+    path: PathBuf,
+    offset: u64,
+    key: String,
+    name: String,
+    cache: CacheManager,
+}
+impl PartialDownloadLease {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+    pub fn publish(self, expected_sha256: &str, pinned: bool) -> Result<CacheLease, MediaError> {
+        self.cache
+            .insert_inner(self.key.clone(), &self.path, expected_sha256, pinned, true)
+    }
+    pub fn discard(self) -> Result<(), MediaError> {
+        let state = self.cache.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        cleanup_partial_files(&state.root, &self.key)
+    }
+}
+impl Drop for PartialDownloadLease {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.cache.0.lock() {
+            state.partial_leases.remove(&self.name);
+        }
+    }
 }
 impl Drop for CacheLease {
     fn drop(&mut self) {
@@ -74,6 +112,8 @@ impl Drop for CacheLease {
 }
 
 impl CacheManager {
+    /// Open one manager per locked profile and share it through `Clone`.
+    /// Reconciles local files left by an interrupted publication before use.
     pub fn open(root: impl AsRef<Path>, quota: u64) -> Result<Self, MediaError> {
         if quota == 0 {
             return Err(MediaError::CacheFull);
@@ -115,6 +155,7 @@ impl CacheManager {
             quota,
             index,
             leases: BTreeMap::new(),
+            partial_leases: BTreeMap::new(),
         })));
         manager.reconcile()?;
         Ok(manager)
@@ -124,8 +165,7 @@ impl CacheManager {
         Ok(state.index.entries.values().cloned().collect())
     }
     pub fn used_bytes(&self) -> Result<u64, MediaError> {
-        let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
-        Ok(state.index.entries.values().map(|e| e.size_bytes).sum())
+        Ok(self.stats()?.used_bytes)
     }
     pub fn stats(&self) -> Result<CacheStats, MediaError> {
         let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
@@ -133,6 +173,9 @@ impl CacheManager {
         let mut stats = CacheStats {
             entries: state.index.entries.len(),
             pinned_entries: 0,
+            partial_entries: 0,
+            partial_bytes: 0,
+            reserved_bytes: 0,
             used_bytes: 0,
             quota_bytes: state.quota,
         };
@@ -143,6 +186,27 @@ impl CacheManager {
                 .ok_or(MediaError::CacheIndex)?;
             stats.pinned_entries += usize::from(entry.pinned);
         }
+        for (name, size) in partial_files(&state.root)? {
+            stats.partial_entries += 1;
+            stats.partial_bytes = stats
+                .partial_bytes
+                .checked_add(size)
+                .ok_or(MediaError::CacheIndex)?;
+            let reserved = state
+                .partial_leases
+                .get(&name)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(size);
+            stats.reserved_bytes = stats
+                .reserved_bytes
+                .checked_add(reserved)
+                .ok_or(MediaError::CacheIndex)?;
+        }
+        stats.used_bytes = stats
+            .used_bytes
+            .checked_add(stats.partial_bytes)
+            .ok_or(MediaError::CacheIndex)?;
         Ok(stats)
     }
     pub fn prepare_partial_download(
@@ -151,17 +215,22 @@ impl CacheManager {
         remote_file_id: i64,
         size_bytes: u64,
         expected_sha256: Option<&str>,
-    ) -> Result<(PathBuf, u64), MediaError> {
+    ) -> Result<PartialDownloadLease, MediaError> {
         if key.is_empty()
             || key.len() > 128
             || remote_file_id <= 0
             || size_bytes == 0
+            || size_bytes > MAX_IMPORT_BYTES
             || expected_sha256.is_some_and(|value| !valid_digest(value))
         {
             return Err(MediaError::Range);
         }
-        let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let mut state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
         let name = hex::encode(Sha256::digest(key.as_bytes()));
+        if state.partial_leases.contains_key(&name) {
+            return Err(MediaError::CacheBusy);
+        }
+        reserve_capacity(&mut state, size_bytes, &name)?;
         let data_path = state.root.join(format!("partial-{name}.data"));
         let metadata_path = state.root.join(format!("partial-{name}.json"));
         let expected = PartialDownload {
@@ -190,7 +259,7 @@ impl CacheManager {
             remove_if_regular_or_missing(&metadata_path)?;
             remove_if_regular_or_missing(&data_path)?;
             let encoded = serde_json::to_vec(&expected).map_err(|_| MediaError::CacheIndex)?;
-            let mut temp = tempfile::NamedTempFile::new_in(&state.root)?;
+            let mut temp = staging_file(&state.root)?;
             temp.write_all(&encoded)?;
             temp.as_file().sync_all()?;
             temp.persist(&metadata_path)
@@ -208,14 +277,22 @@ impl CacheManager {
             return Err(MediaError::CacheIndex);
         }
         let available = data_metadata.len().min(size_bytes);
-        let mut offset = available / DOWNLOAD_CHUNK_BYTES * DOWNLOAD_CHUNK_BYTES;
-        if offset == size_bytes {
-            offset = size_bytes;
-        }
+        let offset = if available == size_bytes {
+            available
+        } else {
+            available / DOWNLOAD_CHUNK_BYTES * DOWNLOAD_CHUNK_BYTES
+        };
         let file = OpenOptions::new().write(true).open(&data_path)?;
         file.set_len(offset)?;
         file.sync_data()?;
-        Ok((data_path, offset))
+        state.partial_leases.insert(name.clone(), size_bytes);
+        Ok(PartialDownloadLease {
+            path: data_path,
+            offset,
+            key: key.to_owned(),
+            name,
+            cache: self.clone(),
+        })
     }
     pub fn partial_download_progress(&self, key: &str) -> Result<Option<(u64, u64)>, MediaError> {
         if key.is_empty() || key.len() > 128 {
@@ -268,6 +345,9 @@ impl CacheManager {
         }
         let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
         let name = hex::encode(Sha256::digest(key.as_bytes()));
+        if state.partial_leases.contains_key(&name) {
+            return Err(MediaError::CacheBusy);
+        }
         for path in [
             state.root.join(format!("partial-{name}.data")),
             state.root.join(format!("partial-{name}.json")),
@@ -285,6 +365,16 @@ impl CacheManager {
         expected_sha256: &str,
         pinned: bool,
     ) -> Result<CacheLease, MediaError> {
+        self.insert_inner(key, source, expected_sha256, pinned, false)
+    }
+    fn insert_inner(
+        &self,
+        key: String,
+        source: &Path,
+        expected_sha256: &str,
+        pinned: bool,
+        owns_partial: bool,
+    ) -> Result<CacheLease, MediaError> {
         if key.is_empty() || key.len() > 128 || !valid_digest(expected_sha256) {
             return Err(MediaError::CacheIndex);
         }
@@ -294,6 +384,13 @@ impl CacheManager {
         }
         let size = source_meta.len();
         let mut lock = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let partial_name = hex::encode(Sha256::digest(key.as_bytes()));
+        if lock.partial_leases.contains_key(&partial_name) && !owns_partial {
+            return Err(MediaError::CacheBusy);
+        }
+        if owns_partial && lock.partial_leases.get(&partial_name) != Some(&size) {
+            return Err(MediaError::Range);
+        }
         if let Some(old) = lock.index.entries.get(&key).cloned() {
             let old_path = cache_path(&lock.root, old.file_id);
             if old.sha256 == expected_sha256
@@ -308,12 +405,12 @@ impl CacheManager {
                 entry.last_access_unix = now();
                 entry.pinned |= pinned;
                 let result = entry.clone();
+                persist(&lock)?;
+                cleanup_partial_files(&lock.root, &result.key)?;
                 lock.leases
                     .entry(result.file_id)
                     .and_modify(|n| *n += 1)
                     .or_insert(1);
-                persist(&lock)?;
-                cleanup_partial_files(&lock.root, &result.key)?;
                 return Ok(CacheLease {
                     path: old_path,
                     entry: result,
@@ -332,6 +429,9 @@ impl CacheManager {
             .values()
             .try_fold(0u64, |sum, entry| sum.checked_add(entry.size_bytes))
             .ok_or(MediaError::CacheIndex)?;
+        used = used
+            .checked_add(partial_charge(&lock, Some(&partial_name))?)
+            .ok_or(MediaError::CacheIndex)?;
         let mut evictions = candidate
             .entries
             .values()
@@ -341,7 +441,10 @@ impl CacheManager {
         evictions.sort();
         let mut evicted = Vec::new();
         let mut candidates = evictions.into_iter();
-        while used.saturating_add(needed) > lock.quota {
+        while used
+            .checked_add(needed)
+            .is_none_or(|total| total > lock.quota)
+        {
             let Some((_, evict_key)) = candidates.next() else {
                 return Err(MediaError::CacheFull);
             };
@@ -352,31 +455,36 @@ impl CacheManager {
         }
         let id = Uuid::new_v4();
         let destination = cache_path(&lock.root, id);
-        let mut temp = tempfile::NamedTempFile::new_in(&lock.root)?;
-        let mut input = File::open(source)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0u8; 256 * 1024];
-        let mut written = 0u64;
-        loop {
-            let count = input.read(&mut buffer)?;
-            if count == 0 {
-                break;
+        if owns_partial {
+            verify_file(source, size, expected_sha256)?;
+            fs::rename(source, &destination)?;
+        } else {
+            let mut temp = staging_file(&lock.root)?;
+            let mut input = File::open(source)?;
+            let mut hasher = Sha256::new();
+            let mut buffer = vec![0u8; 256 * 1024];
+            let mut written = 0u64;
+            loop {
+                let count = input.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                written = written
+                    .checked_add(count as u64)
+                    .ok_or(MediaError::CacheFull)?;
+                if written > size {
+                    return Err(MediaError::CacheIndex);
+                }
+                hasher.update(&buffer[..count]);
+                temp.write_all(&buffer[..count])?;
             }
-            written = written
-                .checked_add(count as u64)
-                .ok_or(MediaError::CacheFull)?;
-            if written > size {
+            if written != size || hex::encode(hasher.finalize()) != expected_sha256 {
                 return Err(MediaError::CacheIndex);
             }
-            hasher.update(&buffer[..count]);
-            temp.write_all(&buffer[..count])?;
+            temp.as_file().sync_all()?;
+            temp.persist(&destination)
+                .map_err(|e| MediaError::Io(e.error))?;
         }
-        if written != size || hex::encode(hasher.finalize()) != expected_sha256 {
-            return Err(MediaError::CacheIndex);
-        }
-        temp.as_file().sync_all()?;
-        temp.persist(&destination)
-            .map_err(|e| MediaError::Io(e.error))?;
         let entry = CacheEntry {
             key: key.clone(),
             file_id: id,
@@ -389,13 +497,20 @@ impl CacheManager {
         let previous = std::mem::replace(&mut lock.index, candidate);
         if let Err(error) = persist(&lock) {
             lock.index = previous;
-            let _ = fs::remove_file(destination);
+            if owns_partial {
+                fs::rename(&destination, source)?;
+            } else {
+                let _ = fs::remove_file(destination);
+            }
             return Err(error);
         }
         for old in evicted {
             let _ = fs::remove_file(cache_path(&lock.root, old));
         }
-        let _ = cleanup_partial_files(&lock.root, &entry.key);
+        if let Some(old) = previous.entries.get(&entry.key) {
+            let _ = fs::remove_file(cache_path(&lock.root, old.file_id));
+        }
+        cleanup_partial_files(&lock.root, &entry.key)?;
         lock.leases.insert(id, 1);
         Ok(CacheLease {
             path: destination,
@@ -408,7 +523,10 @@ impl CacheManager {
         let Some(entry) = state.index.entries.get(key).cloned() else {
             return Ok(None);
         };
-        cleanup_partial_files(&state.root, key)?;
+        let partial_name = hex::encode(Sha256::digest(key.as_bytes()));
+        if !state.partial_leases.contains_key(&partial_name) {
+            cleanup_partial_files(&state.root, key)?;
+        }
         let path = cache_path(&state.root, entry.file_id);
         verify_file(&path, entry.size_bytes, &entry.sha256)?;
         let entry = state
@@ -418,12 +536,12 @@ impl CacheManager {
             .ok_or(MediaError::CacheIndex)?;
         entry.last_access_unix = now();
         let entry = entry.clone();
+        persist(&state)?;
         state
             .leases
             .entry(entry.file_id)
             .and_modify(|n| *n += 1)
             .or_insert(1);
-        persist(&state)?;
         Ok(Some(CacheLease {
             path,
             entry,
@@ -450,6 +568,7 @@ impl CacheManager {
             .map(|e| e.file_id)
             .collect::<Vec<_>>();
         let mut removed = 0u64;
+        let previous = state.index.clone();
         state.index.entries.retain(|_, e| {
             if ids.contains(&e.file_id) {
                 removed = removed.saturating_add(e.size_bytes);
@@ -458,9 +577,19 @@ impl CacheManager {
                 true
             }
         });
-        persist(&state)?;
+        if let Err(error) = persist(&state) {
+            state.index = previous;
+            return Err(error);
+        }
         for id in ids {
             let _ = fs::remove_file(cache_path(&state.root, id));
+        }
+        for (name, size) in partial_files(&state.root)? {
+            if !state.partial_leases.contains_key(&name) {
+                remove_if_regular_or_missing(&state.root.join(format!("partial-{name}.data")))?;
+                remove_if_regular_or_missing(&state.root.join(format!("partial-{name}.json")))?;
+                removed = removed.checked_add(size).ok_or(MediaError::CacheIndex)?;
+            }
         }
         Ok(removed)
     }
@@ -478,8 +607,119 @@ impl CacheManager {
             }
             verify_file(&path, entry.size_bytes, &entry.sha256)?;
         }
+        let known: std::collections::BTreeSet<_> = state
+            .index
+            .entries
+            .values()
+            .map(|entry| entry.file_id)
+            .collect();
+        for entry in fs::read_dir(&state.root)? {
+            let entry = entry?;
+            let filename = entry.file_name();
+            let Some(filename) = filename.to_str() else {
+                continue;
+            };
+            let orphan = filename
+                .strip_suffix(".media")
+                .and_then(|id| id.parse::<Uuid>().ok())
+                .is_some_and(|id| filename == format!("{id}.media") && !known.contains(&id));
+            if orphan || filename.starts_with(".kiyora-cache-") {
+                remove_if_regular_or_missing(&entry.path())?;
+            }
+        }
+        for name in partial_files(&state.root)?.keys() {
+            if !state.root.join(format!("partial-{name}.data")).exists() {
+                remove_if_regular_or_missing(&state.root.join(format!("partial-{name}.json")))?;
+            }
+        }
         persist(&state)
     }
+}
+/// Only filenames owned by the partial-download format participate. Unknown
+/// files are never interpreted as download data or removed by cache clearing.
+fn partial_files(root: &Path) -> Result<BTreeMap<String, u64>, MediaError> {
+    let mut files = BTreeMap::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str().and_then(|name| name.strip_prefix("partial-")) else {
+            continue;
+        };
+        let Some(digest) = name
+            .strip_suffix(".data")
+            .or_else(|| name.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        if !valid_digest(digest) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(MediaError::CacheIndex);
+        }
+        let size = files.entry(digest.to_owned()).or_insert(0);
+        if name.ends_with(".data") {
+            *size = metadata.len();
+        }
+    }
+    Ok(files)
+}
+fn partial_charge(state: &Inner, excluding: Option<&str>) -> Result<u64, MediaError> {
+    partial_files(&state.root)?
+        .into_iter()
+        .filter(|(name, _)| Some(name.as_str()) != excluding)
+        .try_fold(0u64, |sum, (name, bytes)| {
+            let reserved = state.partial_leases.get(&name).copied().unwrap_or(0);
+            sum.checked_add(bytes.max(reserved))
+                .ok_or(MediaError::CacheIndex)
+        })
+}
+/// Reserve the full future download size. Only unpinned, unused complete files
+/// are LRU eviction candidates; paused partial downloads remain until cleared.
+fn reserve_capacity(state: &mut Inner, needed: u64, partial_name: &str) -> Result<(), MediaError> {
+    let mut used = state.index.entries.values().try_fold(
+        partial_charge(state, Some(partial_name))?,
+        |sum, entry| {
+            sum.checked_add(entry.size_bytes)
+                .ok_or(MediaError::CacheIndex)
+        },
+    )?;
+    let mut candidate = state.index.clone();
+    let mut evictions = candidate
+        .entries
+        .values()
+        .filter(|entry| !entry.pinned && !state.leases.contains_key(&entry.file_id))
+        .map(|entry| (entry.last_access_unix, entry.key.clone()))
+        .collect::<Vec<_>>();
+    evictions.sort();
+    let mut victims = evictions.into_iter();
+    let mut removed = Vec::new();
+    while used
+        .checked_add(needed)
+        .is_none_or(|total| total > state.quota)
+    {
+        let Some((_, key)) = victims.next() else {
+            return Err(MediaError::CacheFull);
+        };
+        if let Some(entry) = candidate.entries.remove(&key) {
+            used = used
+                .checked_sub(entry.size_bytes)
+                .ok_or(MediaError::CacheIndex)?;
+            removed.push(entry.file_id);
+        }
+    }
+    if !removed.is_empty() {
+        let previous = std::mem::replace(&mut state.index, candidate);
+        if let Err(error) = persist(state) {
+            state.index = previous;
+            return Err(error);
+        }
+        for id in removed {
+            remove_if_regular_or_missing(&cache_path(&state.root, id))?;
+        }
+    }
+    Ok(())
 }
 fn cache_path(root: &Path, id: Uuid) -> PathBuf {
     root.join(format!("{id}.media"))
@@ -520,7 +760,7 @@ fn verify_file(path: &Path, size: u64, digest: &str) -> Result<(), MediaError> {
     }
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 256 * 1024];
+    let mut buffer = vec![0u8; 256 * 1024];
     loop {
         let n = file.read(&mut buffer)?;
         if n == 0 {
@@ -536,11 +776,16 @@ fn verify_file(path: &Path, size: u64, digest: &str) -> Result<(), MediaError> {
 fn persist(state: &Inner) -> Result<(), MediaError> {
     let path = state.root.join("index.json");
     let bytes = serde_json::to_vec(&state.index).map_err(|_| MediaError::CacheIndex)?;
-    let mut temp = tempfile::NamedTempFile::new_in(&state.root)?;
+    let mut temp = staging_file(&state.root)?;
     temp.write_all(&bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|e| MediaError::Io(e.error))?;
     #[cfg(unix)]
     File::open(&state.root)?.sync_all()?;
     Ok(())
+}
+fn staging_file(root: &Path) -> Result<tempfile::NamedTempFile, std::io::Error> {
+    tempfile::Builder::new()
+        .prefix(".kiyora-cache-")
+        .tempfile_in(root)
 }

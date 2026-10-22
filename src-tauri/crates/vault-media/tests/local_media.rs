@@ -53,9 +53,12 @@ fn rejects_symlink_unsupported_and_empty_audio_paths() {
     let dir = tempdir().unwrap();
     let wav_path = dir.path().join("good.wav");
     wav(&wav_path, 10);
-    let link = dir.path().join("alias.wav");
-    std::os::unix::fs::symlink(&wav_path, &link).unwrap();
-    assert!(matches!(inspect(&link), Err(MediaError::InvalidAudio)));
+    #[cfg(unix)]
+    {
+        let link = dir.path().join("alias.wav");
+        std::os::unix::fs::symlink(&wav_path, &link).unwrap();
+        assert!(matches!(inspect(&link), Err(MediaError::InvalidAudio)));
+    }
     let unsupported = dir.path().join("bad.txt");
     std::fs::write(&unsupported, b"not audio").unwrap();
     assert!(matches!(
@@ -87,6 +90,9 @@ fn cache_quota_respects_pins_and_active_leases_and_checks_content() {
         CacheStats {
             entries: 2,
             pinned_entries: 1,
+            partial_entries: 0,
+            partial_bytes: 0,
+            reserved_bytes: 0,
             used_bytes: 80,
             quota_bytes: 80,
         }
@@ -119,6 +125,196 @@ fn cache_lease_prevents_clear_until_decoder_releases_file() {
     drop(lease);
     assert_eq!(cache.clear_unpinned().unwrap(), 11);
     assert!(cache.acquire("track").unwrap().is_none());
+}
+
+#[test]
+fn download_reservations_cannot_exceed_cache_quota() {
+    let dir = tempdir().unwrap();
+    let cache = CacheManager::open(dir.path().join("cache"), 100).unwrap();
+    let _first = cache
+        .prepare_partial_download("first", 1, 60, None)
+        .unwrap();
+    assert!(matches!(
+        cache.prepare_partial_download("second", 2, 60, None),
+        Err(MediaError::CacheFull)
+    ));
+}
+
+#[test]
+fn partial_bytes_survive_reopen_and_count_toward_cache_quota() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("cache");
+    let cache = CacheManager::open(&root, 2_000_000).unwrap();
+    let partial = cache
+        .prepare_partial_download("partial", 1, 1_500_000, None)
+        .unwrap();
+    std::fs::write(partial.path(), vec![7u8; 1_048_576]).unwrap();
+    drop(partial);
+    drop(cache);
+    let cache = CacheManager::open(&root, 2_000_000).unwrap();
+    assert_eq!(cache.used_bytes().unwrap(), 1_048_576);
+    assert_eq!(cache.clear_unpinned().unwrap(), 1_048_576);
+    assert_eq!(cache.used_bytes().unwrap(), 0);
+    assert!(
+        cache
+            .partial_download_progress("partial")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn partial_writer_lease_blocks_replacement_and_cleanup_until_released() {
+    let dir = tempdir().unwrap();
+    let cache = CacheManager::open(dir.path().join("cache"), 100).unwrap();
+    let partial = cache
+        .prepare_partial_download("active", 1, 60, None)
+        .unwrap();
+    std::fs::write(partial.path(), [1u8; 20]).unwrap();
+    let other = cache.clone();
+    assert!(matches!(
+        other.prepare_partial_download("active", 2, 80, None),
+        Err(MediaError::CacheBusy)
+    ));
+    assert!(matches!(
+        other.finish_partial_download("active"),
+        Err(MediaError::CacheBusy)
+    ));
+    assert!(matches!(
+        other.insert(
+            "active".into(),
+            partial.path(),
+            &hex::encode(Sha256::digest([1u8; 20])),
+            false
+        ),
+        Err(MediaError::CacheBusy)
+    ));
+    assert_eq!(other.clear_unpinned().unwrap(), 0);
+    assert_eq!(std::fs::read(partial.path()).unwrap(), [1u8; 20]);
+    let stats = cache.stats().unwrap();
+    assert_eq!(stats.partial_entries, 1);
+    assert_eq!(stats.partial_bytes, 20);
+    assert_eq!(stats.used_bytes, 20);
+    assert_eq!(stats.reserved_bytes, 40);
+    drop(partial);
+    assert_eq!(other.stats().unwrap().reserved_bytes, 0);
+    assert_eq!(other.clear_unpinned().unwrap(), 20);
+    assert_eq!(other.stats().unwrap().partial_entries, 0);
+}
+
+#[test]
+fn download_reservation_evicts_only_unused_unpinned_files() {
+    let dir = tempdir().unwrap();
+    let cache = CacheManager::open(dir.path().join("cache"), 100).unwrap();
+    let source = dir.path().join("source");
+    std::fs::write(&source, [1u8; 40]).unwrap();
+    let hash = hex::encode(Sha256::digest([1u8; 40]));
+    let pinned = cache.insert("pinned".into(), &source, &hash, true).unwrap();
+    let unpinned = cache
+        .insert("unused".into(), &source, &hash, false)
+        .unwrap();
+    assert!(matches!(
+        cache.prepare_partial_download("next", 1, 60, None),
+        Err(MediaError::CacheFull)
+    ));
+    assert!(cache.acquire("unused").unwrap().is_some());
+    drop(unpinned);
+    let partial = cache.prepare_partial_download("next", 1, 60, None).unwrap();
+    assert!(pinned.path.exists());
+    assert!(cache.acquire("unused").unwrap().is_none());
+    assert!(matches!(
+        cache.insert("third".into(), &source, &hash, false),
+        Err(MediaError::CacheFull)
+    ));
+    std::fs::write(partial.path(), [3u8; 60]).unwrap();
+    let lease = partial
+        .publish(&hex::encode(Sha256::digest([3u8; 60])), false)
+        .unwrap();
+    assert_eq!(std::fs::read(&lease.path).unwrap(), [3u8; 60]);
+    let stats = cache.stats().unwrap();
+    assert_eq!(stats.used_bytes, 100);
+    assert_eq!(stats.reserved_bytes, 0);
+    assert_eq!(stats.partial_entries, 0);
+}
+
+#[test]
+fn incomplete_partial_cannot_be_published_even_with_matching_digest() {
+    let dir = tempdir().unwrap();
+    let cache = CacheManager::open(dir.path().join("cache"), 100).unwrap();
+    let partial = cache
+        .prepare_partial_download("incomplete", 1, 60, None)
+        .unwrap();
+    std::fs::write(partial.path(), [1u8; 20]).unwrap();
+    assert!(matches!(
+        partial.publish(&hex::encode(Sha256::digest([1u8; 20])), false),
+        Err(MediaError::Range)
+    ));
+    assert!(cache.acquire("incomplete").unwrap().is_none());
+    assert_eq!(cache.stats().unwrap().reserved_bytes, 0);
+    assert_eq!(cache.clear_unpinned().unwrap(), 20);
+}
+
+#[test]
+fn failed_publication_preserves_completed_partial_for_retry_after_reopen() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("cache");
+    let cache = CacheManager::open(&root, 100).unwrap();
+    let partial = cache
+        .prepare_partial_download("retry", 1, 60, None)
+        .unwrap();
+    let bytes = [3u8; 60];
+    let hash = hex::encode(Sha256::digest(bytes));
+    std::fs::write(partial.path(), bytes).unwrap();
+    let path = partial.path().to_owned();
+    // Make the atomic index replacement fail after the media rename.
+    std::fs::rename(root.join("index.json"), root.join("saved-index.json")).unwrap();
+    std::fs::create_dir(root.join("index.json")).unwrap();
+    assert!(partial.publish(&hash, false).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert!(cache.entries().unwrap().is_empty());
+    assert_eq!(cache.stats().unwrap().used_bytes, 60);
+    assert_eq!(cache.stats().unwrap().reserved_bytes, 0);
+    drop(cache);
+    std::fs::remove_dir(root.join("index.json")).unwrap();
+    std::fs::rename(root.join("saved-index.json"), root.join("index.json")).unwrap();
+    let cache = CacheManager::open(&root, 100).unwrap();
+    let partial = cache
+        .prepare_partial_download("retry", 1, 60, None)
+        .unwrap();
+    assert_eq!(partial.offset(), 60);
+    let complete = partial.publish(&hash, true).unwrap();
+    assert_eq!(std::fs::read(&complete.path).unwrap(), bytes);
+    assert_eq!(cache.stats().unwrap().partial_entries, 0);
+}
+
+#[test]
+fn cache_reopen_removes_unpublished_media_and_owned_staging_files() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("cache");
+    let cache = CacheManager::open(&root, 100).unwrap();
+    let partial = cache
+        .prepare_partial_download("crash", 1, 60, None)
+        .unwrap();
+    std::fs::write(partial.path(), [3u8; 60]).unwrap();
+    let orphan = root.join(format!("{}.media", uuid::Uuid::new_v4()));
+    // Simulate process loss between media rename and atomic index publication.
+    std::fs::rename(partial.path(), &orphan).unwrap();
+    drop(partial);
+    drop(cache);
+    let staging = root.join(".kiyora-cache-interrupted");
+    std::fs::write(&staging, [9u8; 20]).unwrap();
+    let unrelated = root.join("notes.txt");
+    std::fs::write(&unrelated, "keep").unwrap();
+    let cache = CacheManager::open(&root, 100).unwrap();
+    assert!(!orphan.exists());
+    assert!(!staging.exists());
+    assert!(unrelated.exists());
+    assert!(cache.acquire("crash").unwrap().is_none());
+    assert_eq!(cache.stats().unwrap().partial_entries, 0);
+    let retry = cache
+        .prepare_partial_download("crash", 1, 60, None)
+        .unwrap();
+    assert_eq!(retry.offset(), 0);
 }
 
 #[tokio::test]
@@ -161,8 +357,9 @@ async fn ranged_download_hashes_and_publishes_only_verified_complete_media() {
         Some(&(1_600_000, 1_600_000))
     );
     drop(lease);
+    cache.pin("track:source", false).unwrap();
 
-    assert!(
+    assert!(matches!(
         download_to_cache(
             &telegram,
             &file,
@@ -175,9 +372,9 @@ async fn ranged_download_hashes_and_publishes_only_verified_complete_media() {
             &CancellationToken::new(),
             &|_, _| {},
         )
-        .await
-        .is_err()
-    );
+        .await,
+        Err(MediaError::Range)
+    ));
     assert!(cache.acquire("bad-digest").unwrap().is_none());
 }
 
@@ -227,7 +424,7 @@ async fn cancelled_range_download_resumes_after_cache_manager_reopens() {
     drop(cache);
 
     let cache = CacheManager::open(&cache_root, 3_000_000).unwrap();
-    let (partial, offset) = cache
+    let partial = cache
         .prepare_partial_download(
             "resume-track:source",
             i64::from(file.file_id),
@@ -235,14 +432,16 @@ async fn cancelled_range_download_resumes_after_cache_manager_reopens() {
             Some(&hex::encode(Sha256::digest(&bytes))),
         )
         .unwrap();
+    let offset = partial.offset();
     assert_eq!(offset, 1024 * 1024);
-    assert_eq!(std::fs::metadata(partial).unwrap().len(), offset);
+    assert_eq!(std::fs::metadata(partial.path()).unwrap().len(), offset);
     assert_eq!(
         cache
             .partial_download_progress("resume-track:source")
             .unwrap(),
         Some((offset, bytes.len() as u64))
     );
+    drop(partial);
 
     let resumed_progress = std::sync::Mutex::new(Vec::new());
     let lease = download_to_cache(
