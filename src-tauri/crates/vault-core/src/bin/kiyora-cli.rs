@@ -580,6 +580,7 @@ async fn playback(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let session_id = status.context.session_id;
     let state = match args.first().map(String::as_str) {
         Some("play") => {
+            let events = backend.subscribe_events();
             backend
                 .play_track(
                     session_id,
@@ -587,7 +588,7 @@ async fn playback(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                     parse_uuid(args.get(2))?,
                 )
                 .await?;
-            backend.playback_state(session_id).await?
+            return playback_session(backend, session_id, events).await;
         }
         Some("status") => backend.playback_state(session_id).await?,
         Some("pause") => {
@@ -627,6 +628,74 @@ async fn playback(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     };
     println!("{state:?}");
     Ok(())
+}
+// A CLI process owns its audio device/session. Keep it alive while playing and
+// accept controls in this process; separate invocations cannot control that sink.
+async fn playback_session(
+    backend: &Backend,
+    session_id: Uuid,
+    mut events: tokio::sync::broadcast::Receiver<vault_core::BackendEvent>,
+) -> Result<(), ApiError> {
+    eprintln!(
+        "Playing. Controls: pause, resume, seek <ms>, volume <0..1>, stop. Ctrl-C stops playback."
+    );
+    let (tx, mut lines) = tokio::sync::mpsc::channel(8);
+    std::thread::Builder::new()
+        .name("kiyora-playback-input".into())
+        .spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                if tx.blocking_send(line).is_err() {
+                    break;
+                }
+            }
+        })
+        .map_err(|_| ApiError::new(ErrorCode::Internal))?;
+    let mut input_open = true;
+    let mut last_state = None;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                backend.control_playback(session_id, PlaybackAction::Stop).await?;
+                return Ok(());
+            }
+            line = lines.recv(), if input_open => {
+                let Some(line) = line else { input_open = false; continue; };
+                let words: Vec<_> = line.split_whitespace().collect();
+                let action = match words.as_slice() {
+                    ["pause"] => Some(PlaybackAction::Pause),
+                    ["resume"] => Some(PlaybackAction::Resume),
+                    ["stop"] => Some(PlaybackAction::Stop),
+                    ["seek", value] => value.parse().ok().map(PlaybackAction::Seek),
+                    ["volume", value] => value.parse().ok().map(PlaybackAction::SetVolume),
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    if let Err(error) = backend.control_playback(session_id, action).await { eprintln!("{}", error.message); }
+                    if action == PlaybackAction::Stop { return Ok(()); }
+                } else { eprintln!("Use pause, resume, seek <ms>, volume <0..1>, or stop."); }
+            }
+            event = events.recv() => {
+                let state = match event {
+                    Ok(event) if event.context.session_id == session_id => match event.data {
+                        vault_core::EventData::Playback(state) => state,
+                        _ => continue,
+                    },
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => backend.playback_state(session_id).await?,
+                    Err(_) => return Err(ApiError::new(ErrorCode::Closed)),
+                };
+                if matches!(state, vault_media::PlaybackState::Failed { .. }) { return Err(ApiError::new(ErrorCode::PlaybackUnavailable)); }
+                if matches!(state, vault_media::PlaybackState::Idle) { return Ok(()); }
+                // Print transitions, not a line for every position tick.
+                let kind = std::mem::discriminant(&state);
+                if last_state != Some(kind) { println!("{state:?}"); last_state = Some(kind); }
+            }
+        }
+    }
 }
 async fn playlist(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;

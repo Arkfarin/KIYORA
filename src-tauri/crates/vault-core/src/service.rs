@@ -22,6 +22,12 @@ struct Job {
     cancel: CancellationToken,
     reply: oneshot::Sender<Result<VaultResponse, ApiError>>,
 }
+struct PlaybackJob {
+    track_id: Uuid,
+    source_id: Uuid,
+    cancel: CancellationToken,
+    reply: oneshot::Sender<Result<vault_media::PlaybackInput, ApiError>>,
+}
 struct DownloadJob {
     cancel: CancellationToken,
     info: DownloadInfo,
@@ -41,6 +47,7 @@ impl Drop for Lifetime {
 pub struct VaultService {
     context: Context,
     requests: mpsc::Sender<Job>,
+    playback_requests: mpsc::Sender<PlaybackJob>,
     reader: ProjectionReader,
     status: watch::Receiver<Status>,
     closed: watch::Receiver<bool>,
@@ -74,6 +81,7 @@ impl VaultService {
         let reader = engine.reader();
         let updates = engine.subscribe();
         let (requests, jobs) = mpsc::channel(64);
+        let (playback_requests, playback_jobs) = mpsc::channel(8);
         let (status_tx, status) = watch::channel(Status {
             context: context.clone(),
             mode: engine.mode(),
@@ -93,10 +101,12 @@ impl VaultService {
             cancel.clone(),
             cache.clone(),
             downloads.clone(),
+            playback_jobs,
         ));
         Self {
             context,
             requests,
+            playback_requests,
             reader,
             status,
             closed,
@@ -116,6 +126,43 @@ impl VaultService {
     }
     pub fn status_changes(&self) -> watch::Receiver<Status> {
         self.status.clone()
+    }
+    /// Resolves a registered source through the same reconciled engine as other
+    /// media operations. Encoded bytes are fetched later by the decoder worker.
+    pub async fn playback_input(
+        &self,
+        track_id: Uuid,
+        source_id: Uuid,
+        cancel: &CancellationToken,
+    ) -> Result<vault_media::PlaybackInput, ApiError> {
+        if self.lifetime.0.is_cancelled() {
+            return Err(ApiError::new(ErrorCode::Closed));
+        }
+        if cancel.is_cancelled() {
+            return Err(ApiError::new(ErrorCode::Cancelled));
+        }
+        let token = cancel.child_token();
+        let guard = token.clone().drop_guard();
+        let (reply, result) = oneshot::channel();
+        self.playback_requests
+            .try_send(PlaybackJob {
+                track_id,
+                source_id,
+                cancel: token,
+                reply,
+            })
+            .map_err(|error| {
+                ApiError::new(match error {
+                    mpsc::error::TrySendError::Full(_) => ErrorCode::Backpressure,
+                    mpsc::error::TrySendError::Closed(_) => ErrorCode::Closed,
+                })
+            })?;
+        let value = tokio::select! {
+            _ = cancel.cancelled() => Err(ApiError::new(ErrorCode::Cancelled)),
+            result = result => result.map_err(|_| ApiError::new(ErrorCode::Closed))?,
+        };
+        drop(guard);
+        value
     }
     pub async fn request(
         &self,
@@ -356,6 +403,7 @@ async fn run<T: Telegram + Clone + 'static>(
     cancel: CancellationToken,
     cache: Option<vault_media::CacheManager>,
     downloads: Arc<Mutex<HashMap<Uuid, DownloadJob>>>,
+    mut playback_jobs: mpsc::Receiver<PlaybackJob>,
 ) {
     let mut last_cursor = String::new();
     let mut retry: Option<tokio::time::Instant> = None;
@@ -376,6 +424,19 @@ async fn run<T: Telegram + Clone + 'static>(
         tokio::select! {
             biased;
             _=cancel.cancelled()=>break,
+            job=playback_jobs.recv()=> {
+                let Some(job) = job else { break; };
+                let result = tokio::select! {
+                    _ = cancel.cancelled() => Err(ApiError::new(ErrorCode::Closed)),
+                    result = engine.media_file(job.track_id, job.source_id, &job.cancel) => result.map_err(ApiError::from),
+                }.and_then(|(file, _, _)| {
+                    vault_media::RemoteStream::new(engine.transport_clone(), file)
+                        .map(|remote| vault_media::PlaybackInput::Remote(remote.with_lifetime(cancel.clone())))
+                        .map_err(ApiError::from)
+                });
+                refresh(&mut engine, &context, &events, &status, &mut last_cursor).await;
+                let _ = job.reply.send(result);
+            },
             job=jobs.recv()=> {
                 let Some(job)=job else {break};
                 let download_id = match &job.request {

@@ -125,11 +125,17 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
 - Added `vault-media`: Lofty metadata/artwork inspection, stable staged import,
   SHA-256 duplicate review, Telegram document upload followed by track registration,
   local cache quota/LRU/pins/leases, and desktop Rodio playback controls.
-- Desktop playback was checked against generated PCM WAV data without requiring an
-  audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
-  Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
-  volume controls; the decoder retains an active cache lease and emits state events.
-- The 2026-10-22 full backend gate reports 67 workspace tests passed and one native
+- Desktop playback uses a dedicated decoder worker and a bounded PCM queue; the
+  audio callback never waits on network or disk. A seekable 256 KiB remote reader
+  with one-range prefetch feeds uncached tracks from Telegram. Tests prove playback
+  starts before full download, seeks across ranges in both directions, retries
+  transient failures, cancels delayed reads and releases leases on stop. Generated
+  WAV, MP3, FLAC, M4A/AAC and Ogg/Vorbis audio all decode and seek through this path
+  without audio hardware. `buffering` is explicit and silence does not advance the
+  track position. Streamed prefixes are never labeled verified full cache entries.
+  The CLI keeps playback alive with in-process controls. Audible hardware output
+  and actual Telegram account streaming have not been exercised.
+- The 2026-10-22 full backend gate reports 83 workspace tests passed and one native
   TDLib smoke test ignored by default; the separate opt-in run against pinned
   tdjson 1.8.69 also passes. Formatting, workspace check, all-target clippy with
   denied warnings, CLI smoke and all three API schema comparisons pass.
@@ -164,7 +170,7 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: streaming playback, Android native layers, CI/platform builds,
+Remaining: real-account and hardware streaming verification, Android native layers, CI/platform builds,
 larger end-to-end history profiling and expanded chaos/load tests. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.

@@ -221,7 +221,7 @@ impl Backend {
         track_id: Uuid,
         source_id: Uuid,
     ) -> Result<(), ApiError> {
-        let (reader, cache) = {
+        let (reader, cache, service) = {
             let guard = self.session.lock().await;
             let session = guard
                 .as_ref()
@@ -233,6 +233,7 @@ impl Backend {
                     .clone()
                     .ok_or_else(|| ApiError::new(ErrorCode::NoVault))?,
                 session.cache.clone(),
+                session.service.clone(),
             )
         };
         let state = reader.state().await.map_err(ApiError::from)?;
@@ -241,10 +242,19 @@ impl Backend {
             .get(&track_id)
             .filter(|track| track.sources.contains_key(&source_id))
             .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
-        let lease = cache
-            .acquire(&format!("{track_id}:{source_id}"))
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::new(ErrorCode::MediaUnavailable))?;
+        let key = format!("{track_id}:{source_id}");
+        let lease = tokio::task::spawn_blocking(move || cache.acquire(&key))
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::Internal))??;
+        let input = match lease {
+            Some(lease) => vault_media::PlaybackInput::Cached(lease),
+            None => {
+                service
+                    .ok_or_else(|| ApiError::new(ErrorCode::MediaUnavailable))?
+                    .playback_input(track_id, source_id, &CancellationToken::new())
+                    .await?
+            }
+        };
         let duration_ms = track.metadata.duration_ms;
         let mut guard = self.session.lock().await;
         let session = guard
@@ -252,7 +262,9 @@ impl Backend {
             .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
         check_session(session, session_id)?;
         if session.playback.is_none() {
-            let engine = vault_media::PlaybackEngine::open().map_err(ApiError::from)?;
+            let engine = tokio::task::spawn_blocking(vault_media::PlaybackEngine::open)
+                .await
+                .map_err(|_| ApiError::new(ErrorCode::Internal))??;
             let mut changes = engine.state_changes();
             let events = self.events.clone();
             let context = session.context.clone();
@@ -271,7 +283,7 @@ impl Backend {
             .as_ref()
             .ok_or_else(|| ApiError::new(ErrorCode::Internal))?;
         playback
-            .play(track_id, lease, duration_ms)
+            .play_input(track_id, input, duration_ms)
             .map_err(ApiError::from)?;
         Ok(())
     }
@@ -860,6 +872,7 @@ impl Backend {
                 .as_mut()
                 .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
             check_session(s, session_id)?;
+            close_playback(s.playback.take()).await?;
             if let Some(service) = s.service.take() {
                 service.shutdown().await?;
             }
@@ -877,6 +890,7 @@ impl Backend {
                 .as_mut()
                 .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
             check_session(session, session_id)?;
+            close_playback(session.playback.take()).await?;
             if let Some(service) = session.service.take() {
                 service.shutdown().await?;
             }
@@ -901,11 +915,20 @@ impl Backend {
     }
 }
 async fn close_session(mut session: Session) -> Result<(), ApiError> {
+    close_playback(session.playback.take()).await?;
     if let Some(service) = session.service.take() {
         service.shutdown().await?;
     }
     if let Some(native) = session.native.take() {
         native.client.close().await.map_err(ApiError::from)?;
+    }
+    Ok(())
+}
+async fn close_playback(playback: Option<vault_media::PlaybackEngine>) -> Result<(), ApiError> {
+    if let Some(playback) = playback {
+        tokio::task::spawn_blocking(move || drop(playback))
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::Internal))?;
     }
     Ok(())
 }

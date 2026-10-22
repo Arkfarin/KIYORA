@@ -27,7 +27,7 @@ the domain/protocol contract are decimal strings so JavaScript does not round th
 | `backend_playlists` | `session_id`, page fields | local projection page |
 | `backend_vault_request` | `session_id`, typed request | typed operation result |
 | `backend_export_backup` | `session_id`, `path`, `kind` (`metadata` or `full`) | verified archive summary |
-| `backend_play_track` | `session_id`, `track_id`, `source_id` | unit; starts local playback |
+| `backend_play_track` | `session_id`, `track_id`, `source_id` | unit; queues cached or remote streaming playback |
 | `backend_playback_state` | `session_id` | current playback state |
 | `backend_control_playback` | `session_id`, tagged action | updated playback state |
 | `backend_logout` | `session_id` | revoke this profile's Telegram authorization |
@@ -62,10 +62,15 @@ Cache clearing skips active downloads and files leased by playback. A competing
 writer for the same source returns `CONFLICT`. Sharing rejects unrelated control records and checks TDLib forward
 permission. Shared library writes require `ONLINE_READY`; local projection reads
 and cache clearing remain available while offline.
-Playback opens an OS output device and retains a verified cache lease while the
-decoder uses the file. `backend_play_track` requires the selected track/source to
-be fully cached; use `download_for_offline` first. Pause, resume, stop, seek, and
-volume controls emit contextual `playback.state` events. Android playback remains
+Playback opens an OS output device. A complete cached track/source retains a cache
+lease while the decoder uses it; otherwise the service resolves the registered
+source online and reads bounded Telegram ranges. Decoding runs on a separate
+worker feeding a bounded PCM queue. `buffering` reports the track, position and
+duration while waiting for audio; underflow silence does not advance track
+position. Pause, resume, stop, seek, and volume controls emit contextual
+`playback.state` events. Streamed prefixes are not marked fully cached: explicit
+offline download remains the path to whole-file integrity verification and
+offline availability. Closing a profile cancels its remote readers. Android playback remains
 unavailable until its native audio context is wired.
 
 Backend events are emitted on `kiyora://backend`. Each event includes the profile
@@ -75,6 +80,10 @@ profile. Consumers must discard events whose session ID is no longer current.
 The CLI is a second adapter over the same `vault-core` services. Run
 `kiyora-cli --help` for its command list; it shares profile storage, session
 guards, API errors, sync and mutation logic with Tauri.
+`kiyora-cli playback play <track-id> <source-id>` stays running until the track
+ends or is stopped. Type `pause`, `resume`, `seek <ms>`, `volume <0..1>`, or `stop`
+in that process; Ctrl-C also stops playback. A separate CLI process has no access
+to the active process's audio engine.
 
 This contract describes implemented commands. Download jobs are cancellable while
 the process is running; completed ranged chunks resume after process exit and are

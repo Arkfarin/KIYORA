@@ -1,6 +1,10 @@
-use crate::{CacheLease, MediaError};
+use crate::{CacheLease, MediaError, PlaybackInput, pcm::PcmController};
 use serde::{Deserialize, Serialize};
-use std::{fs::File, io::BufReader, path::Path, time::Duration};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::{fs::File, io::BufReader, path::Path};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -21,6 +25,11 @@ pub enum PlaybackError {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PlaybackState {
     Idle,
+    Buffering {
+        track_id: Uuid,
+        position_ms: u64,
+        duration_ms: u64,
+    },
     Playing {
         track_id: Uuid,
         position_ms: u64,
@@ -43,11 +52,13 @@ pub enum PlaybackState {
 pub struct PlaybackEngine {
     commands: std::sync::mpsc::SyncSender<Command>,
     state: watch::Receiver<PlaybackState>,
+    closing: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 enum Command {
     Play {
         track: Uuid,
-        lease: CacheLease,
+        input: PlaybackInput,
         duration_ms: u64,
     },
     Pause,
@@ -63,7 +74,9 @@ impl PlaybackEngine {
         let (tx, rx) = std::sync::mpsc::sync_channel(32);
         let (state_tx, state) = watch::channel(PlaybackState::Idle);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
+        let closing = Arc::new(AtomicBool::new(false));
+        let closed = closing.clone();
+        let worker = std::thread::Builder::new()
             .name("kiyora-audio".into())
             .spawn(move || {
                 let stream = match rodio::OutputStreamBuilder::open_default_stream() {
@@ -79,34 +92,28 @@ impl PlaybackEngine {
                 };
                 let _ = ready_tx.send(true);
                 let mut sink: Option<rodio::Sink> = None;
-                let mut active: Option<(Uuid, CacheLease, u64)> = None;
+                let mut active: Option<(Uuid, PcmController, u64)> = None;
                 let mut paused = false;
                 let mut volume = 1.0f32;
-                loop {
+                while !closed.load(Ordering::Acquire) {
                     match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                         Ok(Command::Play {
                             track,
-                            lease,
+                            input,
                             duration_ms,
                         }) => {
                             if let Some(old) = sink.take() {
                                 old.stop();
                             }
                             active = None;
-                            match File::open(&lease.path)
-                                .map(BufReader::new)
-                                .map_err(|_| PlaybackError::Decode)
-                                .and_then(|file| {
-                                    rodio::Decoder::try_from(file)
-                                        .map_err(|_| PlaybackError::Decode)
-                                }) {
-                                Ok(decoder) => {
+                            match PcmController::start(input, duration_ms) {
+                                Ok((controller, source)) => {
                                     let next = rodio::Sink::connect_new(stream.mixer());
                                     next.set_volume(volume);
-                                    next.append(decoder);
+                                    next.append(source);
                                     next.play();
                                     sink = Some(next);
-                                    active = Some((track, lease, duration_ms));
+                                    active = Some((track, controller, duration_ms));
                                     paused = false;
                                 }
                                 Err(_) => {
@@ -139,14 +146,17 @@ impl PlaybackEngine {
                             state_tx.send_replace(PlaybackState::Idle);
                         }
                         Ok(Command::Seek(position)) => {
-                            if let Some(current) = &sink
-                                && current.try_seek(Duration::from_millis(position)).is_err()
-                                && let Some((track, _, _)) = &active
+                            if let Some((track, controller, _)) = &active
+                                && controller.seek(position).is_err()
                             {
+                                if let Some(current) = sink.take() {
+                                    current.stop();
+                                }
                                 state_tx.send_replace(PlaybackState::Failed {
                                     track_id: Some(*track),
                                     code: "SEEK_ERROR".into(),
                                 });
+                                active = None;
                             }
                         }
                         Ok(Command::Volume(value)) => {
@@ -159,13 +169,31 @@ impl PlaybackEngine {
                         | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    if let (Some(current), Some((track, _, duration_ms))) = (&sink, &active) {
-                        let position_ms =
-                            u64::try_from(current.get_pos().as_millis()).unwrap_or(u64::MAX);
+                    if let (Some(current), Some((track, controller, duration_ms))) =
+                        (&sink, &active)
+                    {
+                        let position_ms = controller.position_ms();
+                        if let Some(code) = controller.failure() {
+                            let track_id = *track;
+                            current.stop();
+                            sink = None;
+                            active = None;
+                            state_tx.send_replace(PlaybackState::Failed {
+                                track_id: Some(track_id),
+                                code: code.into(),
+                            });
+                            continue;
+                        }
                         let value = if current.empty() {
                             PlaybackState::Idle
                         } else if paused {
                             PlaybackState::Paused {
+                                track_id: *track,
+                                position_ms,
+                                duration_ms: *duration_ms,
+                            }
+                        } else if controller.buffering() {
+                            PlaybackState::Buffering {
                                 track_id: *track,
                                 position_ms,
                                 duration_ms: *duration_ms,
@@ -185,6 +213,11 @@ impl PlaybackEngine {
                         }
                     }
                 }
+                if let Some(sink) = sink {
+                    sink.stop();
+                }
+                drop(active);
+                state_tx.send_replace(PlaybackState::Idle);
             })
             .map_err(|_| PlaybackError::DeviceUnavailable)?;
         if !ready_rx
@@ -196,6 +229,8 @@ impl PlaybackEngine {
         Ok(Self {
             commands: tx,
             state,
+            closing,
+            worker: Some(worker),
         })
     }
     #[cfg(target_os = "android")]
@@ -214,9 +249,17 @@ impl PlaybackEngine {
         lease: CacheLease,
         duration_ms: u64,
     ) -> Result<(), PlaybackError> {
+        self.play_input(track, PlaybackInput::Cached(lease), duration_ms)
+    }
+    pub fn play_input(
+        &self,
+        track: Uuid,
+        input: PlaybackInput,
+        duration_ms: u64,
+    ) -> Result<(), PlaybackError> {
         self.send(Command::Play {
             track,
-            lease,
+            input,
             duration_ms,
         })
     }
@@ -239,6 +282,7 @@ impl PlaybackEngine {
         self.send(Command::Volume(volume.clamp(0.0, 1.0)))
     }
     pub fn shutdown(&self) {
+        self.closing.store(true, Ordering::Release);
         let _ = self.commands.try_send(Command::Shutdown);
     }
     fn send(&self, command: Command) -> Result<(), PlaybackError> {
@@ -249,7 +293,10 @@ impl PlaybackEngine {
 }
 impl Drop for PlaybackEngine {
     fn drop(&mut self) {
-        let _ = self.commands.try_send(Command::Shutdown);
+        self.shutdown();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 

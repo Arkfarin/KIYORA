@@ -1393,6 +1393,37 @@
             "state": {
               "type": "string",
               "enum": [
+                "buffering"
+              ]
+            },
+            "track_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "duration_ms",
+            "position_ms",
+            "state",
+            "track_id"
+          ],
+          "properties": {
+            "duration_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "position_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "state": {
+              "type": "string",
+              "enum": [
                 "playing"
               ]
             },

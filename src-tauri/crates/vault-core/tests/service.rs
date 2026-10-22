@@ -797,3 +797,66 @@ async fn full_backup_restores_to_empty_vault_with_new_track_and_media_references
     assert_eq!(server.messages().unwrap(), before_retry);
     service.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn streaming_input_resolves_registered_source_and_expires_with_session() {
+    use std::io::Read;
+    let (server, binding) = fixture().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cache = vault_media::CacheManager::open(dir.path().join("cache"), 2_000_000).unwrap();
+    let service = service_with_cache(&server, binding, EventBus::default(), cache.clone());
+    ready(&service).await;
+    let path = dir.path().join("stream.wav");
+    let bytes = wav_fixture();
+    std::fs::write(&path, &bytes).unwrap();
+    let track_id = Uuid::new_v4();
+    let source_id = Uuid::new_v4();
+    service
+        .request(
+            VaultRequest::Import {
+                path: path.to_string_lossy().into_owned(),
+                track_id,
+                source_id,
+                op_id: Uuid::new_v4(),
+                allow_duplicate: false,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        service
+            .playback_input(track_id, Uuid::new_v4(), &CancellationToken::new())
+            .await
+            .is_err()
+    );
+    let input = service
+        .playback_input(track_id, source_id, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(cache.entries().unwrap().is_empty());
+    let vault_media::PlaybackInput::Remote(stream) = input else {
+        panic!("expected remote source");
+    };
+    let read_stream = stream.clone();
+    let observed = tokio::task::spawn_blocking(move || {
+        let mut reader = read_stream.reader(CancellationToken::new());
+        let mut bytes = [0u8; 12];
+        reader.read_exact(&mut bytes).unwrap();
+        bytes
+    })
+    .await
+    .unwrap();
+    assert_eq!(observed, bytes[..12]);
+    service.shutdown().await.unwrap();
+    assert!(
+        tokio::task::spawn_blocking(move || {
+            stream
+                .reader(CancellationToken::new())
+                .read_exact(&mut [0u8; 12])
+        })
+        .await
+        .unwrap()
+        .is_err()
+    );
+}
