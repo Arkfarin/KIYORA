@@ -17,7 +17,7 @@ pub enum PlaybackError {
     #[error(transparent)]
     Media(#[from] MediaError),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PlaybackState {
     Idle,

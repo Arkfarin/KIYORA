@@ -9,7 +9,7 @@ use vault_protocol::{Barrier, Record, encode_text};
 use vault_snapshot::{Recovery, SnapshotError};
 use vault_telegram::{RemoteMessage, Telegram, TelegramError, Update, scan_history};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RuntimeMode {
     AuthRequired,
@@ -40,12 +40,13 @@ pub enum SyncError {
     #[error("database worker failed")]
     Worker,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RuntimeStatus {
     pub mode: RuntimeMode,
     pub vault_id: Uuid,
     pub generation: u64,
     pub cursor: String,
+    #[schemars(with = "Option<String>")]
     pub verified_commit_id: Option<MessageId>,
 }
 

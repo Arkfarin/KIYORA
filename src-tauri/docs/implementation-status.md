@@ -32,9 +32,9 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   NDK or Windows linker is installed. `scripts/check-backend.sh` runs the complete
   portable Rust check suite and runs the native TDLib lifecycle smoke when
   `KIYORA_TDJSON` is set.
-- The generated API request schema covers typed vault operations and playback
-  controls; a canonical TMV EVT schema envelope and byte fixture are also checked
-  in. Response/event DTO schemas still need coverage.
+- Generated request, response/error, and backend event schemas cover the typed
+  application boundary; a canonical TMV EVT schema envelope and byte fixture are
+  also checked in.
 - No tdjson registered with ldconfig; no explicitly supplied test-account config.
 - Real Telegram operations are opt-in only; existing personal sessions are not used.
 
@@ -127,7 +127,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: Android native layers, response/event schema generation, CI/platform builds,
+Remaining: Android native layers, CI/platform builds,
 expanded chaos/load tests and final acceptance traceability. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.

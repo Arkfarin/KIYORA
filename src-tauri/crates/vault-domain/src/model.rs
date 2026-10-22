@@ -147,7 +147,7 @@ impl Action {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Event {
     pub vault_id: Uuid,
@@ -165,35 +165,39 @@ pub struct SharedSettings {
     pub display_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Track {
     pub track_id: Uuid,
     pub metadata: Metadata,
     pub sources: BTreeMap<Uuid, Source>,
+    #[schemars(with = "String")]
     pub updated_order: MessageId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Playlist {
     pub playlist_id: Uuid,
     pub title: String,
+    #[schemars(with = "String")]
     pub created_order: MessageId,
+    #[schemars(with = "String")]
     pub updated_order: MessageId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlaylistEntry {
     pub entry_id: Uuid,
     pub playlist_id: Uuid,
     pub track_id: Uuid,
     pub after_entry_id: Option<Uuid>,
+    #[schemars(with = "String")]
     pub order_key: MessageId,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Tombstones {
     pub tracks: BTreeSet<Uuid>,
@@ -201,7 +205,7 @@ pub struct Tombstones {
     pub entries: BTreeSet<Uuid>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "status", content = "reason", rename_all = "snake_case")]
 pub enum Outcome {
     Applied,
@@ -209,7 +213,7 @@ pub enum Outcome {
     NoOp(NoOpReason),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RejectReason {
     Deleted,
@@ -220,7 +224,7 @@ pub enum RejectReason {
     FutureGeneration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NoOpReason {
     AlreadyExists,

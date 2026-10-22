@@ -424,7 +424,7 @@ impl Database {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CommandStatus {
     Created,
@@ -461,10 +461,11 @@ impl CommandStatus {
         )
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Command {
     pub intent: Event,
     pub status: CommandStatus,
+    #[schemars(with = "Option<String>")]
     pub server_message_id: Option<MessageId>,
     pub outcome: Option<Outcome>,
 }

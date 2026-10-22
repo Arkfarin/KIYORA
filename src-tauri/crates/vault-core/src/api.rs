@@ -6,7 +6,7 @@ use vault_snapshot::{Recovery, gc::GcProgress};
 use vault_sync::{RuntimeMode, RuntimeStatus, SyncError};
 use vault_telegram::TelegramError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     AuthRequired,
@@ -32,7 +32,9 @@ pub enum ErrorCode {
 }
 
 /// Deliberately contains no raw server messages, credentials or filesystem paths.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error, schemars::JsonSchema,
+)]
 #[error("{message}")]
 #[serde(deny_unknown_fields)]
 pub struct ApiError {
@@ -171,7 +173,7 @@ pub struct Context {
     pub vault_id: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
     pub context: Context,
@@ -270,15 +272,17 @@ pub enum VaultRequest {
     },
     Mutate(Box<Mutation>),
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SnapshotInfo {
+    #[schemars(with = "String")]
     pub commit_id: MessageId,
+    #[schemars(with = "String")]
     pub barrier_id: MessageId,
     pub generation: u64,
     pub primary_healthy: bool,
     pub backup_healthy: bool,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DownloadState {
     RemoteOnly,
@@ -288,7 +292,7 @@ pub enum DownloadState {
     FailedPermanent,
     Cancelled,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DownloadInfo {
     pub download_id: Uuid,
@@ -309,7 +313,7 @@ impl From<Recovery> for SnapshotInfo {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "result", rename_all = "snake_case")]
 pub enum VaultResponse {
     Synced,
@@ -324,7 +328,9 @@ pub enum VaultResponse {
         duplicate_track_ids: Vec<Uuid>,
     },
     Shared {
+        #[schemars(with = "String")]
         recipient_chat_id: ChatId,
+        #[schemars(with = "String")]
         message_id: MessageId,
     },
     Download(DownloadInfo),

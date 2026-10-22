@@ -5089,6 +5089,7 @@ dependencies = [
  "hex",
  "proptest",
  "rusqlite",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",
@@ -5120,6 +5121,7 @@ dependencies = [
  "hex",
  "lofty",
  "rodio",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",
@@ -5171,6 +5173,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "proptest",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",
@@ -5192,6 +5195,7 @@ name = "vault-sync"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "tempfile",
@@ -5213,6 +5217,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "libloading 0.8.9",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "tempfile",

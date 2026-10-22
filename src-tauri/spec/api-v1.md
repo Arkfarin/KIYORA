@@ -1,8 +1,8 @@
 # Kiyora backend API v1
 
-The generated typed request schema is `spec/schema/backend-request-v1.schema.json`.
-Regenerate it with `cargo run -p vault-core --example generate-api-schema`; the
-backend check script verifies the checked-in schema has not drifted.
+Generated request, response/error, and event schemas live in `spec/schema/`.
+Regenerate them with `cargo run -p vault-core --example generate-api-schema`; the
+backend check script verifies the checked-in schemas have not drifted.
 
 The Tauri v2 adapter exposes the commands below. Every session-scoped call takes
 `session_id` from the current `Status.context`; a stale ID is rejected after a

@@ -6,7 +6,7 @@ use uuid::Uuid;
 use vault_db::Command;
 use vault_telegram::AuthStatus;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "name", content = "payload")]
 pub enum EventData {
     #[serde(rename = "runtime.mode.changed")]
@@ -23,7 +23,9 @@ pub enum EventData {
     Command(Box<Command>),
     #[serde(rename = "share.result")]
     Share {
+        #[schemars(with = "String")]
         recipient_chat_id: vault_domain::ChatId,
+        #[schemars(with = "String")]
         message_id: vault_domain::MessageId,
     },
     #[serde(rename = "download.progress")]
@@ -46,7 +48,7 @@ pub enum EventData {
     #[serde(rename = "vault.warning")]
     Warning(ApiError),
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BackendEvent {
     /// Decimal string avoids JavaScript precision loss across a long-lived process.
     pub sequence: String,

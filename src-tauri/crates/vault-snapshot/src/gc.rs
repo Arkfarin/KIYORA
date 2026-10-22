@@ -7,22 +7,25 @@ use vault_domain::{MessageId, State};
 use vault_protocol::{CopyLabel, Record, canonical_json, encode};
 use vault_telegram::RemoteMessage;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Candidate {
+    #[schemars(with = "String")]
     pub message_id: MessageId,
     pub kind: String,
     pub record_sha256: String,
     pub reason: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GcPlan {
     pub plan_id: Uuid,
     pub vault_id: Uuid,
     pub coordinator: String,
+    #[schemars(with = "String")]
     pub commit_id: MessageId,
     pub generation: u64,
+    #[schemars(with = "String")]
     pub barrier_id: MessageId,
     pub candidates: Vec<Candidate>,
 }
@@ -33,14 +36,15 @@ impl GcPlan {
         ))
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GcProgress {
     pub plan: GcPlan,
+    #[schemars(with = "BTreeSet<String>")]
     pub completed: BTreeSet<MessageId>,
     pub status: GcStatus,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GcStatus {
     Planned,

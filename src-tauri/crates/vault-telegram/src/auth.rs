@@ -37,7 +37,7 @@ impl TdParameters {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AuthStatus {
     ParametersRequired,
