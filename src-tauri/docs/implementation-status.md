@@ -28,6 +28,13 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
 - RFC found at `~/Downloads/telegram_music_architecture_ru.md`; copied into spec.
 - Linux x86_64, system Rust/Cargo 1.99.1, GTK/WebKit/ALSA development packages present.
 - `rustup` unavailable; Windows and Android toolchains not yet verified.
+- The installed Rust sysroot contains only `x86_64-unknown-linux-gnu`; no Android
+  NDK or Windows linker is installed. `scripts/check-backend.sh` runs the complete
+  portable Rust check suite and runs the native TDLib lifecycle smoke when
+  `KIYORA_TDJSON` is set.
+- The generated API request schema covers typed vault operations and playback
+  controls; a canonical TMV EVT schema envelope and byte fixture are also checked
+  in. Response/event DTO schemas still need coverage.
 - No tdjson registered with ldconfig; no explicitly supplied test-account config.
 - Real Telegram operations are opt-in only; existing personal sessions are not used.
 
@@ -97,7 +104,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
   Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
   volume controls; the decoder retains an active cache lease and emits state events.
-- Full `cargo test --workspace` now passes 52 tests; one native TDLib smoke test is
+- Full `cargo test --workspace` now passes 53 tests; one native TDLib smoke test is
   opt-in/ignored by default. `cargo check --workspace` passes.
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
@@ -120,7 +127,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: Android native layers, generated schema/fixtures, CI/platform builds,
+Remaining: Android native layers, response/event schema generation, CI/platform builds,
 expanded chaos/load tests and final acceptance traceability. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.

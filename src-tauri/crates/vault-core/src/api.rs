@@ -163,7 +163,7 @@ impl From<vault_media::PlaybackError> for ApiError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
     pub profile_id: Uuid,
@@ -179,7 +179,7 @@ pub struct Status {
     pub vault: Option<RuntimeStatus>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mutation {
     pub op_id: Uuid,
@@ -187,7 +187,7 @@ pub struct Mutation {
     pub action: Action,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -202,7 +202,7 @@ pub enum PlaybackAction {
     SetVolume(f32),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     content = "payload",
@@ -230,7 +230,9 @@ pub enum VaultRequest {
         allow_duplicate: bool,
     },
     ImportIncomingAudio {
+        #[schemars(with = "String")]
         source_chat_id: ChatId,
+        #[schemars(with = "String")]
         message_id: MessageId,
         track_id: Uuid,
         source_id: Uuid,
@@ -263,6 +265,7 @@ pub enum VaultRequest {
     ShareTrack {
         track_id: Uuid,
         source_id: Uuid,
+        #[schemars(with = "String")]
         recipient_chat_id: ChatId,
     },
     Mutate(Box<Mutation>),

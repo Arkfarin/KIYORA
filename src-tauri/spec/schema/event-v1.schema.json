@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kiyora.invalid/schema/event-v1.schema.json",
+  "title": "TMV protocol v1 event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["magic", "protocol", "type", "vault_id", "op_id", "device_id", "base_generation", "entity_id", "action", "payload"],
+  "properties": {
+    "magic": {"const": "TMV"},
+    "protocol": {"const": 1},
+    "type": {"const": "EVT"},
+    "vault_id": {"$ref": "#/$defs/uuid"},
+    "op_id": {"$ref": "#/$defs/uuid"},
+    "device_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "base_generation": {"type": "integer", "minimum": 0},
+    "entity_id": {"$ref": "#/$defs/uuid"},
+    "action": {"enum": ["track.register", "track.metadata.update", "track.delete", "playlist.create", "playlist.rename", "playlist.delete", "playlist.track.add", "playlist.track.remove", "playlist.entry.move", "favorite.set", "source.relink", "vault.settings.update"]},
+    "payload": {"type": "object"}
+  },
+  "$defs": {
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
+  }
+}

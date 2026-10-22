@@ -5061,6 +5061,7 @@ name = "vault-core"
 version = "0.1.0"
 dependencies = [
  "rpassword",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "tempfile",
@@ -5104,6 +5105,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "proptest",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",

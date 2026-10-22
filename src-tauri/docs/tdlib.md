@@ -15,6 +15,10 @@ path when starting kiyora. The library is dynamically loaded, so normal Rust tes
 do not need it. TDLib uses the Boost Software License 1.0; keep upstream license
 files with packaged native binaries.
 
+Run `bash scripts/check-backend.sh` for formatting, workspace compilation, Clippy
+and all offline tests. When `KIYORA_TDJSON` is set, the script also runs the
+credential-free native lifecycle test.
+
 The credential-free native test is explicit:
 
 ```sh

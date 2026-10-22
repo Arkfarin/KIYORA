@@ -37,6 +37,30 @@ fn event_matches_rfc_flat_action_payload_and_roundtrips() {
 }
 
 #[test]
+fn checked_in_wire_fixture_matches_canonical_event_and_schema_contract() {
+    let fixture = include_str!("../../../spec/test-vectors/evt-playlist-create-v1.json")
+        .trim_end()
+        .as_bytes();
+    let record = decode(fixture).unwrap();
+    assert_eq!(record, event());
+    assert_eq!(encode(&record).unwrap(), fixture);
+
+    let schema: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../../../spec/schema/event-v1.schema.json"))
+            .unwrap();
+    assert_eq!(schema["properties"]["magic"]["const"], "TMV");
+    assert_eq!(schema["properties"]["protocol"]["const"], 1);
+    assert_eq!(schema["properties"]["type"]["const"], "EVT");
+    assert_eq!(
+        schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .len(),
+        12
+    );
+}
+
+#[test]
 fn unknown_version_action_field_and_duplicate_keys_fail_closed() {
     let encoded = encode(&event()).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();

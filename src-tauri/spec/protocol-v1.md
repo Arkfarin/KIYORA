@@ -2,6 +2,10 @@
 
 Normative base: [RFC](telegram_music_architecture_ru.md), especially sections 3–10.
 Wire codecs: `vault-protocol`; domain payload schemas: `vault-domain::Action`.
+The JSON event envelope is documented in `schema/event-v1.schema.json`, and
+`test-vectors/evt-playlist-create-v1.json` is a canonical byte fixture exercised
+by the protocol integration tests. The Rust decoder applies stricter
+action-specific payload and invariant validation than this envelope schema.
 
 Service text/captions use `TMV/1 TYPE\n` followed by compact JSON with `magic=TMV`,
 `protocol=1`, `type=TYPE`, `vault_id`. JSON-only records are also accepted if they
