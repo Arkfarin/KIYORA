@@ -87,7 +87,8 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   secure auth-secret handling, vault discovery/attach/create/resume and shared
   service methods. Frontend files remain untouched.
 - Added `kiyora-cli` for profiles, auth, vault operations, sync, library/search,
-  playlists, snapshots, GC, backup verification/export, media import and diagnostics.
+  playlist show/add/remove/move, snapshots, GC, backup verification/restore/export,
+  local and incoming media import, playback controls and diagnostics.
   The CLI shares the same backend guards and profile store as Tauri.
 - Added `vault-media`: Lofty metadata/artwork inspection, stable staged import,
   SHA-256 duplicate review, Telegram document upload followed by track registration,

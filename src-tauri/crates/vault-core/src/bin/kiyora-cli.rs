@@ -59,6 +59,10 @@ fn print_help() {
         "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
     );
     println!("  media import-incoming <chat-id> <message-id>");
+    println!(
+        "  playlist show <id>|add <playlist-id> <track-id> [after-entry-id]|remove <entry-id>|move <entry-id> [after-entry-id]"
+    );
+    println!("  library favorite <track-id> <set-name> on|off");
 }
 async fn active(backend: &Backend) -> Result<Status, ApiError> {
     let id = backend
@@ -334,6 +338,30 @@ async fn library(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                 .await?;
             println!("removed track with {count} source(s); {response:?}");
         }
+        Some("favorite") => {
+            let track_id = parse_uuid(args.get(1))?;
+            let set_name = args
+                .get(2)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?
+                .clone();
+            let value = match args.get(3).map(String::as_str) {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
+            };
+            let result = backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::Mutate(Box::new(Mutation {
+                        op_id: Uuid::new_v4(),
+                        entity_id: track_id,
+                        action: Action::FavoriteSet { set_name, value },
+                    })),
+                    &CancellationToken::new(),
+                )
+                .await?;
+            println!("{result:?}");
+        }
         Some("import") => import(backend, &status, args).await?,
         Some("share") => {
             let track_id = parse_uuid(args.get(1))?;
@@ -576,6 +604,37 @@ async fn playlist(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
         }
         return Ok(());
     }
+    if op == "show" {
+        let playlist_id = parse_uuid(args.get(1))?;
+        let state = backend
+            .local_reader(status.context.session_id)
+            .await?
+            .state()
+            .await
+            .map_err(ApiError::from)?;
+        let playlist = state
+            .playlists
+            .get(&playlist_id)
+            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+        println!("{}\t{}", playlist.playlist_id, playlist.title);
+        let mut entries = state
+            .entries
+            .values()
+            .filter(|entry| entry.playlist_id == playlist_id)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.order_key);
+        for entry in entries {
+            let title = state
+                .tracks
+                .get(&entry.track_id)
+                .map(|track| track.metadata.title.as_str())
+                .unwrap_or("<missing track>");
+            println!("{}\t{}\t{}", entry.entry_id, entry.track_id, title);
+        }
+        return Ok(());
+    }
+    let reader = backend.local_reader(status.context.session_id).await?;
+    let state = reader.state().await.map_err(ApiError::from)?;
     let (entity, action) = match op {
         "create" => (
             Uuid::new_v4(),
@@ -596,6 +655,38 @@ async fn playlist(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
             },
         ),
         "delete" => (parse_uuid(args.get(1))?, Action::PlaylistDelete {}),
+        "add" => (
+            parse_uuid(args.get(1))?,
+            Action::PlaylistTrackAdd {
+                track_id: parse_uuid(args.get(2))?,
+                entry_id: Uuid::new_v4(),
+                after_entry_id: args
+                    .get(3)
+                    .map(|value| Uuid::parse_str(value))
+                    .transpose()
+                    .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?,
+            },
+        ),
+        "remove" | "move" => {
+            let entry_id = parse_uuid(args.get(1))?;
+            let entry = state
+                .entries
+                .get(&entry_id)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            let action = if op == "remove" {
+                Action::PlaylistTrackRemove { entry_id }
+            } else {
+                Action::PlaylistEntryMove {
+                    entry_id,
+                    after_entry_id: args
+                        .get(2)
+                        .map(|value| Uuid::parse_str(value))
+                        .transpose()
+                        .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?,
+                }
+            };
+            (entry.playlist_id, action)
+        }
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     };
     let result = backend
