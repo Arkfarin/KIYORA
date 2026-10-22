@@ -110,8 +110,9 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
   Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
   volume controls; the decoder retains an active cache lease and emits state events.
-- Full `cargo test --workspace` passes 54 tests; one native TDLib smoke test is
-  opt-in/ignored by default. `cargo check --workspace` passes.
+- Full `cargo test --workspace` reports 53 passed and one native TDLib smoke test
+  ignored by default; the opt-in run against pinned tdjson 1.8.69 passes.
+  `cargo check --workspace` passes.
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
 - Streaming/ranged Telegram downloads feed verified full files into the profile-local
