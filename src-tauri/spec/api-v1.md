@@ -28,10 +28,12 @@ the domain/protocol contract are decimal strings so JavaScript does not round th
 Secrets are moved into zeroizing values and persisted only through the OS secret
 store. `backend_vault_request` supports `sync`, `initialize`, `verify`, `snapshot`,
 GC planning/inspection/confirmed execution, media import with duplicate review,
-guarded event mutation, and `share_track` with one track/source and one explicit
-recipient chat. Sharing rejects non-media/control messages and checks TDLib
-forward permission. Shared library writes require `ONLINE_READY`; local
-projection reads remain available while offline.
+ranged offline download, download status/cancel, cache pin/clear, guarded event
+mutation, and `share_track` with one track/source and one explicit recipient chat.
+Downloads emit byte progress and enter cache only after complete size and SHA-256
+validation. Sharing rejects unrelated control records and checks TDLib forward
+permission. Shared library writes require `ONLINE_READY`; local projection reads
+and cache clearing remain available while offline.
 
 Backend events are emitted on `kiyora://backend`. Each event includes the profile
 and session context and a monotonically increasing sequence number scoped to that
@@ -41,5 +43,6 @@ The CLI is a second adapter over the same `vault-core` services. Run
 `kiyora-cli --help` for its command list; it shares profile storage, session
 guards, API errors, sync and mutation logic with Tauri.
 
-This contract describes implemented commands. Streaming download management and
-native Android playback/session commands are not part of v1 yet.
+This contract describes implemented commands. Download jobs are cancellable while
+the process is running; interrupted partial files are restarted after process exit.
+Native Android playback/session commands are not part of v1 yet.

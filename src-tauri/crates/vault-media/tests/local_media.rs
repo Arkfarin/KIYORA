@@ -2,7 +2,11 @@
 use sha2::{Digest, Sha256};
 use std::{io::Write, path::Path};
 use tempfile::tempdir;
-use vault_media::{CacheManager, MediaError, inspect};
+use tokio_util::sync::CancellationToken;
+use vault_domain::{ChatId, UserId};
+use vault_media::{CacheManager, DownloadOptions, MediaError, download_to_cache, inspect};
+use vault_telegram::Telegram;
+use vault_testkit::FakeServer;
 
 fn wav(path: &Path, frames: u32) {
     let samples = frames * 2;
@@ -104,4 +108,64 @@ fn cache_lease_prevents_clear_until_decoder_releases_file() {
     drop(lease);
     assert_eq!(cache.clear_unpinned().unwrap(), 11);
     assert!(cache.acquire("track").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn ranged_download_hashes_and_publishes_only_verified_complete_media() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("remote.bin");
+    let bytes = (0..1_600_000usize)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    std::fs::write(&source, &bytes).unwrap();
+    let chat = ChatId::new(-100).unwrap();
+    let server = FakeServer::new(chat, UserId::new(42).unwrap());
+    let telegram = server.client().unwrap();
+    let remote = telegram
+        .send_document(chat, source, String::new(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let file = remote.file.unwrap();
+    let cache = CacheManager::open(dir.path().join("cache"), 2_000_000).unwrap();
+    let progress = std::sync::Mutex::new(Vec::new());
+    let lease = download_to_cache(
+        &telegram,
+        &file,
+        &cache,
+        DownloadOptions {
+            cache_key: "track:source".into(),
+            expected_sha256: Some(hex::encode(Sha256::digest(&bytes))),
+            pinned: true,
+        },
+        &CancellationToken::new(),
+        &|done, total| progress.lock().unwrap().push((done, total)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&lease.path).unwrap(), bytes);
+    assert_eq!(lease.entry.size_bytes, 1_600_000);
+    assert!(lease.entry.pinned);
+    assert_eq!(
+        progress.lock().unwrap().last(),
+        Some(&(1_600_000, 1_600_000))
+    );
+    drop(lease);
+
+    assert!(
+        download_to_cache(
+            &telegram,
+            &file,
+            &cache,
+            DownloadOptions {
+                cache_key: "bad-digest".into(),
+                expected_sha256: Some("0".repeat(64)),
+                pinned: false,
+            },
+            &CancellationToken::new(),
+            &|_, _| {},
+        )
+        .await
+        .is_err()
+    );
+    assert!(cache.acquire("bad-digest").unwrap().is_none());
 }

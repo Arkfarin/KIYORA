@@ -87,6 +87,15 @@ impl<T: Telegram> SyncEngine<T> {
             binding: self.binding,
         }
     }
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+    pub fn transport_clone(&self) -> T
+    where
+        T: Clone,
+    {
+        self.transport.clone()
+    }
     pub fn subscribe(&self) -> broadcast::Receiver<Update> {
         self.transport.subscribe()
     }
@@ -548,6 +557,32 @@ impl<T: Telegram> SyncEngine<T> {
             .send_document(self.binding.chat_id, path, caption, cancel)
             .await
             .map_err(Into::into)
+    }
+    pub async fn media_file(
+        &mut self,
+        track_id: Uuid,
+        source_id: Uuid,
+        cancel: &CancellationToken,
+    ) -> Result<(vault_telegram::RemoteFile, Option<String>, u64), SyncError> {
+        self.require_online(cancel).await?;
+        let state = self.state().await?;
+        let source = state
+            .tracks
+            .get(&track_id)
+            .and_then(|track| track.sources.get(&source_id))
+            .filter(|source| source.chat_id == self.binding.chat_id)
+            .ok_or(SyncError::Integrity)?;
+        let message = self
+            .transport
+            .message(source.chat_id, source.message_id, cancel)
+            .await?
+            .ok_or(SyncError::Integrity)?;
+        let file = message.file.ok_or(SyncError::Integrity)?;
+        let size = u64::try_from(file.size).map_err(|_| SyncError::Integrity)?;
+        if source.size_bytes.is_some_and(|expected| expected != size) {
+            return Err(SyncError::Integrity);
+        }
+        Ok((file, source.sha256.clone(), size))
     }
     /// Shares only a registered source in this vault, after online reconciliation.
     /// TDLib independently checks the message forwarding permission and recipient.

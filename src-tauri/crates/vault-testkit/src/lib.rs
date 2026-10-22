@@ -22,6 +22,7 @@ pub struct Faults {
     pub flood_wait: Option<u64>,
     /// Fail before the Nth subsequent call (1 is next); may model a process crash.
     pub fail_call: Option<usize>,
+    pub download_delay_ms: u64,
 }
 struct Server {
     channel: ChannelInfo,
@@ -30,6 +31,7 @@ struct Server {
     messages: BTreeMap<MessageId, RemoteMessage>,
     files: BTreeMap<i32, Vec<u8>>,
     next_file: i32,
+    download_calls: usize,
     subscribers: Vec<broadcast::Sender<Update>>,
     delayed: VecDeque<Update>,
     shared: Vec<(ChatId, MessageId, ChatId)>,
@@ -56,6 +58,7 @@ impl FakeServer {
             messages: BTreeMap::new(),
             files: BTreeMap::new(),
             next_file: 1,
+            download_calls: 0,
             subscribers: Vec::new(),
             delayed: VecDeque::new(),
             shared: Vec::new(),
@@ -91,6 +94,9 @@ impl FakeServer {
     }
     pub fn shared_messages(&self) -> Result<Vec<(ChatId, MessageId, ChatId)>, TelegramError> {
         Ok(self.lock()?.shared.clone())
+    }
+    pub fn download_calls(&self) -> Result<usize, TelegramError> {
+        Ok(self.lock()?.download_calls)
     }
     pub fn corrupt_file(&self, file_id: i32) -> Result<(), TelegramError> {
         self.lock()?.files.insert(file_id, b"corrupt".to_vec());
@@ -282,6 +288,18 @@ impl Telegram for FakeTelegram {
         limit: i64,
         cancel: &CancellationToken,
     ) -> Result<DownloadedRange, TelegramError> {
+        let delay = {
+            let mut server = self.server.lock()?;
+            server.gate(cancel)?;
+            server.download_calls = server.download_calls.saturating_add(1);
+            server.faults.download_delay_ms
+        };
+        if delay > 0 {
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(TelegramError::Cancelled),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}
+            }
+        }
         let bytes = {
             let mut server = self.server.lock()?;
             server.gate(cancel)?;
@@ -304,6 +322,7 @@ impl Telegram for FakeTelegram {
             .map_err(|_| TelegramError::LocalFile)?;
         Ok(DownloadedRange {
             path,
+            file_offset: 0,
             offset,
             available: if limit == 0 {
                 size - offset

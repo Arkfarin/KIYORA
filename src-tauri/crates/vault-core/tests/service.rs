@@ -68,6 +68,27 @@ fn service(server: &FakeServer, binding: Binding, bus: EventBus) -> VaultService
         bus,
     )
 }
+fn service_with_cache(
+    server: &FakeServer,
+    binding: Binding,
+    bus: EventBus,
+    cache: vault_media::CacheManager,
+) -> VaultService {
+    VaultService::start_with_cache(
+        SyncEngine::new(
+            server.client().unwrap(),
+            Database::memory(binding).unwrap(),
+            "device".into(),
+        ),
+        Context {
+            profile_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            vault_id: None,
+        },
+        bus,
+        cache,
+    )
+}
 
 #[tokio::test]
 async fn live_services_converge_without_manual_sync_and_events_are_contextual() {
@@ -303,5 +324,221 @@ async fn import_uploads_verified_media_then_registers_and_requires_duplicate_rev
         matches!(duplicate,VaultResponse::ImportReview{ref duplicate_track_ids,..} if duplicate_track_ids==&vec![track])
     );
     assert_eq!(before, server.messages().unwrap());
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn offline_download_uses_verified_cache_progress_status_and_pin() {
+    let (server, binding) = fixture().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cache = vault_media::CacheManager::open(dir.path().join("cache"), 2_000_000).unwrap();
+    let service = service_with_cache(&server, binding, EventBus::default(), cache.clone());
+    ready(&service).await;
+    let path = dir.path().join("offline.wav");
+    let mut wav = Vec::new();
+    wav.extend(b"RIFF");
+    wav.extend(16036u32.to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend(1u16.to_le_bytes());
+    wav.extend(1u16.to_le_bytes());
+    wav.extend(8000u32.to_le_bytes());
+    wav.extend(16000u32.to_le_bytes());
+    wav.extend(2u16.to_le_bytes());
+    wav.extend(16u16.to_le_bytes());
+    wav.extend(b"data");
+    wav.extend(16000u32.to_le_bytes());
+    wav.extend(vec![0u8; 16000]);
+    std::fs::write(&path, wav).unwrap();
+    let track_id = Uuid::new_v4();
+    let source_id = Uuid::new_v4();
+    let imported = service
+        .request(
+            VaultRequest::Import {
+                path: path.to_string_lossy().into_owned(),
+                track_id,
+                source_id,
+                op_id: Uuid::new_v4(),
+                allow_duplicate: false,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(imported, VaultResponse::Command(_)));
+    service
+        .request(VaultRequest::Sync, &CancellationToken::new())
+        .await
+        .unwrap();
+
+    server
+        .set_faults(Faults {
+            download_delay_ms: 3_000,
+            ..Default::default()
+        })
+        .unwrap();
+    let cancelled_id = Uuid::new_v4();
+    let downloading = service.clone();
+    let cancellation = tokio::spawn(async move {
+        downloading
+            .request(
+                VaultRequest::DownloadForOffline {
+                    download_id: cancelled_id,
+                    track_id,
+                    source_id,
+                    pinned: true,
+                },
+                &CancellationToken::new(),
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let status = service
+                .request(
+                    VaultRequest::GetDownloadStatus {
+                        download_id: cancelled_id,
+                        track_id,
+                        source_id,
+                    },
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            if matches!(
+                status,
+                VaultResponse::Download(DownloadInfo {
+                    state: DownloadState::Downloading,
+                    ..
+                })
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while server.download_calls().unwrap() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    service
+        .request(
+            VaultRequest::CancelDownload {
+                download_id: cancelled_id,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        cancellation.await.unwrap().unwrap(),
+        VaultResponse::Download(DownloadInfo {
+            state: DownloadState::Downloading,
+            ..
+        })
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let status = service
+                .request(
+                    VaultRequest::GetDownloadStatus {
+                        download_id: cancelled_id,
+                        track_id,
+                        source_id,
+                    },
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            if matches!(
+                status,
+                VaultResponse::Download(DownloadInfo {
+                    state: DownloadState::Cancelled,
+                    ..
+                })
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(cache.entries().unwrap().is_empty());
+    server.set_faults(Faults::default()).unwrap();
+
+    let download_id = Uuid::new_v4();
+    let result = service
+        .request(
+            VaultRequest::DownloadForOffline {
+                download_id,
+                track_id,
+                source_id,
+                pinned: true,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        VaultResponse::Download(DownloadInfo {
+            state: DownloadState::Downloading,
+            pinned: true,
+            ..
+        })
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let status = service
+                .request(
+                    VaultRequest::GetDownloadStatus {
+                        download_id,
+                        track_id,
+                        source_id,
+                    },
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            if matches!(
+                status,
+                VaultResponse::Download(DownloadInfo {
+                    state: DownloadState::FullyCached,
+                    ..
+                })
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let status = service
+        .request(
+            VaultRequest::GetDownloadStatus {
+                download_id,
+                track_id,
+                source_id,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        status,
+        VaultResponse::Download(DownloadInfo {
+            state: DownloadState::FullyCached,
+            ..
+        })
+    ));
+    assert_eq!(cache.entries().unwrap().len(), 1);
+    assert_eq!(server.shared_messages().unwrap().len(), 0);
     service.shutdown().await.unwrap();
 }

@@ -94,13 +94,16 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   local cache quota/LRU/pins/leases, and desktop Rodio playback controls.
 - Desktop playback was checked against generated PCM WAV data without requiring an
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
-- Full `cargo test --workspace` now passes 54 tests; the real-account-free native
-  TDLib smoke test is opt-in/ignored by default. `cargo check --workspace` passes.
+- Full `cargo test --workspace` now passes 50 tests; one native TDLib smoke test is
+  opt-in/ignored by default. `cargo check --workspace` passes.
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
-- Streaming/ranged Telegram downloads are available in the adapter, but media
-  download progress/resume/cache coordination is not yet exposed as an application
-  service or CLI operation. Sharing now supports one explicitly selected registered
+- Streaming/ranged Telegram downloads feed verified full files into the profile-local
+  cache. Service requests expose byte progress, status, cancellation, pinning and
+  clearing unpinned cache; CLI supports offline download/cache clear and waits for
+  completion, sending cancellation on Ctrl-C. Downloads run outside the sync actor,
+  and shutdown cancels and joins active download tasks. Partial downloads restart
+  after process exit. Sharing supports one explicitly selected registered
   media source and recipient, checks TDLib `can_be_forwarded`, uses `forwardMessages`
   in copy mode with caption removed, rejects unrelated vault service records, and
   exposes a CLI/API result. Simulator integration confirms only the selected
@@ -110,9 +113,9 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   CLI restore execution flow remains incomplete. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: finish full workspace clippy after sharing changes; integrate media range
-download jobs/cache state, playback into application API, incoming-audio import, Android native
-layers, backup restore execution, generated schema/fixtures, CI/platform builds,
+Remaining: playback controls and cached-file lease into the application API,
+incoming-audio import, Android native layers, backup restore execution, generated
+schema/fixtures, CI/platform builds,
 expanded chaos/load tests and final acceptance traceability. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.

@@ -1,7 +1,12 @@
 use crate::*;
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 use vault_sync::{ProjectionReader, RuntimeMode, SyncEngine, SyncError};
 use vault_telegram::{Telegram, Update};
 
@@ -9,6 +14,12 @@ struct Job {
     request: VaultRequest,
     cancel: CancellationToken,
     reply: oneshot::Sender<Result<VaultResponse, ApiError>>,
+}
+struct DownloadJob {
+    cancel: CancellationToken,
+    info: DownloadInfo,
+    updated: Instant,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 struct Lifetime(CancellationToken);
 impl Drop for Lifetime {
@@ -26,12 +37,30 @@ pub struct VaultService {
     status: watch::Receiver<Status>,
     closed: watch::Receiver<bool>,
     lifetime: Arc<Lifetime>,
+    cache: Option<vault_media::CacheManager>,
+    downloads: Arc<Mutex<HashMap<Uuid, DownloadJob>>>,
 }
 impl VaultService {
-    pub fn start<T: Telegram + 'static>(
+    pub fn start<T: Telegram + Clone + 'static>(
+        engine: SyncEngine<T>,
+        context: Context,
+        events: EventBus,
+    ) -> Self {
+        Self::start_inner(engine, context, events, None)
+    }
+    pub fn start_with_cache<T: Telegram + Clone + 'static>(
+        engine: SyncEngine<T>,
+        context: Context,
+        events: EventBus,
+        cache: vault_media::CacheManager,
+    ) -> Self {
+        Self::start_inner(engine, context, events, Some(cache))
+    }
+    fn start_inner<T: Telegram + Clone + 'static>(
         engine: SyncEngine<T>,
         mut context: Context,
         events: EventBus,
+        cache: Option<vault_media::CacheManager>,
     ) -> Self {
         context.vault_id = Some(engine.binding().vault_id);
         let reader = engine.reader();
@@ -44,6 +73,7 @@ impl VaultService {
         });
         let (closed_tx, closed) = watch::channel(false);
         let cancel = CancellationToken::new();
+        let downloads = Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(run(
             engine,
             context.clone(),
@@ -53,6 +83,8 @@ impl VaultService {
             status_tx,
             closed_tx,
             cancel.clone(),
+            cache.clone(),
+            downloads.clone(),
         ));
         Self {
             context,
@@ -61,6 +93,8 @@ impl VaultService {
             status,
             closed,
             lifetime: Arc::new(Lifetime(cancel)),
+            cache,
+            downloads,
         }
     }
     pub fn context(&self) -> &Context {
@@ -86,21 +120,96 @@ impl VaultService {
         if cancel.is_cancelled() {
             return Err(ApiError::new(ErrorCode::Cancelled));
         }
+        match &request {
+            VaultRequest::GetDownloadStatus {
+                download_id,
+                track_id,
+                source_id,
+            } => {
+                return Ok(VaultResponse::Download(self.download_status(
+                    *download_id,
+                    *track_id,
+                    *source_id,
+                )?));
+            }
+            VaultRequest::CancelDownload { download_id } => {
+                self.cancel_download(*download_id)?;
+                let jobs = self
+                    .downloads
+                    .lock()
+                    .map_err(|_| ApiError::new(ErrorCode::Internal))?;
+                let info = jobs
+                    .get(download_id)
+                    .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?
+                    .info
+                    .clone();
+                return Ok(VaultResponse::Download(info));
+            }
+            _ => {}
+        }
         let token = self.lifetime.0.child_token();
         let guard = token.clone().drop_guard();
+        let download = match &request {
+            VaultRequest::DownloadForOffline {
+                download_id,
+                track_id,
+                pinned,
+                ..
+            } => Some((
+                *download_id,
+                DownloadInfo {
+                    download_id: *download_id,
+                    track_id: *track_id,
+                    state: DownloadState::Downloading,
+                    bytes_downloaded: 0,
+                    total_bytes: None,
+                    pinned: *pinned,
+                },
+            )),
+            _ => None,
+        };
+        let download_cancel = download.as_ref().map(|_| self.lifetime.0.child_token());
+        if let Some((id, info)) = &download {
+            let mut jobs = self
+                .downloads
+                .lock()
+                .map_err(|_| ApiError::new(ErrorCode::Internal))?;
+            if jobs.contains_key(id) {
+                return Err(ApiError::new(ErrorCode::Conflict));
+            }
+            prune_downloads(&mut jobs);
+            jobs.insert(
+                *id,
+                DownloadJob {
+                    cancel: download_cancel
+                        .as_ref()
+                        .cloned()
+                        .ok_or_else(|| ApiError::new(ErrorCode::Internal))?,
+                    info: info.clone(),
+                    updated: Instant::now(),
+                    task: None,
+                },
+            );
+        }
         let (reply, result) = oneshot::channel();
-        self.requests
-            .try_send(Job {
-                request,
-                cancel: token,
-                reply,
-            })
-            .map_err(|e| {
-                ApiError::new(match e {
-                    mpsc::error::TrySendError::Full(_) => ErrorCode::Backpressure,
-                    mpsc::error::TrySendError::Closed(_) => ErrorCode::Closed,
-                })
-            })?;
+        if let Err(error) = self.requests.try_send(Job {
+            request,
+            cancel: token,
+            reply,
+        }) {
+            if let Some(download_cancel) = &download_cancel {
+                download_cancel.cancel();
+            }
+            if let Some((id, _)) = &download
+                && let Ok(mut jobs) = self.downloads.lock()
+            {
+                jobs.remove(id);
+            }
+            return Err(ApiError::new(match error {
+                mpsc::error::TrySendError::Full(_) => ErrorCode::Backpressure,
+                mpsc::error::TrySendError::Closed(_) => ErrorCode::Closed,
+            }));
+        }
         let value = tokio::select! {
             _=cancel.cancelled()=>Err(ApiError::new(ErrorCode::Cancelled)),
             result=result=>result.map_err(|_|ApiError::new(ErrorCode::Closed))?
@@ -120,13 +229,92 @@ impl VaultService {
         })
         .await
         .map_err(|_| ApiError::new(ErrorCode::Timeout))?;
+        let tasks = {
+            let mut downloads = self
+                .downloads
+                .lock()
+                .map_err(|_| ApiError::new(ErrorCode::Internal))?;
+            downloads
+                .values_mut()
+                .filter_map(|job| job.task.take())
+                .collect::<Vec<_>>()
+        };
+        tokio::time::timeout(Duration::from_secs(35), async move {
+            for task in tasks {
+                let _ = task.await;
+            }
+        })
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Timeout))?;
         Ok(())
+    }
+    pub fn cancel_download(&self, id: Uuid) -> Result<(), ApiError> {
+        let jobs = self
+            .downloads
+            .lock()
+            .map_err(|_| ApiError::new(ErrorCode::Internal))?;
+        let job = jobs
+            .get(&id)
+            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+        if job.info.state != DownloadState::Downloading {
+            return Err(ApiError::new(ErrorCode::Conflict));
+        }
+        job.cancel.cancel();
+        Ok(())
+    }
+    pub fn download_status(
+        &self,
+        id: Uuid,
+        track_id: Uuid,
+        source_id: Uuid,
+    ) -> Result<DownloadInfo, ApiError> {
+        if let Ok(jobs) = self.downloads.lock()
+            && let Some(job) = jobs.get(&id)
+        {
+            return Ok(job.info.clone());
+        }
+        let key = media_cache_key(track_id, source_id);
+        if let Some(cache) = &self.cache
+            && let Some(lease) = cache.acquire(&key).map_err(ApiError::from)?
+        {
+            return Ok(DownloadInfo {
+                download_id: id,
+                track_id,
+                state: DownloadState::FullyCached,
+                bytes_downloaded: lease.entry.size_bytes,
+                total_bytes: Some(lease.entry.size_bytes),
+                pinned: lease.entry.pinned,
+            });
+        }
+        Ok(DownloadInfo {
+            download_id: id,
+            track_id,
+            state: DownloadState::RemoteOnly,
+            bytes_downloaded: 0,
+            total_bytes: None,
+            pinned: false,
+        })
+    }
+}
+
+fn prune_downloads(jobs: &mut HashMap<Uuid, DownloadJob>) {
+    if jobs.len() < 512 {
+        return;
+    }
+    let mut terminal = jobs
+        .iter()
+        .filter(|(_, job)| job.info.state != DownloadState::Downloading)
+        .map(|(id, job)| (*id, job.updated))
+        .collect::<Vec<_>>();
+    terminal.sort_by_key(|(_, updated)| *updated);
+    for (id, _) in terminal.into_iter().take(jobs.len().saturating_sub(384)) {
+        jobs.remove(&id);
     }
 }
 
 // The actor owns all mutable sync state and exclusively performs remote writes.
 #[allow(clippy::too_many_arguments)]
-async fn run<T: Telegram>(
+async fn run<T: Telegram + Clone + 'static>(
     mut engine: SyncEngine<T>,
     context: Context,
     events: EventBus,
@@ -135,6 +323,8 @@ async fn run<T: Telegram>(
     status: watch::Sender<Status>,
     closed: watch::Sender<bool>,
     cancel: CancellationToken,
+    cache: Option<vault_media::CacheManager>,
+    downloads: Arc<Mutex<HashMap<Uuid, DownloadJob>>>,
 ) {
     let mut last_cursor = String::new();
     let mut retry: Option<tokio::time::Instant> = None;
@@ -157,8 +347,15 @@ async fn run<T: Telegram>(
             _=cancel.cancelled()=>break,
             job=jobs.recv()=> {
                 let Some(job)=job else {break};
+                let download_id = match &job.request {
+                    VaultRequest::DownloadForOffline { download_id, .. } => Some(*download_id),
+                    _ => None,
+                };
                 let result=if job.cancel.is_cancelled(){Err(ApiError::new(ErrorCode::Cancelled))}
-                    else {handle(&mut engine,job.request,&job.cancel,&context,&events).await};
+                    else {handle(&mut engine,job.request,&job.cancel,&context,&events,cache.as_ref(),&downloads).await};
+                if let (Some(id), Err(error)) = (download_id, &result) {
+                    finish_download_error(id, error, &downloads, &context, &events);
+                }
                 if let Err(error)=&result {events.emit(&context,EventData::Warning(error.clone()));}
                 refresh(&mut engine,&context,&events,&status,&mut last_cursor).await;
                 schedule_retry(&engine,&mut retry,&mut backoff);
@@ -225,6 +422,44 @@ fn relevant(update: &Update, chat: vault_domain::ChatId) -> bool {
         _ => true,
     }
 }
+fn media_cache_key(track_id: Uuid, source_id: Uuid) -> String {
+    format!("{track_id}:{source_id}")
+}
+fn update_download(downloads: &Arc<Mutex<HashMap<Uuid, DownloadJob>>>, info: DownloadInfo) {
+    if let Ok(mut jobs) = downloads.lock()
+        && let Some(job) = jobs.get_mut(&info.download_id)
+    {
+        job.info = info;
+        job.updated = Instant::now();
+    }
+}
+fn finish_download_error(
+    id: Uuid,
+    error: &ApiError,
+    downloads: &Arc<Mutex<HashMap<Uuid, DownloadJob>>>,
+    context: &Context,
+    events: &EventBus,
+) {
+    let info = {
+        let Ok(mut jobs) = downloads.lock() else {
+            return;
+        };
+        let Some(job) = jobs.get_mut(&id) else { return };
+        if job.info.state != DownloadState::Downloading {
+            return;
+        }
+        job.info.state = match error.code {
+            ErrorCode::Cancelled => DownloadState::Cancelled,
+            ErrorCode::Network | ErrorCode::Timeout | ErrorCode::RateLimited => {
+                DownloadState::FailedRetryable
+            }
+            _ => DownloadState::FailedPermanent,
+        };
+        job.updated = Instant::now();
+        job.info.clone()
+    };
+    events.emit(context, EventData::Download(info));
+}
 fn report_error(result: &Result<(), SyncError>, context: &Context, events: &EventBus) {
     // Error conversion takes ownership; use only a safe category for background errors.
     if result.is_err() {
@@ -268,12 +503,14 @@ async fn refresh<T: Telegram>(
         }
     }
 }
-async fn handle<T: Telegram>(
+async fn handle<T: Telegram + Clone + 'static>(
     engine: &mut SyncEngine<T>,
     request: VaultRequest,
     cancel: &CancellationToken,
     context: &Context,
     events: &EventBus,
+    cache: Option<&vault_media::CacheManager>,
+    downloads: &Arc<Mutex<HashMap<Uuid, DownloadJob>>>,
 ) -> Result<VaultResponse, ApiError> {
     Ok(match request {
         VaultRequest::Sync => {
@@ -433,6 +670,150 @@ async fn handle<T: Telegram>(
                 recipient_chat_id,
                 message_id: forwarded.id,
             }
+        }
+        VaultRequest::DownloadForOffline {
+            download_id,
+            track_id,
+            source_id,
+            pinned,
+        } => {
+            if download_id.is_nil() || track_id.is_nil() || source_id.is_nil() {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            let cache = cache.ok_or_else(|| ApiError::new(ErrorCode::Storage))?;
+            let key = media_cache_key(track_id, source_id);
+            if let Some(lease) = cache.acquire(&key).map_err(ApiError::from)? {
+                let info = DownloadInfo {
+                    download_id,
+                    track_id,
+                    state: DownloadState::FullyCached,
+                    bytes_downloaded: lease.entry.size_bytes,
+                    total_bytes: Some(lease.entry.size_bytes),
+                    pinned: lease.entry.pinned || pinned,
+                };
+                if pinned && !lease.entry.pinned {
+                    cache.pin(&key, true).map_err(ApiError::from)?;
+                }
+                update_download(downloads, info.clone());
+                events.emit(context, EventData::Download(info.clone()));
+                VaultResponse::Download(info)
+            } else {
+                let (file, expected_sha, total) =
+                    engine.media_file(track_id, source_id, cancel).await?;
+                if file.size < 0 || u64::try_from(file.size).ok() != Some(total) {
+                    return Err(ApiError::new(ErrorCode::Integrity));
+                }
+                if let Ok(mut jobs) = downloads.lock()
+                    && let Some(job) = jobs.get_mut(&download_id)
+                {
+                    job.info.total_bytes = Some(total);
+                    job.updated = Instant::now();
+                }
+                let initial = DownloadInfo {
+                    download_id,
+                    track_id,
+                    state: DownloadState::Downloading,
+                    bytes_downloaded: 0,
+                    total_bytes: Some(total),
+                    pinned,
+                };
+                events.emit(context, EventData::Download(initial.clone()));
+                let download_cancel = downloads
+                    .lock()
+                    .map_err(|_| ApiError::new(ErrorCode::Internal))?
+                    .get(&download_id)
+                    .map(|job| job.cancel.clone())
+                    .ok_or_else(|| ApiError::new(ErrorCode::Internal))?;
+                let transport = engine.transport_clone();
+                let cache = cache.clone();
+                let task_downloads = downloads.clone();
+                let task_events = events.clone();
+                let task_context = context.clone();
+                let task = tokio::spawn(async move {
+                    let progress_downloads = task_downloads.clone();
+                    let progress_events = task_events.clone();
+                    let progress_context = task_context.clone();
+                    let result = vault_media::download_to_cache(
+                        &transport,
+                        &file,
+                        &cache,
+                        vault_media::DownloadOptions {
+                            cache_key: key,
+                            expected_sha256: expected_sha,
+                            pinned,
+                        },
+                        &download_cancel,
+                        &move |bytes, total| {
+                            let info = DownloadInfo {
+                                download_id,
+                                track_id,
+                                state: DownloadState::Downloading,
+                                bytes_downloaded: bytes,
+                                total_bytes: Some(total),
+                                pinned,
+                            };
+                            update_download(&progress_downloads, info.clone());
+                            progress_events.emit(&progress_context, EventData::Download(info));
+                        },
+                    )
+                    .await;
+                    match result {
+                        Ok(lease) => {
+                            let info = DownloadInfo {
+                                download_id,
+                                track_id,
+                                state: DownloadState::FullyCached,
+                                bytes_downloaded: lease.entry.size_bytes,
+                                total_bytes: Some(lease.entry.size_bytes),
+                                pinned: lease.entry.pinned,
+                            };
+                            update_download(&task_downloads, info.clone());
+                            task_events.emit(&task_context, EventData::Download(info));
+                        }
+                        Err(error) => {
+                            let error = ApiError::from(error);
+                            finish_download_error(
+                                download_id,
+                                &error,
+                                &task_downloads,
+                                &task_context,
+                                &task_events,
+                            );
+                            task_events.emit(&task_context, EventData::Warning(error));
+                        }
+                    }
+                });
+                if let Ok(mut jobs) = downloads.lock()
+                    && let Some(job) = jobs.get_mut(&download_id)
+                {
+                    job.task = Some(task);
+                }
+                VaultResponse::Download(initial)
+            }
+        }
+        VaultRequest::PinCachedMedia {
+            track_id,
+            source_id,
+            pinned,
+        } => {
+            let cache = cache.ok_or_else(|| ApiError::new(ErrorCode::Storage))?;
+            cache
+                .pin(&media_cache_key(track_id, source_id), pinned)
+                .map_err(ApiError::from)?;
+            VaultResponse::CachePinned
+        }
+        VaultRequest::ClearLocalCache => {
+            let cache = cache
+                .ok_or_else(|| ApiError::new(ErrorCode::Storage))?
+                .clone();
+            let bytes_removed = tokio::task::spawn_blocking(move || cache.clear_unpinned())
+                .await
+                .map_err(|_| ApiError::new(ErrorCode::Internal))?
+                .map_err(ApiError::from)?;
+            VaultResponse::CacheCleared { bytes_removed }
+        }
+        VaultRequest::GetDownloadStatus { .. } | VaultRequest::CancelDownload { .. } => {
+            return Err(ApiError::new(ErrorCode::Internal));
         }
     })
 }

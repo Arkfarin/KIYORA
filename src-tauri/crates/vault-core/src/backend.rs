@@ -58,6 +58,7 @@ struct Session {
     native: Option<NativeSession>,
     service: Option<VaultService>,
     reader: Option<ProjectionReader>,
+    cache: vault_media::CacheManager,
     context: Context,
 }
 #[derive(Clone)]
@@ -109,7 +110,7 @@ impl Backend {
         // Acquire the new process lock and validate its durable binding before closing
         // the current account, so a failed switch leaves the old session usable.
         let store = self.store.clone();
-        let (lease, config, reader) = tokio::task::spawn_blocking(move || {
+        let (lease, config, reader, cache) = tokio::task::spawn_blocking(move || {
             let lease = store.acquire(id)?;
             let config = load_config(&lease)?;
             save_config(&lease, &config)?;
@@ -120,7 +121,10 @@ impl Backend {
                 )?)),
                 None => None,
             };
-            Ok::<_, ApiError>((lease, config, reader))
+            let cache =
+                vault_media::CacheManager::open(lease.cache_path(), 10 * 1024 * 1024 * 1024)
+                    .map_err(ApiError::from)?;
+            Ok::<_, ApiError>((lease, config, reader, cache))
         })
         .await
         .map_err(|_| ApiError::new(ErrorCode::Internal))??;
@@ -145,6 +149,7 @@ impl Backend {
             native: None,
             service: None,
             reader,
+            cache,
             context: context.clone(),
         };
         *self.session.lock().await = Some(session);
@@ -648,7 +653,12 @@ impl Backend {
                     reader.clone(),
                     s.config.device_id.clone(),
                 );
-                let service = VaultService::start(engine, context.clone(), self.events.clone());
+                let service = VaultService::start_with_cache(
+                    engine,
+                    context.clone(),
+                    self.events.clone(),
+                    s.cache.clone(),
+                );
                 let status = service.status();
                 s.service = Some(service);
                 status

@@ -27,6 +27,8 @@ pub enum MediaError {
     CacheIndex,
     #[error("download range was incomplete or inconsistent")]
     Range,
+    #[error(transparent)]
+    Telegram(#[from] vault_telegram::TelegramError),
 }
 
 #[derive(Debug, Clone)]

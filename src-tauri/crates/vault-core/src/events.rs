@@ -1,4 +1,4 @@
-use crate::{ApiError, Context, SnapshotInfo, Status};
+use crate::{ApiError, Context, DownloadInfo, SnapshotInfo, Status};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
@@ -26,6 +26,8 @@ pub enum EventData {
         recipient_chat_id: vault_domain::ChatId,
         message_id: vault_domain::MessageId,
     },
+    #[serde(rename = "download.progress")]
+    Download(DownloadInfo),
     #[serde(rename = "snapshot.progress")]
     Snapshot {
         running: bool,

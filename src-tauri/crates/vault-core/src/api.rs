@@ -129,6 +129,21 @@ impl From<vault_db::DbError> for ApiError {
         SyncError::Database(error).into()
     }
 }
+impl From<vault_media::MediaError> for ApiError {
+    fn from(error: vault_media::MediaError) -> Self {
+        match error {
+            vault_media::MediaError::Telegram(error) => error.into(),
+            vault_media::MediaError::Io(_) => Self::new(ErrorCode::Storage),
+            vault_media::MediaError::CacheFull => Self::new(ErrorCode::Storage),
+            vault_media::MediaError::InvalidAudio
+            | vault_media::MediaError::TooLarge
+            | vault_media::MediaError::Artwork => Self::new(ErrorCode::InvalidInput),
+            vault_media::MediaError::CacheIndex | vault_media::MediaError::Range => {
+                Self::new(ErrorCode::Integrity)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -181,6 +196,26 @@ pub enum VaultRequest {
         op_id: Uuid,
         allow_duplicate: bool,
     },
+    DownloadForOffline {
+        download_id: Uuid,
+        track_id: Uuid,
+        source_id: Uuid,
+        pinned: bool,
+    },
+    GetDownloadStatus {
+        download_id: Uuid,
+        track_id: Uuid,
+        source_id: Uuid,
+    },
+    CancelDownload {
+        download_id: Uuid,
+    },
+    PinCachedMedia {
+        track_id: Uuid,
+        source_id: Uuid,
+        pinned: bool,
+    },
+    ClearLocalCache,
     ShareTrack {
         track_id: Uuid,
         source_id: Uuid,
@@ -195,6 +230,26 @@ pub struct SnapshotInfo {
     pub generation: u64,
     pub primary_healthy: bool,
     pub backup_healthy: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadState {
+    RemoteOnly,
+    Downloading,
+    FullyCached,
+    FailedRetryable,
+    FailedPermanent,
+    Cancelled,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadInfo {
+    pub download_id: Uuid,
+    pub track_id: Uuid,
+    pub state: DownloadState,
+    pub bytes_downloaded: u64,
+    pub total_bytes: Option<u64>,
+    pub pinned: bool,
 }
 impl From<Recovery> for SnapshotInfo {
     fn from(r: Recovery) -> Self {
@@ -224,5 +279,10 @@ pub enum VaultResponse {
     Shared {
         recipient_chat_id: ChatId,
         message_id: MessageId,
+    },
+    Download(DownloadInfo),
+    CachePinned,
+    CacheCleared {
+        bytes_removed: u64,
     },
 }

@@ -118,6 +118,8 @@ pub trait Telegram: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct DownloadedRange {
     pub path: PathBuf,
+    /// Absolute offset represented by byte zero of `path`.
+    pub file_offset: i64,
     pub offset: i64,
     pub available: i64,
     pub complete: bool,
@@ -389,6 +391,7 @@ impl Telegram for TdTransport {
                     .as_str()
                     .ok_or(TelegramError::InvalidResponse)?,
             ),
+            file_offset: start,
             offset,
             available,
             complete,

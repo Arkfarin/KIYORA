@@ -53,7 +53,7 @@ async fn run() -> Result<(), ApiError> {
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file>\n  media import <path> [--allow-duplicate]\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  diagnose"
     );
 }
 async fn active(backend: &Backend) -> Result<Status, ApiError> {
@@ -397,11 +397,82 @@ async fn import(backend: &Backend, status: &Status, args: &[String]) -> Result<(
     Ok(())
 }
 async fn media(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
-    if args.first().is_some_and(|v| v == "import") {
-        let status = active(backend).await?;
-        import(backend, &status, args).await
-    } else {
-        Err(ApiError::new(ErrorCode::InvalidInput))
+    let status = active(backend).await?;
+    match args.first().map(String::as_str) {
+        Some("import") => import(backend, &status, args).await,
+        Some("download") => {
+            let download_id = Uuid::new_v4();
+            let track_id = parse_uuid(args.get(1))?;
+            let source_id = parse_uuid(args.get(2))?;
+            let result = backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::DownloadForOffline {
+                        download_id,
+                        track_id,
+                        source_id,
+                        pinned: true,
+                    },
+                    &CancellationToken::new(),
+                )
+                .await?;
+            println!("{result:?}");
+            let interrupted = tokio::signal::ctrl_c();
+            tokio::pin!(interrupted);
+            let mut cancel_sent = false;
+            loop {
+                tokio::select! {
+                    _ = &mut interrupted, if !cancel_sent => {
+                        cancel_sent = true;
+                        let _ = backend.service_request(
+                            status.context.session_id,
+                            VaultRequest::CancelDownload { download_id },
+                            &CancellationToken::new(),
+                        ).await;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+                }
+                let current = backend
+                    .service_request(
+                        status.context.session_id,
+                        VaultRequest::GetDownloadStatus {
+                            download_id,
+                            track_id,
+                            source_id,
+                        },
+                        &CancellationToken::new(),
+                    )
+                    .await?;
+                println!("{current:?}");
+                let VaultResponse::Download(info) = current else {
+                    return Err(ApiError::new(ErrorCode::Internal));
+                };
+                if info.state != vault_core::DownloadState::Downloading {
+                    if info.state == vault_core::DownloadState::FullyCached {
+                        return Ok(());
+                    }
+                    return Err(ApiError::new(
+                        if info.state == vault_core::DownloadState::Cancelled {
+                            ErrorCode::Cancelled
+                        } else {
+                            ErrorCode::Network
+                        },
+                    ));
+                }
+            }
+        }
+        Some("clear-cache") => {
+            let result = backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::ClearLocalCache,
+                    &CancellationToken::new(),
+                )
+                .await?;
+            println!("{result:?}");
+            Ok(())
+        }
+        _ => Err(ApiError::new(ErrorCode::InvalidInput)),
     }
 }
 async fn playlist(backend: &Backend, args: &[String]) -> Result<(), ApiError> {

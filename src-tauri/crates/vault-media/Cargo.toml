@@ -18,6 +18,10 @@ rodio = { version = "0.21.1", default-features = false, features = ["playback", 
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+vault-telegram.workspace = true
+
+[dev-dependencies]
+vault-testkit.workspace = true
 
 [lints]
 workspace = true
