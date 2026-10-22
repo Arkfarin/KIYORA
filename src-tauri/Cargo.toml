@@ -19,7 +19,7 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 sha2 = "0.10"
 hex = "0.4"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
@@ -69,6 +69,7 @@ vault-core.workspace = true
 vault-domain.workspace = true
 vault-db.workspace = true
 vault-telegram.workspace = true
+vault-snapshot.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true

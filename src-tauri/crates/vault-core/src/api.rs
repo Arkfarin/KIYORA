@@ -216,6 +216,9 @@ pub enum VaultRequest {
         pinned: bool,
     },
     ClearLocalCache,
+    ImportBackup {
+        path: String,
+    },
     ShareTrack {
         track_id: Uuid,
         source_id: Uuid,
@@ -284,5 +287,11 @@ pub enum VaultResponse {
     CachePinned,
     CacheCleared {
         bytes_removed: u64,
+    },
+    BackupRestored {
+        source_vault_id: Uuid,
+        tracks: usize,
+        playlists: usize,
+        operations: usize,
     },
 }

@@ -43,6 +43,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             backend_library,
             backend_playlists,
             backend_vault_request,
+            backend_export_backup,
             backend_disconnect
         ])
         .build(tauri::generate_context!())?;
@@ -222,6 +223,20 @@ async fn backend_vault_request(
 ) -> Result<VaultResponse, ApiError> {
     backend
         .service_request(session_id, request, &CancellationToken::new())
+        .await
+}
+#[tauri::command]
+async fn backend_export_backup(
+    backend: State<'_, std::sync::Arc<Backend>>,
+    session_id: Uuid,
+    path: String,
+    kind: vault_snapshot::backup::BackupKind,
+) -> Result<vault_snapshot::backup::Manifest, ApiError> {
+    if path.len() > 4096 {
+        return Err(ApiError::new(vault_core::ErrorCode::InvalidInput));
+    }
+    backend
+        .export_backup(session_id, std::path::PathBuf::from(path), kind)
         .await
 }
 #[tauri::command]

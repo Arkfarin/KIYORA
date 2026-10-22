@@ -542,3 +542,151 @@ async fn offline_download_uses_verified_cache_progress_status_and_pin() {
     assert_eq!(server.shared_messages().unwrap().len(), 0);
     service.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn full_backup_restores_to_empty_vault_with_new_track_and_media_references() {
+    let (server, binding) = fixture().await;
+    let service = service(&server, binding, EventBus::default());
+    ready(&service).await;
+    let temp = tempfile::tempdir().unwrap();
+    let media_path = temp.path().join("audio.bin");
+    let media = b"portable full backup media";
+    std::fs::write(&media_path, media).unwrap();
+    let source_vault = Uuid::new_v4();
+    let old_track = Uuid::new_v4();
+    let old_source_id = Uuid::new_v4();
+    let old_playlist = Uuid::new_v4();
+    let old_entry = Uuid::new_v4();
+    let old_chat = ChatId::new(-200).unwrap();
+    let mut source_state = State::new(source_vault);
+    source_state
+        .apply(
+            MessageId::new(10).unwrap(),
+            &Event {
+                vault_id: source_vault,
+                op_id: Uuid::new_v4(),
+                device_id: "source-device".into(),
+                base_generation: 0,
+                entity_id: old_track,
+                action: Action::TrackRegister {
+                    metadata: Metadata {
+                        title: "Restored song".into(),
+                        performer: "Kiyora test".into(),
+                        ..Default::default()
+                    },
+                    source: Source {
+                        source_id: old_source_id,
+                        chat_id: old_chat,
+                        message_id: MessageId::new(2_097_152).unwrap(),
+                        sha256: Some(vault_snapshot::digest(media)),
+                        size_bytes: Some(media.len() as u64),
+                    },
+                },
+            },
+        )
+        .unwrap();
+    source_state
+        .apply(
+            MessageId::new(20).unwrap(),
+            &Event {
+                vault_id: source_vault,
+                op_id: Uuid::new_v4(),
+                device_id: "source-device".into(),
+                base_generation: 0,
+                entity_id: old_playlist,
+                action: Action::PlaylistCreate {
+                    title: "Saved playlist".into(),
+                },
+            },
+        )
+        .unwrap();
+    source_state
+        .apply(
+            MessageId::new(30).unwrap(),
+            &Event {
+                vault_id: source_vault,
+                op_id: Uuid::new_v4(),
+                device_id: "source-device".into(),
+                base_generation: 0,
+                entity_id: old_playlist,
+                action: Action::PlaylistTrackAdd {
+                    track_id: old_track,
+                    entry_id: old_entry,
+                    after_entry_id: None,
+                },
+            },
+        )
+        .unwrap();
+    let archive = temp.path().join("portable.tmv-backup");
+    vault_snapshot::backup::export(
+        &archive,
+        &source_state,
+        binding.owner_id,
+        None,
+        vault_snapshot::backup::BackupKind::Full,
+        &std::collections::BTreeMap::from([(old_track, media_path)]),
+        Default::default(),
+    )
+    .unwrap();
+
+    let result = service
+        .request(
+            VaultRequest::ImportBackup {
+                path: archive.to_string_lossy().into_owned(),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        VaultResponse::BackupRestored {
+            source_vault_id,
+            tracks: 1,
+            playlists: 1,
+            operations: 4,
+        } if source_vault_id == source_vault
+    ));
+    let restored = service.reader().state().await.unwrap();
+    assert_eq!(restored.tracks.len(), 1);
+    assert_eq!(restored.playlists.len(), 1);
+    let (new_track, track) = restored.tracks.iter().next().unwrap();
+    assert_ne!(*new_track, old_track);
+    assert_eq!(track.metadata.title, "Restored song");
+    let (new_source_id, source) = track.sources.iter().next().unwrap();
+    assert_ne!(*new_source_id, old_source_id);
+    assert_eq!(source.chat_id, binding.chat_id);
+    assert_ne!(source.message_id, MessageId::new(2_097_152).unwrap());
+    let entry = restored.entries.values().next().unwrap();
+    assert_ne!(entry.entry_id, old_entry);
+    assert_eq!(entry.track_id, *new_track);
+    let uploaded = server
+        .messages()
+        .unwrap()
+        .into_iter()
+        .find(|message| {
+            message.file.is_some() && matches!(message.record(), Ok(Some(Record::Media(_))))
+        })
+        .unwrap();
+    let download_client = server.client().unwrap();
+    let range = download_client
+        .download(uploaded.file.unwrap(), 0, 0, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(range.path).unwrap(), media);
+
+    let before_retry = server.messages().unwrap();
+    assert!(
+        service
+            .request(
+                VaultRequest::ImportBackup {
+                    path: archive.to_string_lossy().into_owned(),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(server.messages().unwrap(), before_retry);
+    service.shutdown().await.unwrap();
+}

@@ -28,6 +28,12 @@ pub enum EventData {
     },
     #[serde(rename = "download.progress")]
     Download(DownloadInfo),
+    #[serde(rename = "backup.restore.progress")]
+    BackupRestore {
+        phase: String,
+        completed: usize,
+        total: usize,
+    },
     #[serde(rename = "snapshot.progress")]
     Snapshot {
         running: bool,

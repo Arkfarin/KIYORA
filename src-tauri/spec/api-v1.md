@@ -22,6 +22,7 @@ the domain/protocol contract are decimal strings so JavaScript does not round th
 | `backend_library` | `session_id`, search/page fields | local projection page |
 | `backend_playlists` | `session_id`, page fields | local projection page |
 | `backend_vault_request` | `session_id`, typed request | typed operation result |
+| `backend_export_backup` | `session_id`, `path`, `kind` (`metadata` or `full`) | verified archive summary |
 | `backend_disconnect` | `session_id` | unit |
 
 `backend_authenticate.input` is tagged as `{ "kind": "phone|code|password|qr|email|email_code", "value": ... }`.
@@ -30,6 +31,13 @@ store. `backend_vault_request` supports `sync`, `initialize`, `verify`, `snapsho
 GC planning/inspection/confirmed execution, media import with duplicate review,
 ranged offline download, download status/cancel, cache pin/clear, guarded event
 mutation, and `share_track` with one track/source and one explicit recipient chat.
+It also supports `import_backup`, which restores a verified metadata or full
+archive into a fresh empty vault by uploading media and creating new track,
+playlist, entry, and source references. The restore plan is persisted locally so
+the operation can resume after interruption. `backend_export_backup` writes
+metadata archives directly; full archives require every referenced media file
+in the verified local cache. Backup restore/export progress is emitted as backend
+events.
 Downloads emit byte progress and enter cache only after complete size and SHA-256
 validation. Sharing rejects unrelated control records and checks TDLib forward
 permission. Shared library writes require `ONLINE_READY`; local projection reads

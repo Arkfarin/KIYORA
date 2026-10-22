@@ -139,6 +139,16 @@ impl<T: Telegram> SyncEngine<T> {
     pub async fn command(&self, op: Uuid) -> Result<Option<Command>, SyncError> {
         self.database(move |db| db.command(op)).await
     }
+    pub async fn local_setting(&self, key: String) -> Result<Option<String>, SyncError> {
+        self.database(move |db| db.local_setting(&key)).await
+    }
+    pub async fn set_local_setting(&self, key: String, value: String) -> Result<(), SyncError> {
+        self.database(move |db| db.set_local_setting(&key, &value))
+            .await
+    }
+    pub async fn clear_local_setting(&self, key: String) -> Result<(), SyncError> {
+        self.database(move |db| db.clear_local_setting(&key)).await
+    }
     pub fn mode(&self) -> RuntimeMode {
         self.mode
     }

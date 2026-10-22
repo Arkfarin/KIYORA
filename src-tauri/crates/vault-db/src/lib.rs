@@ -417,6 +417,11 @@ impl Database {
         self.connection.execute("INSERT INTO local_settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value])?;
         Ok(())
     }
+    pub fn clear_local_setting(&mut self, key: &str) -> Result<(), DbError> {
+        self.connection
+            .execute("DELETE FROM local_settings WHERE key=?1", [key])?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

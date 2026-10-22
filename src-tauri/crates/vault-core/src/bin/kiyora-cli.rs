@@ -53,7 +53,7 @@ async fn run() -> Result<(), ApiError> {
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  diagnose"
     );
 }
 async fn active(backend: &Backend) -> Result<Status, ApiError> {
@@ -590,36 +590,37 @@ async fn backup(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                 b.manifest.kind, b.manifest.vault_id, b.manifest.generation, b.manifest.track_count
             );
         }
+        Some("import") => {
+            let status = active(backend).await?;
+            let file = args
+                .get(1)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            let result = backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::ImportBackup { path: file.clone() },
+                    &CancellationToken::new(),
+                )
+                .await?;
+            println!("{result:?}");
+        }
         Some("export") => {
             let status = active(backend).await?;
             let path = PathBuf::from(
                 args.get(1)
                     .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?,
             );
-            let state = backend
-                .local_reader(status.context.session_id)
-                .await?
-                .state()
-                .await
-                .map_err(ApiError::from)?;
-            let owner = backend
-                .profiles()?
-                .into_iter()
-                .find(|p| p.profile_id == status.context.profile_id)
-                .and_then(|p| p.owner_id)
-                .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?;
-            let manifest = vault_snapshot::backup::export(
-                &path,
-                &state,
-                owner,
-                None,
-                vault_snapshot::backup::BackupKind::Metadata,
-                &Default::default(),
-                Default::default(),
-            )
-            .map_err(|_| ApiError::new(ErrorCode::Storage))?;
+            let kind = if args.iter().any(|arg| arg == "--full") {
+                vault_snapshot::backup::BackupKind::Full
+            } else {
+                vault_snapshot::backup::BackupKind::Metadata
+            };
+            let manifest = backend
+                .export_backup(status.context.session_id, path, kind)
+                .await?;
             println!(
-                "metadata backup tracks={} sha256={}",
+                "{:?} backup tracks={} sha256={}",
+                manifest.kind,
                 manifest.track_count,
                 manifest
                     .entries

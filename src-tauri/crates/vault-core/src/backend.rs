@@ -213,6 +213,66 @@ impl Backend {
             .or_else(|| s.reader.clone())
             .ok_or_else(|| ApiError::new(ErrorCode::NoVault))
     }
+    pub async fn export_backup(
+        &self,
+        session_id: Uuid,
+        destination: PathBuf,
+        kind: vault_snapshot::backup::BackupKind,
+    ) -> Result<vault_snapshot::backup::Manifest, ApiError> {
+        let (reader, cache, owner) = {
+            let guard = self.session.lock().await;
+            let session = guard
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            check_session(session, session_id)?;
+            let owner = session
+                .lease
+                .profile()
+                .owner_id
+                .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?;
+            (
+                session
+                    .reader
+                    .clone()
+                    .ok_or_else(|| ApiError::new(ErrorCode::NoVault))?,
+                session.cache.clone(),
+                owner,
+            )
+        };
+        let state = reader.state().await.map_err(ApiError::from)?;
+        let mut leases = Vec::new();
+        let mut media = std::collections::BTreeMap::new();
+        if kind == vault_snapshot::backup::BackupKind::Full {
+            for (track_id, track) in &state.tracks {
+                let mut found = None;
+                for source_id in track.sources.keys() {
+                    let key = format!("{track_id}:{source_id}");
+                    if let Some(lease) = cache.acquire(&key).map_err(ApiError::from)? {
+                        found = Some(lease);
+                        break;
+                    }
+                }
+                let lease = found.ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+                media.insert(*track_id, lease.path.clone());
+                leases.push(lease);
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            let _leases = leases;
+            vault_snapshot::backup::export(
+                &destination,
+                &state,
+                owner,
+                None,
+                kind,
+                &media,
+                Default::default(),
+            )
+        })
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Internal))?
+        .map_err(|_| ApiError::new(ErrorCode::Storage))
+    }
     pub async fn connect_native(
         &self,
         session_id: Uuid,

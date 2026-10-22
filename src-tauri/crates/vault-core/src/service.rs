@@ -10,6 +10,13 @@ use uuid::Uuid;
 use vault_sync::{ProjectionReader, RuntimeMode, SyncEngine, SyncError};
 use vault_telegram::{Telegram, Update};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreSession {
+    fingerprint: String,
+    plan: vault_snapshot::backup::RestorePlan,
+}
+
 struct Job {
     request: VaultRequest,
     cancel: CancellationToken,
@@ -425,6 +432,60 @@ fn relevant(update: &Update, chat: vault_domain::ChatId) -> bool {
 fn media_cache_key(track_id: Uuid, source_id: Uuid) -> String {
     format!("{track_id}:{source_id}")
 }
+fn restore_uuid(vault_id: Uuid, fingerprint: &str, track_id: Uuid, purpose: &[u8]) -> Uuid {
+    let mut name = Vec::with_capacity(fingerprint.len() + 36 + purpose.len());
+    name.extend_from_slice(fingerprint.as_bytes());
+    name.push(b':');
+    name.extend_from_slice(track_id.as_bytes());
+    name.push(b':');
+    name.extend_from_slice(purpose);
+    Uuid::new_v5(&vault_id, &name)
+}
+async fn collect_restore_media<T: Telegram>(
+    telegram: &T,
+    chat_id: vault_domain::ChatId,
+    vault_id: Uuid,
+    cancel: &CancellationToken,
+) -> Result<std::collections::BTreeMap<Uuid, vault_telegram::RemoteMessage>, ApiError> {
+    let mut before = None;
+    let mut found = std::collections::BTreeMap::new();
+    for _ in 0..10_000 {
+        let page = telegram.history(chat_id, before, 100, cancel).await?;
+        if page.is_empty() {
+            return Ok(found);
+        }
+        let mut oldest = None;
+        for message in page {
+            if message.chat_id != chat_id || before.is_some_and(|id| message.id >= id) {
+                return Err(ApiError::new(ErrorCode::Integrity));
+            }
+            oldest =
+                Some(oldest.map_or(message.id, |id: vault_domain::MessageId| id.min(message.id)));
+            if let Some(vault_protocol::Record::Media(marker)) = message.record()?
+                && marker.vault_id == vault_id
+            {
+                if let Some(existing) = found.get(&marker.import_id)
+                    && existing.record()?.is_some_and(|record| {
+                        matches!(record, vault_protocol::Record::Media(old) if old.sha256 != marker.sha256)
+                    })
+                {
+                    return Err(ApiError::new(ErrorCode::Integrity));
+                }
+                let replace = found
+                    .get(&marker.import_id)
+                    .is_none_or(|existing| existing.id < message.id);
+                if replace {
+                    found.insert(marker.import_id, message);
+                }
+            }
+        }
+        let Some(oldest) = oldest else {
+            return Err(ApiError::new(ErrorCode::Integrity));
+        };
+        before = Some(oldest);
+    }
+    Err(ApiError::new(ErrorCode::Integrity))
+}
 fn update_download(downloads: &Arc<Mutex<HashMap<Uuid, DownloadJob>>>, info: DownloadInfo) {
     if let Ok(mut jobs) = downloads.lock()
         && let Some(job) = jobs.get_mut(&info.download_id)
@@ -811,6 +872,222 @@ async fn handle<T: Telegram + Clone + 'static>(
                 .map_err(|_| ApiError::new(ErrorCode::Internal))?
                 .map_err(ApiError::from)?;
             VaultResponse::CacheCleared { bytes_removed }
+        }
+        VaultRequest::ImportBackup { path } => {
+            if path.len() > 4096 {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            let archive_path = std::path::PathBuf::from(path);
+            let file_type = std::fs::symlink_metadata(&archive_path)
+                .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
+            if file_type.file_type().is_symlink() || !file_type.is_file() {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            let backup = tokio::task::spawn_blocking(move || {
+                vault_snapshot::backup::inspect(
+                    &archive_path,
+                    vault_snapshot::backup::Limits::default(),
+                )
+            })
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::Internal))?
+            .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
+            let fingerprint = vault_snapshot::digest(
+                &vault_protocol::canonical_json(&backup.manifest)
+                    .map_err(|_| ApiError::new(ErrorCode::Integrity))?,
+            );
+            let setting_key = "backup.restore.session.v1".to_owned();
+            let persisted = engine
+                .local_setting(setting_key.clone())
+                .await?
+                .map(|json| {
+                    serde_json::from_str::<RestoreSession>(&json)
+                        .map_err(|_| ApiError::new(ErrorCode::Integrity))
+                })
+                .transpose()?;
+            let plan = if let Some(session) = persisted {
+                if session.fingerprint != fingerprint
+                    || session.plan.target_vault_id != engine.binding().vault_id
+                    || session.plan.source_vault_id != backup.manifest.vault_id
+                {
+                    return Err(ApiError::new(ErrorCode::Conflict));
+                }
+                session.plan
+            } else {
+                let state = engine.state().await?;
+                if state.generation != 0
+                    || state.last_event_message_id.is_some()
+                    || !state.tracks.is_empty()
+                    || !state.playlists.is_empty()
+                    || !state.entries.is_empty()
+                    || !state.favorites.is_empty()
+                    || !state.tombstones.tracks.is_empty()
+                    || !state.tombstones.playlists.is_empty()
+                    || !state.tombstones.entries.is_empty()
+                    || !state.applied.is_empty()
+                {
+                    return Err(ApiError::new(ErrorCode::Conflict));
+                }
+                if !backup.state.tracks.is_empty()
+                    && backup.manifest.kind != vault_snapshot::backup::BackupKind::Full
+                {
+                    return Err(ApiError::new(ErrorCode::InvalidInput));
+                }
+                let target_vault = engine.binding().vault_id;
+                let target_chat = engine.binding().chat_id;
+                let mut sources = std::collections::BTreeMap::new();
+                events.emit(
+                    context,
+                    EventData::BackupRestore {
+                        phase: "media".into(),
+                        completed: 0,
+                        total: backup.state.tracks.len(),
+                    },
+                );
+                let existing =
+                    collect_restore_media(engine.transport(), target_chat, target_vault, cancel)
+                        .await?;
+                for (old_track_id, track) in &backup.state.tracks {
+                    let entry = backup
+                        .manifest
+                        .entries
+                        .get(&format!("media/{old_track_id}"))
+                        .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+                    let import_id =
+                        restore_uuid(target_vault, &fingerprint, *old_track_id, b"media");
+                    let message = if let Some(message) = existing.get(&import_id) {
+                        let marker_sha = message.record()?.and_then(|record| match record {
+                            vault_protocol::Record::Media(marker) => marker.sha256,
+                            _ => None,
+                        });
+                        if marker_sha.as_deref() != Some(&entry.sha256)
+                            || message.file.as_ref().is_none_or(|file| {
+                                u64::try_from(file.size).ok() != Some(entry.bytes)
+                            })
+                        {
+                            return Err(ApiError::new(ErrorCode::Integrity));
+                        }
+                        message.clone()
+                    } else {
+                        let media_path = backup
+                            .media_path(*old_track_id)
+                            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+                        let marker = vault_protocol::Record::Media(vault_protocol::MediaMarker {
+                            vault_id: target_vault,
+                            import_id,
+                            sha256: Some(entry.sha256.clone()),
+                        });
+                        let message = engine
+                            .upload_document(
+                                media_path.to_owned(),
+                                vault_protocol::encode_text(&marker)
+                                    .map_err(|_| ApiError::new(ErrorCode::Integrity))?,
+                                cancel,
+                            )
+                            .await?;
+                        if message
+                            .file
+                            .as_ref()
+                            .is_none_or(|file| u64::try_from(file.size).ok() != Some(entry.bytes))
+                        {
+                            return Err(ApiError::new(ErrorCode::Integrity));
+                        }
+                        message
+                    };
+                    let old_source = track
+                        .sources
+                        .values()
+                        .next()
+                        .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+                    sources.insert(
+                        *old_track_id,
+                        vault_domain::Source {
+                            source_id: restore_uuid(
+                                target_vault,
+                                &fingerprint,
+                                *old_track_id,
+                                b"source",
+                            ),
+                            chat_id: target_chat,
+                            message_id: message.id,
+                            sha256: Some(entry.sha256.clone()),
+                            size_bytes: Some(entry.bytes),
+                        },
+                    );
+                    events.emit(
+                        context,
+                        EventData::BackupRestore {
+                            phase: "media".into(),
+                            completed: sources.len(),
+                            total: backup.state.tracks.len(),
+                        },
+                    );
+                    if old_source
+                        .sha256
+                        .as_deref()
+                        .is_some_and(|sha| sha != entry.sha256)
+                    {
+                        return Err(ApiError::new(ErrorCode::Integrity));
+                    }
+                }
+                let plan = vault_snapshot::backup::plan_new_vault(
+                    &backup,
+                    target_vault,
+                    target_chat,
+                    &sources,
+                )
+                .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
+                let session = RestoreSession {
+                    fingerprint,
+                    plan: plan.clone(),
+                };
+                let json = serde_json::to_string(&session)
+                    .map_err(|_| ApiError::new(ErrorCode::Internal))?;
+                engine.set_local_setting(setting_key.clone(), json).await?;
+                plan
+            };
+            events.emit(
+                context,
+                EventData::BackupRestore {
+                    phase: "library".into(),
+                    completed: 0,
+                    total: plan.operations.len(),
+                },
+            );
+            let mut applied = 0usize;
+            for operation in &plan.operations {
+                let command = engine
+                    .execute(
+                        operation.op_id,
+                        operation.entity_id,
+                        operation.action.clone(),
+                        cancel,
+                    )
+                    .await?;
+                match command.status {
+                    vault_db::CommandStatus::Applied => applied += 1,
+                    vault_db::CommandStatus::RejectedByReducer => {
+                        return Err(ApiError::new(ErrorCode::Conflict));
+                    }
+                    _ => return Err(ApiError::new(ErrorCode::Timeout)),
+                }
+                events.emit(context, EventData::Command(Box::new(command)));
+                events.emit(
+                    context,
+                    EventData::BackupRestore {
+                        phase: "library".into(),
+                        completed: applied,
+                        total: plan.operations.len(),
+                    },
+                );
+            }
+            engine.clear_local_setting(setting_key).await?;
+            VaultResponse::BackupRestored {
+                source_vault_id: plan.source_vault_id,
+                tracks: backup.state.tracks.len(),
+                playlists: backup.state.playlists.len(),
+                operations: applied,
+            }
         }
         VaultRequest::GetDownloadStatus { .. } | VaultRequest::CancelDownload { .. } => {
             return Err(ApiError::new(ErrorCode::Internal));

@@ -94,7 +94,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   local cache quota/LRU/pins/leases, and desktop Rodio playback controls.
 - Desktop playback was checked against generated PCM WAV data without requiring an
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
-- Full `cargo test --workspace` now passes 50 tests; one native TDLib smoke test is
+- Full `cargo test --workspace` now passes 51 tests; one native TDLib smoke test is
   opt-in/ignored by default. `cargo check --workspace` passes.
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
@@ -109,13 +109,15 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   exposes a CLI/API result. Simulator integration confirms only the selected
   recipient is targeted. Incoming-audio discovery/import from other chats remains
   incomplete.
-- Backup codec can verify/export and create new-vault reference plans; an integrated
-  CLI restore execution flow remains incomplete. Native TDLib account authorization,
+- Backup codec can verify/export and create new-vault reference plans. Tauri/API
+  and CLI can export metadata/full archives and restore verified archives into a
+  fresh empty vault, uploading referenced media and mapping all library references
+  to new IDs. Restore plans and progress are persisted/emitted for interruption
+  recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
 Remaining: playback controls and cached-file lease into the application API,
-incoming-audio import, Android native layers, backup restore execution, generated
-schema/fixtures, CI/platform builds,
+incoming-audio import, Android native layers, generated schema/fixtures, CI/platform builds,
 expanded chaos/load tests and final acceptance traceability. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.
