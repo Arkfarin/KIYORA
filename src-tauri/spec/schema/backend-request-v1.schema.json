@@ -1145,6 +1145,21 @@
             "kind": {
               "type": "string",
               "enum": [
+                "get_cache_stats"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
                 "clear_local_cache"
               ]
             }

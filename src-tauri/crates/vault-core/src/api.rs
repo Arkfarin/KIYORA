@@ -260,6 +260,7 @@ pub enum VaultRequest {
         source_id: Uuid,
         pinned: bool,
     },
+    GetCacheStats,
     ClearLocalCache,
     ImportBackup {
         path: String,
@@ -335,6 +336,7 @@ pub enum VaultResponse {
     },
     Download(DownloadInfo),
     CachePinned,
+    CacheStats(vault_media::CacheStats),
     CacheCleared {
         bytes_removed: u64,
     },

@@ -596,6 +596,18 @@ async fn offline_download_uses_verified_cache_progress_status_and_pin() {
         })
     ));
     assert_eq!(cache.entries().unwrap().len(), 1);
+    assert!(matches!(
+        service
+            .request(VaultRequest::GetCacheStats, &CancellationToken::new())
+            .await
+            .unwrap(),
+        VaultResponse::CacheStats(vault_media::CacheStats {
+            entries: 1,
+            pinned_entries: 1,
+            used_bytes: 16_044,
+            quota_bytes: 2_000_000,
+        })
+    ));
     assert_eq!(server.shared_messages().unwrap().len(), 0);
     service.shutdown().await.unwrap();
 }

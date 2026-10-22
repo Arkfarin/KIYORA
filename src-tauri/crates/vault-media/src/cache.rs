@@ -20,6 +20,14 @@ pub struct CacheEntry {
     pub pinned: bool,
     pub last_access_unix: u64,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CacheStats {
+    pub entries: usize,
+    pub pinned_entries: usize,
+    pub used_bytes: u64,
+    pub quota_bytes: u64,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Index {
@@ -106,6 +114,24 @@ impl CacheManager {
     pub fn used_bytes(&self) -> Result<u64, MediaError> {
         let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
         Ok(state.index.entries.values().map(|e| e.size_bytes).sum())
+    }
+    pub fn stats(&self) -> Result<CacheStats, MediaError> {
+        let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let entries = state.index.entries.values();
+        let mut stats = CacheStats {
+            entries: state.index.entries.len(),
+            pinned_entries: 0,
+            used_bytes: 0,
+            quota_bytes: state.quota,
+        };
+        for entry in entries {
+            stats.used_bytes = stats
+                .used_bytes
+                .checked_add(entry.size_bytes)
+                .ok_or(MediaError::CacheIndex)?;
+            stats.pinned_entries += usize::from(entry.pinned);
+        }
+        Ok(stats)
     }
     pub fn insert(
         &self,

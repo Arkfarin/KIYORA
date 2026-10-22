@@ -4,7 +4,9 @@ use std::{io::Write, path::Path};
 use tempfile::tempdir;
 use tokio_util::sync::CancellationToken;
 use vault_domain::{ChatId, UserId};
-use vault_media::{CacheManager, DownloadOptions, MediaError, download_to_cache, inspect};
+use vault_media::{
+    CacheManager, CacheStats, DownloadOptions, MediaError, download_to_cache, inspect,
+};
 use vault_telegram::Telegram;
 use vault_testkit::FakeServer;
 
@@ -80,6 +82,15 @@ fn cache_quota_respects_pins_and_active_leases_and_checks_content() {
     let sha_c = hex::encode(Sha256::digest([3u8; 40]));
     let a = cache.insert("a".into(), &source_a, &sha_a, true).unwrap();
     let b = cache.insert("b".into(), &source_b, &sha_b, false).unwrap();
+    assert_eq!(
+        cache.stats().unwrap(),
+        CacheStats {
+            entries: 2,
+            pinned_entries: 1,
+            used_bytes: 80,
+            quota_bytes: 80,
+        }
+    );
     assert!(matches!(
         cache.insert("c".into(), &source_c, &sha_c, false),
         Err(MediaError::CacheFull)

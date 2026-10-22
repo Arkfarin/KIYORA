@@ -113,8 +113,9 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
 - Streaming/ranged Telegram downloads feed verified full files into the profile-local
-  cache. Service requests expose byte progress, status, cancellation, pinning and
-  clearing unpinned cache; CLI supports offline download/cache clear and waits for
+  cache. Service requests expose byte progress, status, cancellation, cache usage
+  and quota statistics, pinning and clearing unpinned cache; CLI supports cache
+  stats and offline download/cache clear and waits for
   completion, sending cancellation on Ctrl-C. Downloads run outside the sync actor,
   and shutdown cancels and joins active download tasks. Partial downloads restart
   after process exit. Sharing supports one explicitly selected registered

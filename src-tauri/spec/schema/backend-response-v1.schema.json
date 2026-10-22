@@ -441,6 +441,38 @@
       },
       "additionalProperties": false
     },
+    "CacheStats": {
+      "type": "object",
+      "required": [
+        "entries",
+        "pinned_entries",
+        "quota_bytes",
+        "used_bytes"
+      ],
+      "properties": {
+        "entries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "pinned_entries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "quota_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "used_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "Candidate": {
       "type": "object",
       "required": [
@@ -1211,6 +1243,24 @@
               "enum": [
                 "cache_pinned"
               ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "cache_stats"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/CacheStats"
             }
           }
         },

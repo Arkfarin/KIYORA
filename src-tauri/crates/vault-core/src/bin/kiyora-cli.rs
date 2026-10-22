@@ -60,7 +60,7 @@ async fn run() -> Result<(), ApiError> {
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list [--json]|create <label>|switch <uuid>\n  auth login|status [--json]|logout\n  status [--json]\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list [--json]|create <label>|switch <uuid>\n  auth login|status [--json]|logout\n  status [--json]\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|cache stats|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
     );
     println!("  media import-incoming <chat-id> <message-id>");
     println!(
@@ -449,6 +449,24 @@ async fn import(backend: &Backend, status: &Status, args: &[String]) -> Result<(
 async fn media(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
     match args.first().map(String::as_str) {
+        Some("cache") if args.get(1).is_some_and(|arg| arg == "stats") => {
+            let result = backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::GetCacheStats,
+                    &CancellationToken::new(),
+                )
+                .await?;
+            if let VaultResponse::CacheStats(stats) = result {
+                println!(
+                    "entries={} pinned={} used_bytes={} quota_bytes={}",
+                    stats.entries, stats.pinned_entries, stats.used_bytes, stats.quota_bytes
+                );
+                Ok(())
+            } else {
+                Err(ApiError::new(ErrorCode::Internal))
+            }
+        }
         Some("import") => import(backend, &status, args).await,
         Some("import-incoming") => {
             let source_chat_id = args

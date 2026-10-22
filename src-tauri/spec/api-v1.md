@@ -38,7 +38,7 @@ the domain/protocol contract are decimal strings so JavaScript does not round th
 Secrets are moved into zeroizing values and persisted only through the OS secret
 store. `backend_vault_request` supports `sync`, `initialize`, `verify`, `snapshot`,
 GC planning/inspection/confirmed execution, media import with duplicate review,
-ranged offline download, download status/cancel, cache pin/clear, guarded event
+ranged offline download, download status/cancel, cache stats/pin/clear, guarded event
 mutation, and `share_track` with one track/source and one explicit recipient chat.
 It also supports `import_incoming_audio` by explicitly selected source chat and
 message ID. The service fetches and validates the message, downloads the audio

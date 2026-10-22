@@ -891,6 +891,10 @@ async fn handle<T: Telegram + Clone + 'static>(
                 .map_err(ApiError::from)?;
             VaultResponse::CachePinned
         }
+        VaultRequest::GetCacheStats => {
+            let cache = cache.ok_or_else(|| ApiError::new(ErrorCode::Storage))?;
+            VaultResponse::CacheStats(cache.stats().map_err(ApiError::from)?)
+        }
         VaultRequest::ClearLocalCache => {
             let cache = cache
                 .ok_or_else(|| ApiError::new(ErrorCode::Storage))?
