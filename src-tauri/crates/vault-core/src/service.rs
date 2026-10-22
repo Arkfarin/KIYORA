@@ -655,62 +655,90 @@ async fn handle<T: Telegram + Clone + 'static>(
             if path.len() > 4096 || track_id.is_nil() || source_id.is_nil() || op_id.is_nil() {
                 return Err(ApiError::new(ErrorCode::InvalidInput));
             }
-            let path = std::path::PathBuf::from(path);
-            let (asset, staged) = tokio::task::spawn_blocking(move || {
-                let asset = vault_media::inspect(&path)?;
-                let staged = vault_media::stage(&asset, &std::env::temp_dir())?;
-                Ok::<_, vault_media::MediaError>((asset, staged))
-            })
-            .await
-            .map_err(|_| ApiError::new(ErrorCode::Internal))?
-            .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
-            let state = engine.state().await?;
-            let duplicate_track_ids = state
-                .tracks
-                .iter()
-                .filter(|(_, track)| {
-                    track
-                        .sources
-                        .values()
-                        .any(|source| source.sha256.as_deref() == Some(&asset.sha256))
-                })
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            if !duplicate_track_ids.is_empty() && !allow_duplicate {
-                return Ok(VaultResponse::ImportReview {
-                    metadata: Box::new(asset.metadata),
-                    sha256: asset.sha256,
-                    size_bytes: asset.size_bytes,
-                    duplicate_track_ids,
-                });
-            }
-            let marker = vault_protocol::Record::Media(vault_protocol::MediaMarker {
-                vault_id: engine.binding().vault_id,
-                import_id: op_id,
-                sha256: Some(asset.sha256.clone()),
-            });
-            let caption = vault_protocol::encode_text(&marker)
-                .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
-            let media = engine
-                .upload_document(staged.path().to_owned(), caption, cancel)
-                .await?;
-            if media.file.is_none() {
-                return Err(ApiError::new(ErrorCode::Integrity));
-            }
-            let source = vault_domain::Source {
+            import_local_file(
+                engine,
+                std::path::PathBuf::from(path),
+                track_id,
                 source_id,
-                chat_id: engine.binding().chat_id,
-                message_id: media.id,
-                sha256: Some(asset.sha256),
-                size_bytes: Some(asset.size_bytes),
-            };
-            let action = vault_domain::Action::TrackRegister {
-                metadata: asset.metadata,
-                source,
-            };
-            let command = engine.execute(op_id, track_id, action, cancel).await?;
-            events.emit(context, EventData::Command(Box::new(command.clone())));
-            VaultResponse::Command(Box::new(command))
+                op_id,
+                allow_duplicate,
+                cancel,
+                context,
+                events,
+            )
+            .await?
+        }
+        VaultRequest::ImportIncomingAudio {
+            source_chat_id,
+            message_id,
+            track_id,
+            source_id,
+            op_id,
+            allow_duplicate,
+        } => {
+            if track_id.is_nil() || source_id.is_nil() || op_id.is_nil() {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            let remote = engine
+                .transport()
+                .message(source_chat_id, message_id, cancel)
+                .await?
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            if remote.record()?.is_some() {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            let file = remote
+                .file
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            let temporary = tempfile::tempdir().map_err(|_| ApiError::new(ErrorCode::Storage))?;
+            let cache = vault_media::CacheManager::open(
+                temporary.path(),
+                u64::try_from(file.size).map_err(|_| ApiError::new(ErrorCode::InvalidInput))?,
+            )
+            .map_err(ApiError::from)?;
+            let lease = vault_media::download_to_cache(
+                engine.transport(),
+                &file,
+                &cache,
+                vault_media::DownloadOptions {
+                    cache_key: format!("incoming:{source_chat_id}:{message_id}"),
+                    expected_sha256: None,
+                    pinned: true,
+                },
+                cancel,
+                &|_, _| {},
+            )
+            .await
+            .map_err(ApiError::from)?;
+            let filename = std::path::Path::new(&file.name)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty() && value.len() <= 240)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            let _extension = std::path::Path::new(filename)
+                .extension()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty() && value.len() <= 8)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            let audio_path = temporary.path().join(filename);
+            let source_path = lease.path.clone();
+            let destination_path = audio_path.clone();
+            tokio::task::spawn_blocking(move || std::fs::copy(source_path, destination_path))
+                .await
+                .map_err(|_| ApiError::new(ErrorCode::Internal))?
+                .map_err(|_| ApiError::new(ErrorCode::Storage))?;
+            import_local_file(
+                engine,
+                audio_path,
+                track_id,
+                source_id,
+                op_id,
+                allow_duplicate,
+                cancel,
+                context,
+                events,
+            )
+            .await?
         }
         VaultRequest::ShareTrack {
             track_id,
@@ -1093,4 +1121,73 @@ async fn handle<T: Telegram + Clone + 'static>(
             return Err(ApiError::new(ErrorCode::Internal));
         }
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn import_local_file<T: Telegram + Clone + 'static>(
+    engine: &mut SyncEngine<T>,
+    path: std::path::PathBuf,
+    track_id: Uuid,
+    source_id: Uuid,
+    op_id: Uuid,
+    allow_duplicate: bool,
+    cancel: &CancellationToken,
+    context: &Context,
+    events: &EventBus,
+) -> Result<VaultResponse, ApiError> {
+    let (asset, staged) = tokio::task::spawn_blocking(move || {
+        let asset = vault_media::inspect(&path)?;
+        let staged = vault_media::stage(&asset, &std::env::temp_dir())?;
+        Ok::<_, vault_media::MediaError>((asset, staged))
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal))?
+    .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
+    let state = engine.state().await?;
+    let duplicate_track_ids = state
+        .tracks
+        .iter()
+        .filter(|(_, track)| {
+            track
+                .sources
+                .values()
+                .any(|source| source.sha256.as_deref() == Some(&asset.sha256))
+        })
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    if !duplicate_track_ids.is_empty() && !allow_duplicate {
+        return Ok(VaultResponse::ImportReview {
+            metadata: Box::new(asset.metadata),
+            sha256: asset.sha256,
+            size_bytes: asset.size_bytes,
+            duplicate_track_ids,
+        });
+    }
+    let marker = vault_protocol::Record::Media(vault_protocol::MediaMarker {
+        vault_id: engine.binding().vault_id,
+        import_id: op_id,
+        sha256: Some(asset.sha256.clone()),
+    });
+    let caption =
+        vault_protocol::encode_text(&marker).map_err(|_| ApiError::new(ErrorCode::Integrity))?;
+    let media = engine
+        .upload_document(staged.path().to_owned(), caption, cancel)
+        .await?;
+    if media.file.is_none() {
+        return Err(ApiError::new(ErrorCode::Integrity));
+    }
+    let source = vault_domain::Source {
+        source_id,
+        chat_id: engine.binding().chat_id,
+        message_id: media.id,
+        sha256: Some(asset.sha256),
+        size_bytes: Some(asset.size_bytes),
+    };
+    let action = vault_domain::Action::TrackRegister {
+        metadata: asset.metadata,
+        source,
+    };
+    let command = engine.execute(op_id, track_id, action, cancel).await?;
+    events.emit(context, EventData::Command(Box::new(command.clone())));
+    Ok(VaultResponse::Command(Box::new(command)))
 }

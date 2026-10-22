@@ -53,6 +53,27 @@ async fn fixture() -> (FakeServer, Binding) {
     engine.initialize(&token).await.unwrap();
     (server, binding)
 }
+fn wav_fixture() -> Vec<u8> {
+    let samples = [0i16; 4_800];
+    let data_len = (samples.len() * 2) as u32;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&48_000u32.to_le_bytes());
+    wav.extend_from_slice(&96_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    wav
+}
 fn service(server: &FakeServer, binding: Binding, bus: EventBus) -> VaultService {
     VaultService::start(
         SyncEngine::new(
@@ -214,6 +235,42 @@ async fn event_sequence_survives_session_changes_and_cancel_prevents_submission(
     }
     assert!(sessions.contains(&a.context().session_id));
     assert!(sessions.contains(&b.context().session_id));
+}
+
+#[tokio::test]
+async fn incoming_audio_is_downloaded_validated_and_registered_in_vault() {
+    let (server, binding) = fixture().await;
+    let incoming = server
+        .add_incoming_document("voice.wav".into(), "audio/wav".into(), wav_fixture())
+        .unwrap();
+    let service = service(&server, binding, EventBus::default());
+    ready(&service).await;
+    let track_id = Uuid::new_v4();
+    let response = service
+        .request(
+            VaultRequest::ImportIncomingAudio {
+                source_chat_id: incoming.chat_id,
+                message_id: incoming.id,
+                track_id,
+                source_id: Uuid::new_v4(),
+                op_id: Uuid::new_v4(),
+                allow_duplicate: false,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, VaultResponse::Command(command) if command.status == CommandStatus::Applied)
+    );
+    let track = service.reader().state().await.unwrap().tracks[&track_id].clone();
+    assert_eq!(track.metadata.title, "voice");
+    assert_eq!(track.sources.len(), 1);
+    assert_ne!(
+        track.sources.values().next().unwrap().message_id,
+        incoming.id
+    );
+    service.shutdown().await.unwrap();
 }
 
 #[tokio::test]

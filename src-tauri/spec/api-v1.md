@@ -34,7 +34,11 @@ store. `backend_vault_request` supports `sync`, `initialize`, `verify`, `snapsho
 GC planning/inspection/confirmed execution, media import with duplicate review,
 ranged offline download, download status/cancel, cache pin/clear, guarded event
 mutation, and `share_track` with one track/source and one explicit recipient chat.
-It also supports `import_backup`, which restores a verified metadata or full
+It also supports `import_incoming_audio` by explicitly selected source chat and
+message ID. The service fetches and validates the message, downloads the audio
+in bounded ranges, inspects the media, and then uses the same duplicate-review
+and vault registration flow as local imports. It also supports `import_backup`,
+which restores a verified metadata or full
 archive into a fresh empty vault by uploading media and creating new track,
 playlist, entry, and source references. The restore plan is persisted locally so
 the operation can resume after interruption. `backend_export_backup` writes

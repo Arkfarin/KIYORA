@@ -92,6 +92,31 @@ impl FakeServer {
     pub fn messages(&self) -> Result<Vec<RemoteMessage>, TelegramError> {
         Ok(self.lock()?.messages.values().cloned().collect())
     }
+    pub fn add_incoming_document(
+        &self,
+        name: String,
+        mime_type: String,
+        bytes: Vec<u8>,
+    ) -> Result<RemoteMessage, TelegramError> {
+        let mut server = self.lock()?;
+        let file_id = server.next_file;
+        server.next_file = server
+            .next_file
+            .checked_add(1)
+            .ok_or(TelegramError::InvalidResponse)?;
+        let file = RemoteFile {
+            file_id,
+            size: i64::try_from(bytes.len()).map_err(|_| TelegramError::InvalidInput)?,
+            name,
+            mime_type,
+        };
+        server.files.insert(file_id, bytes);
+        let chat_id = server.channel.chat_id;
+        let mut message = server.append(chat_id, "incoming audio".into(), Some(file))?;
+        message.trusted_control = false;
+        server.messages.insert(message.id, message.clone());
+        Ok(message)
+    }
     pub fn shared_messages(&self) -> Result<Vec<(ChatId, MessageId, ChatId)>, TelegramError> {
         Ok(self.lock()?.shared.clone())
     }

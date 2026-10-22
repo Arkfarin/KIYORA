@@ -96,7 +96,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
   Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
   volume controls; the decoder retains an active cache lease and emits state events.
-- Full `cargo test --workspace` now passes 51 tests; one native TDLib smoke test is
+- Full `cargo test --workspace` now passes 52 tests; one native TDLib smoke test is
   opt-in/ignored by default. `cargo check --workspace` passes.
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
@@ -109,8 +109,9 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   media source and recipient, checks TDLib `can_be_forwarded`, uses `forwardMessages`
   in copy mode with caption removed, rejects unrelated vault service records, and
   exposes a CLI/API result. Simulator integration confirms only the selected
-  recipient is targeted. Incoming-audio discovery/import from other chats remains
-  incomplete.
+  recipient is targeted. Incoming-audio import accepts an explicitly selected
+  source chat and message, validates and range-downloads the audio, then reuses the
+  local media inspection, duplicate review, upload, and registration pipeline.
 - Backup codec can verify/export and create new-vault reference plans. Tauri/API
   and CLI can export metadata/full archives and restore verified archives into a
   fresh empty vault, uploading referenced media and mapping all library references
@@ -118,7 +119,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: incoming-audio import, Android native layers, generated schema/fixtures, CI/platform builds,
+Remaining: Android native layers, generated schema/fixtures, CI/platform builds,
 expanded chaos/load tests and final acceptance traceability. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.

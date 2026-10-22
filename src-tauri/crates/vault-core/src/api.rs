@@ -229,6 +229,14 @@ pub enum VaultRequest {
         op_id: Uuid,
         allow_duplicate: bool,
     },
+    ImportIncomingAudio {
+        source_chat_id: ChatId,
+        message_id: MessageId,
+        track_id: Uuid,
+        source_id: Uuid,
+        op_id: Uuid,
+        allow_duplicate: bool,
+    },
     DownloadForOffline {
         download_id: Uuid,
         track_id: Uuid,
