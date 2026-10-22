@@ -24,6 +24,7 @@ fn cli_help_is_standalone_and_lists_backend_operations() {
     assert!(text.contains("backup verify"));
     assert!(text.contains("library list|search"));
     assert!(text.contains("share <track-id> <source-id> <recipient-chat-id>"));
+    assert!(text.contains("playback play <track-id> <source-id>"));
 }
 
 #[test]

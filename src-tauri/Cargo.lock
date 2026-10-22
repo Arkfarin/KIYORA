@@ -2282,6 +2282,7 @@ dependencies = [
  "vault-core",
  "vault-db",
  "vault-domain",
+ "vault-media",
  "vault-snapshot",
  "vault-telegram",
  "zeroize",

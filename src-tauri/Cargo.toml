@@ -70,6 +70,7 @@ vault-domain.workspace = true
 vault-db.workspace = true
 vault-telegram.workspace = true
 vault-snapshot.workspace = true
+vault-media.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true

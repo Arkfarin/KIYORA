@@ -4,7 +4,9 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use vault_core::{ApiError, Backend, ErrorCode, Mutation, Status, VaultRequest, VaultResponse};
+use vault_core::{
+    ApiError, Backend, ErrorCode, Mutation, PlaybackAction, Status, VaultRequest, VaultResponse,
+};
 use vault_domain::{Action, ChatId};
 use zeroize::Zeroizing;
 
@@ -45,6 +47,7 @@ async fn run() -> Result<(), ApiError> {
         "gc" => gc(&backend, &args[1..]).await?,
         "backup" => backup(&backend, &args[1..]).await?,
         "media" => media(&backend, &args[1..]).await?,
+        "playback" => playback(&backend, &args[1..]).await?,
         "diagnose" => diagnose(&backend).await?,
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     }
@@ -53,7 +56,7 @@ async fn run() -> Result<(), ApiError> {
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
     );
 }
 async fn active(backend: &Backend) -> Result<Status, ApiError> {
@@ -474,6 +477,59 @@ async fn media(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
         }
         _ => Err(ApiError::new(ErrorCode::InvalidInput)),
     }
+}
+async fn playback(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
+    let status = active(backend).await?;
+    let session_id = status.context.session_id;
+    let state = match args.first().map(String::as_str) {
+        Some("play") => {
+            backend
+                .play_track(
+                    session_id,
+                    parse_uuid(args.get(1))?,
+                    parse_uuid(args.get(2))?,
+                )
+                .await?;
+            backend.playback_state(session_id).await?
+        }
+        Some("status") => backend.playback_state(session_id).await?,
+        Some("pause") => {
+            backend
+                .control_playback(session_id, PlaybackAction::Pause)
+                .await?
+        }
+        Some("resume") => {
+            backend
+                .control_playback(session_id, PlaybackAction::Resume)
+                .await?
+        }
+        Some("stop") => {
+            backend
+                .control_playback(session_id, PlaybackAction::Stop)
+                .await?
+        }
+        Some("seek") => {
+            let position_ms = args
+                .get(1)
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            backend
+                .control_playback(session_id, PlaybackAction::Seek(position_ms))
+                .await?
+        }
+        Some("volume") => {
+            let volume = args
+                .get(1)
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            backend
+                .control_playback(session_id, PlaybackAction::SetVolume(volume))
+                .await?
+        }
+        _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
+    };
+    println!("{state:?}");
+    Ok(())
 }
 async fn playlist(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;

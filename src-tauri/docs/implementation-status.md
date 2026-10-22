@@ -94,6 +94,8 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   local cache quota/LRU/pins/leases, and desktop Rodio playback controls.
 - Desktop playback was checked against generated PCM WAV data without requiring an
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
+  Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
+  volume controls; the decoder retains an active cache lease and emits state events.
 - Full `cargo test --workspace` now passes 51 tests; one native TDLib smoke test is
   opt-in/ignored by default. `cargo check --workspace` passes.
 - Android secure storage, Android media session/foreground playback and CPAL
@@ -116,8 +118,7 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: playback controls and cached-file lease into the application API,
-incoming-audio import, Android native layers, generated schema/fixtures, CI/platform builds,
+Remaining: incoming-audio import, Android native layers, generated schema/fixtures, CI/platform builds,
 expanded chaos/load tests and final acceptance traceability. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.

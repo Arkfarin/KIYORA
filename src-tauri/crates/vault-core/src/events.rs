@@ -28,6 +28,8 @@ pub enum EventData {
     },
     #[serde(rename = "download.progress")]
     Download(DownloadInfo),
+    #[serde(rename = "playback.state")]
+    Playback(vault_media::PlaybackState),
     #[serde(rename = "backup.restore.progress")]
     BackupRestore {
         phase: String,

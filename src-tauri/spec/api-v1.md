@@ -23,6 +23,9 @@ the domain/protocol contract are decimal strings so JavaScript does not round th
 | `backend_playlists` | `session_id`, page fields | local projection page |
 | `backend_vault_request` | `session_id`, typed request | typed operation result |
 | `backend_export_backup` | `session_id`, `path`, `kind` (`metadata` or `full`) | verified archive summary |
+| `backend_play_track` | `session_id`, `track_id`, `source_id` | unit; starts local playback |
+| `backend_playback_state` | `session_id` | current playback state |
+| `backend_control_playback` | `session_id`, tagged action | updated playback state |
 | `backend_disconnect` | `session_id` | unit |
 
 `backend_authenticate.input` is tagged as `{ "kind": "phone|code|password|qr|email|email_code", "value": ... }`.
@@ -42,6 +45,11 @@ Downloads emit byte progress and enter cache only after complete size and SHA-25
 validation. Sharing rejects unrelated control records and checks TDLib forward
 permission. Shared library writes require `ONLINE_READY`; local projection reads
 and cache clearing remain available while offline.
+Playback opens an OS output device and retains a verified cache lease while the
+decoder uses the file. `backend_play_track` requires the selected track/source to
+be fully cached; use `download_for_offline` first. Pause, resume, stop, seek, and
+volume controls emit contextual `playback.state` events. Android playback remains
+unavailable until its native audio context is wired.
 
 Backend events are emitted on `kiyora://backend`. Each event includes the profile
 and session context and a monotonically increasing sequence number scoped to that

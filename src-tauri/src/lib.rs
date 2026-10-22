@@ -44,6 +44,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             backend_playlists,
             backend_vault_request,
             backend_export_backup,
+            backend_play_track,
+            backend_playback_state,
+            backend_control_playback,
             backend_disconnect
         ])
         .build(tauri::generate_context!())?;
@@ -238,6 +241,30 @@ async fn backend_export_backup(
     backend
         .export_backup(session_id, std::path::PathBuf::from(path), kind)
         .await
+}
+#[tauri::command]
+async fn backend_play_track(
+    backend: State<'_, std::sync::Arc<Backend>>,
+    session_id: Uuid,
+    track_id: Uuid,
+    source_id: Uuid,
+) -> Result<(), ApiError> {
+    backend.play_track(session_id, track_id, source_id).await
+}
+#[tauri::command]
+async fn backend_playback_state(
+    backend: State<'_, std::sync::Arc<Backend>>,
+    session_id: Uuid,
+) -> Result<vault_media::PlaybackState, ApiError> {
+    backend.playback_state(session_id).await
+}
+#[tauri::command]
+async fn backend_control_playback(
+    backend: State<'_, std::sync::Arc<Backend>>,
+    session_id: Uuid,
+    action: vault_core::PlaybackAction,
+) -> Result<vault_media::PlaybackState, ApiError> {
+    backend.control_playback(session_id, action).await
 }
 #[tauri::command]
 async fn backend_disconnect(

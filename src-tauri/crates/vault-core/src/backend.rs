@@ -59,6 +59,7 @@ struct Session {
     service: Option<VaultService>,
     reader: Option<ProjectionReader>,
     cache: vault_media::CacheManager,
+    playback: Option<vault_media::PlaybackEngine>,
     context: Context,
 }
 #[derive(Clone)]
@@ -150,6 +151,7 @@ impl Backend {
             service: None,
             reader,
             cache,
+            playback: None,
             context: context.clone(),
         };
         *self.session.lock().await = Some(session);
@@ -212,6 +214,105 @@ impl Backend {
             .map(VaultService::reader)
             .or_else(|| s.reader.clone())
             .ok_or_else(|| ApiError::new(ErrorCode::NoVault))
+    }
+    pub async fn play_track(
+        &self,
+        session_id: Uuid,
+        track_id: Uuid,
+        source_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let (reader, cache) = {
+            let guard = self.session.lock().await;
+            let session = guard
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            check_session(session, session_id)?;
+            (
+                session
+                    .reader
+                    .clone()
+                    .ok_or_else(|| ApiError::new(ErrorCode::NoVault))?,
+                session.cache.clone(),
+            )
+        };
+        let state = reader.state().await.map_err(ApiError::from)?;
+        let track = state
+            .tracks
+            .get(&track_id)
+            .filter(|track| track.sources.contains_key(&source_id))
+            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+        let lease = cache
+            .acquire(&format!("{track_id}:{source_id}"))
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::new(ErrorCode::MediaUnavailable))?;
+        let duration_ms = track.metadata.duration_ms;
+        let mut guard = self.session.lock().await;
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        check_session(session, session_id)?;
+        if session.playback.is_none() {
+            let engine = vault_media::PlaybackEngine::open().map_err(ApiError::from)?;
+            let mut changes = engine.state_changes();
+            let events = self.events.clone();
+            let context = session.context.clone();
+            tokio::spawn(async move {
+                while changes.changed().await.is_ok() {
+                    events.emit(
+                        &context,
+                        EventData::Playback(changes.borrow_and_update().clone()),
+                    );
+                }
+            });
+            session.playback = Some(engine);
+        }
+        let playback = session
+            .playback
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::Internal))?;
+        playback
+            .play(track_id, lease, duration_ms)
+            .map_err(ApiError::from)?;
+        Ok(())
+    }
+    pub async fn playback_state(
+        &self,
+        session_id: Uuid,
+    ) -> Result<vault_media::PlaybackState, ApiError> {
+        let guard = self.session.lock().await;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        check_session(session, session_id)?;
+        Ok(session
+            .playback
+            .as_ref()
+            .map(vault_media::PlaybackEngine::state)
+            .unwrap_or(vault_media::PlaybackState::Idle))
+    }
+    pub async fn control_playback(
+        &self,
+        session_id: Uuid,
+        action: PlaybackAction,
+    ) -> Result<vault_media::PlaybackState, ApiError> {
+        let mut guard = self.session.lock().await;
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        check_session(session, session_id)?;
+        let playback = session
+            .playback
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::Conflict))?;
+        match action {
+            PlaybackAction::Pause => playback.pause(),
+            PlaybackAction::Resume => playback.resume(),
+            PlaybackAction::Stop => playback.stop(),
+            PlaybackAction::Seek(position_ms) => playback.seek(position_ms),
+            PlaybackAction::SetVolume(volume) => playback.set_volume(volume),
+        }
+        .map_err(ApiError::from)?;
+        Ok(playback.state())
     }
     pub async fn export_backup(
         &self,

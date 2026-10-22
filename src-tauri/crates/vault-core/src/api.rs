@@ -25,6 +25,8 @@ pub enum ErrorCode {
     RateLimited,
     Network,
     Storage,
+    MediaUnavailable,
+    PlaybackUnavailable,
     Closed,
     Internal,
 }
@@ -58,6 +60,8 @@ impl ApiError {
             RateLimited => "Telegram rate limit reached",
             Network => "Telegram request failed",
             Storage => "local storage operation failed",
+            MediaUnavailable => "media is not available in the local cache",
+            PlaybackUnavailable => "system audio playback is unavailable",
             Closed => "session is closed",
             Internal => "backend worker failed",
         };
@@ -144,6 +148,20 @@ impl From<vault_media::MediaError> for ApiError {
         }
     }
 }
+impl From<vault_media::PlaybackError> for ApiError {
+    fn from(error: vault_media::PlaybackError) -> Self {
+        match error {
+            vault_media::PlaybackError::DeviceUnavailable => {
+                Self::new(ErrorCode::PlaybackUnavailable)
+            }
+            vault_media::PlaybackError::Decode | vault_media::PlaybackError::Seek => {
+                Self::new(ErrorCode::InvalidInput)
+            }
+            vault_media::PlaybackError::Closed => Self::new(ErrorCode::Closed),
+            vault_media::PlaybackError::Media(error) => error.into(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,6 +185,21 @@ pub struct Mutation {
     pub op_id: Uuid,
     pub entity_id: Uuid,
     pub action: Action,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum PlaybackAction {
+    Pause,
+    Resume,
+    Stop,
+    Seek(u64),
+    SetVolume(f32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
