@@ -65,14 +65,25 @@ struct Session {
 #[derive(Clone)]
 pub struct Backend {
     store: Arc<ProfileStore>,
+    secrets: Arc<dyn SecretStore + Send + Sync>,
     native_path: PathBuf,
     events: EventBus,
     session: Arc<Mutex<Option<Session>>>,
 }
 impl Backend {
     pub fn new(store: ProfileStore, native_path: impl Into<PathBuf>) -> Self {
+        Self::with_secrets(store, native_path, Arc::new(OsSecrets))
+    }
+    /// Supply the native platform's secure storage. The provider runs on blocking
+    /// workers, never on a Tokio executor or the Android UI thread.
+    pub fn with_secrets(
+        store: ProfileStore,
+        native_path: impl Into<PathBuf>,
+        secrets: Arc<dyn SecretStore + Send + Sync>,
+    ) -> Self {
         Self {
             store: Arc::new(store),
+            secrets,
             native_path: native_path.into(),
             events: EventBus::default(),
             session: Arc::new(Mutex::new(None)),
@@ -161,7 +172,11 @@ impl Backend {
         // A missing key keeps SQLite readable and asks for explicit authentication.
         if let Some(api_id) = api_id {
             let item = format!("{id}:api-hash");
-            match OsSecrets.get(&item)? {
+            let secrets = self.secrets.clone();
+            let hash = tokio::task::spawn_blocking(move || secrets.get(&item))
+                .await
+                .map_err(|_| ApiError::new(ErrorCode::Internal))??;
+            match hash {
                 Some(hash) => {
                     let auth = self
                         .connect_native(
@@ -392,7 +407,7 @@ impl Backend {
         api_id: i32,
         api_hash: zeroize::Zeroizing<String>,
     ) -> Result<AuthStatus, ApiError> {
-        let mut guard = self.session.lock().await;
+        let mut guard = self.session.clone().lock_owned().await;
         let s = guard
             .as_mut()
             .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
@@ -406,17 +421,31 @@ impl Backend {
         if api_id <= 0 || api_hash.len() != 32 {
             return Err(ApiError::new(ErrorCode::InvalidInput));
         }
-        let item = format!("{}:api-hash", s.lease.profile().profile_id);
-        OsSecrets.set(&item, api_hash.as_bytes())?;
-        let saved = OsSecrets
-            .get(&item)?
-            .ok_or_else(|| ApiError::new(ErrorCode::SecureStorageUnavailable))?;
-        if saved.as_slice() != api_hash.as_bytes() {
-            return Err(ApiError::new(ErrorCode::SecureStorageUnavailable));
-        }
-        s.config.api_id = Some(api_id);
-        save_config(&s.lease, &s.config)?;
-        let key = s.lease.database_key(&OsSecrets)?;
+        let secrets = self.secrets.clone();
+        // Carry the owned session lock into the worker so a concurrent profile
+        // switch cannot interleave key/config persistence with TDLib startup.
+        let (mut guard, api_hash, key) = tokio::task::spawn_blocking(move || {
+            let s = guard
+                .as_mut()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            let item = format!("{}:api-hash", s.lease.profile().profile_id);
+            secrets.set(&item, api_hash.as_bytes())?;
+            let saved = secrets
+                .get(&item)?
+                .ok_or_else(|| ApiError::new(ErrorCode::SecureStorageUnavailable))?;
+            if saved.as_slice() != api_hash.as_bytes() {
+                return Err(ApiError::new(ErrorCode::SecureStorageUnavailable));
+            }
+            let key = s.lease.database_key(secrets.as_ref())?;
+            s.config.api_id = Some(api_id);
+            save_config(&s.lease, &s.config)?;
+            Ok::<_, ApiError>((guard, api_hash, key))
+        })
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Internal))??;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
         let client = TdClient::open(&self.native_path).await?;
         if client.auth_status() != AuthStatus::ParametersRequired {
             client.close().await.map_err(ApiError::from)?;

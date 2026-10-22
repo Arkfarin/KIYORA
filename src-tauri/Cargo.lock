@@ -2275,6 +2275,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tauri-plugin-kiyora-native",
  "tauri-plugin-opener",
  "tokio",
  "tokio-util",
@@ -2283,6 +2284,7 @@ dependencies = [
  "vault-db",
  "vault-domain",
  "vault-media",
+ "vault-security",
  "vault-snapshot",
  "vault-telegram",
  "zeroize",
@@ -4499,6 +4501,19 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-kiyora-native"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "tokio",
+ "vault-security",
+ "zeroize",
 ]
 
 [[package]]

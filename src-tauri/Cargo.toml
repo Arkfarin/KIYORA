@@ -64,6 +64,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-kiyora-native = { path = "crates/tauri-plugin-kiyora-native" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 vault-core.workspace = true
@@ -72,6 +73,7 @@ vault-db.workspace = true
 vault-telegram.workspace = true
 vault-snapshot.workspace = true
 vault-media.workspace = true
+vault-security.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true

@@ -28,8 +28,11 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
 - Initial repository: clean `d5ece51`, Tauri greet command only, no backend crates.
 - RFC found at `~/Downloads/telegram_music_architecture_ru.md`; copied into spec.
 - Linux x86_64, system Rust/Cargo 1.99.1, GTK/WebKit/ALSA development packages present.
-- `rustup` unavailable; Windows and Android toolchains not yet verified.
-- The installed Rust sysroot contains only `x86_64-unknown-linux-gnu`; no Android
+- `rustup` is unavailable. The system Rust sysroot contains only the Linux target;
+  a matching official compiler and Android arm64 standard library were installed
+  locally under `target/android-tools` and used to check the native plugin.
+- Android SDK 36/build-tools 36.0.0, Gradle 8.14.3 and an API 35 AOSP emulator were
+  installed locally for native plugin assembly, Lint and Keystore tests. No Android
   NDK or Windows linker is installed. `scripts/check-backend.sh` runs the complete
   portable Rust check suite and runs the native TDLib lifecycle smoke when
   `KIYORA_TDJSON` is set.
@@ -69,7 +72,8 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   each other inside TDLib. Live account download behavior remains unverified.
 - Added `vault-security`: profile directories, OS locks, account binding and
   Linux Secret Service / Windows Credential Manager / macOS Keychain providers.
-  Android secure-store provider is still missing and explicitly refuses secrets.
+  Android's Tauri shell now injects a native Keystore-backed provider; the CLI
+  without a native provider continues to fail closed. See ADR 006 and `android.md`.
 - Added `vault-snapshot`: canonical full state, bounded zstd decode, A/B documents,
   read-back digest/context checks and independent append-only commit.
 - Added `vault-sync`: snapshot bootstrap/recovery, server-ordered catch-up, bounded
@@ -135,11 +139,17 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   track position. Streamed prefixes are never labeled verified full cache entries.
   The CLI keeps playback alive with in-process controls. Audible hardware output
   and actual Telegram account streaming have not been exercised.
-- The 2026-10-22 full backend gate reports 83 workspace tests passed and one native
+- The 2026-10-22 full backend gate reports 85 workspace tests passed and one native
   TDLib smoke test ignored by default; the separate opt-in run against pinned
   tdjson 1.8.69 also passes. Formatting, workspace check, all-target clippy with
   denied warnings, CLI smoke and all three API schema comparisons pass.
-- Android secure storage, Android media session/foreground playback and CPAL
+- Android Keystore storage is implemented with per-profile/purpose AES-GCM keys,
+  bounded records, atomic persistence/read-back and refusal to reset corrupt or
+  keyless records. The private native plugin rejects all WebView invokes, tested
+  even with an artificial ACL grant. Native assembly, test APK, Lint and the arm64
+  Rust plugin check pass; five AndroidKeyStore tests pass on an Android 15/API 35
+  x86_64 AOSP emulator. Full app startup, physical-device storage and TDLib login
+  remain unverified. Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
 - Streaming/ranged Telegram downloads feed verified full files into the profile-local
   cache. Service requests expose byte progress, status, cancellation, cache usage
@@ -170,9 +180,9 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: real-account and hardware streaming verification, Android native layers, CI/platform builds,
-larger end-to-end history profiling and expanded chaos/load tests. Windows and Android
-toolchains are unavailable/unverified in this environment. No end-to-end backend
+Remaining: real-account and hardware streaming verification, Android playback, CI/platform builds,
+larger end-to-end history profiling and expanded chaos/load tests. Windows and complete
+Android app/TDLib builds remain unverified. No end-to-end backend
 acceptance gate is claimed complete.
 Sync currently rechecks all post-barrier receipts per catch-up to detect known
 manual deletion. Performance of long tails must be measured before optimizing.

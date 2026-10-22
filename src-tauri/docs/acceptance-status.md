@@ -7,9 +7,9 @@ end-to-end evidence is missing. No partial item is a completion claim.
 
 | # | Criterion | Status | Current evidence / remaining proof |
 |---|---|---|---|
-| 1 | Workspace builds on available targets | Partial | Linux `cargo check --workspace` passes. Only `x86_64-unknown-linux-gnu` is installed; Windows and Android targets are unavailable. |
+| 1 | Workspace builds on available targets | Partial | Linux `cargo check --workspace` passes. Android native plugin assembly/Lint and arm64 Rust plugin check pass; complete Android app/TDLib and Windows builds remain unverified. |
 | 2 | TDLib adapter is real | Pass | Native tdjson worker, request correlation, updates, auth, history, send/upload/download paths; pinned 1.8.69 start/version/close smoke passes. |
-| 3 | Authorization and session persistence | Partial | Auth flow and OS-backed encrypted TDLib key are implemented; no account login/reopen was tested with a provided test account. Android secret storage is absent and fails closed. |
+| 3 | Authorization and session persistence | Partial | Auth flow and OS-backed encrypted TDLib key are implemented; no account login/reopen was tested with a provided test account. Android Keystore provider has five passing emulator tests; complete app startup and physical-device behavior remain unverified. |
 | 4 | Vault discovery/creation | Pass (simulated) | Ownership/privacy and discovery/attach/create/resume paths have service and Telegram simulator coverage. No live vault operation was attempted. |
 | 5 | SQLite and migrations | Pass | Transaction, atomic batch rollback, duplicate receipt, future-schema, FTS, snapshot-restore and reopen tests pass in `crates/vault-db/tests/transactions.rs`; mixed-action batch boundaries match pure and sequential replay in `batch_replay.rs`. |
 | 6 | Required reducer events | Pass | Reducer action and invariant tests in `crates/vault-domain/tests/reducer.rs`; wire format fixtures in `crates/vault-protocol/tests/wire.rs`. |
@@ -26,12 +26,13 @@ end-to-end evidence is missing. No partial item is a completion claim.
 | 17 | Available automated checks pass | Pass | `scripts/check-backend.sh` passes fmt, workspace check, clippy, tests, CLI smoke and schema comparisons; opt-in run also passed native TDLib smoke. |
 | 18 | Frontend unchanged | Pass | All implementation changes are confined to `src-tauri`; current repository diff is checked before each commit. |
 | 19 | Real Telegram smoke when safe credentials are provided | Not run | No explicit test-account configuration was supplied. No personal Telegram session was used. |
-| 20 | Unverified platforms are listed honestly | Pass | Linux is tested; Windows/Android target builds and Android native services are explicitly recorded as unavailable/unimplemented. |
+| 20 | Unverified platforms are listed honestly | Pass | Linux is tested; Android plugin/Keystore evidence is separated from unverified full app/TDLib/physical-device builds and unimplemented playback. Windows remains unverified. |
 
 ## Remaining acceptance work
 
-- Implement Android Keystore-backed secret storage and Android playback/media-session
-  integration, then validate on an Android target/device.
+- Validate the Keystore bridge in the complete Android app and on physical hardware;
+  implement Android playback/media-session integration. See `docs/android.md` for
+  the native plugin, arm64 check and emulator tests already available.
 - Obtain an isolated test Telegram account/channel configuration before attempting
   account authorization, vault creation, sharing, upload, restore or GC on Telegram.
 - Exercise desktop output-device playback; decoder-only tests do not prove audible

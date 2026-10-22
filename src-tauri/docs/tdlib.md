@@ -46,6 +46,7 @@ Native logs are disabled, and raw TDLib errors/updates never go directly to UI l
 
 Linux keys use Secret Service with encrypted D-Bus transport; Windows uses Credential
 Manager and macOS Keychain. No usable secure store means an explicit error, never a
-plaintext key file. Android currently refuses credentials until the native Keystore
-provider is connected. Session directories, SQLite and cache are per profile, and
+plaintext key file. The Android Tauri shell injects the native Keystore provider
+described in [android.md](android.md); the CLI without that provider still refuses
+credentials. Session directories, SQLite and cache are per profile, and
 an OS file lock prevents two processes from opening the same TDLib database.

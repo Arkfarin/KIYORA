@@ -136,7 +136,7 @@ impl ProfileStore {
         }
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
@@ -195,7 +195,7 @@ impl ProfileLease {
     }
     pub fn database_key(
         &self,
-        store: &impl SecretStore,
+        store: &(impl SecretStore + ?Sized),
     ) -> Result<Zeroizing<Vec<u8>>, SecurityError> {
         let key = format!("{}:tdlib-key", self.profile.profile_id);
         if let Some(secret) = store.get(&key)? {

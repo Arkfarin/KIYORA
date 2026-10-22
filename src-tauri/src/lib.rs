@@ -2,8 +2,20 @@
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_kiyora_native::init())
         .setup(|app| {
+            #[cfg(not(target_os = "android"))]
             let backend = std::sync::Arc::new(vault_core::Backend::default_backend()?);
+            #[cfg(target_os = "android")]
+            let backend = {
+                let secrets = app.state::<tauri_plugin_kiyora_native::AndroidSecrets<tauri::Wry>>();
+                let paths = secrets.storage_paths()?;
+                std::sync::Arc::new(vault_core::Backend::with_secrets(
+                    vault_security::ProfileStore::at(paths.profiles)?,
+                    paths.tdjson,
+                    std::sync::Arc::new(secrets.inner().clone()),
+                ))
+            };
             let mut events = backend.subscribe_events();
             app.manage(backend);
             let handle = app.handle().clone();
