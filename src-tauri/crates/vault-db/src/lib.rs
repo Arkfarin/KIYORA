@@ -150,75 +150,99 @@ impl Database {
         mid: MessageId,
         record: &Record,
     ) -> Result<Option<Outcome>, DbError> {
-        if record.vault_id() != self.binding.vault_id {
-            return Err(DbError::Binding);
+        let outcomes = self.apply_records(&[(mid, record.clone())])?;
+        outcomes.into_iter().next().ok_or(DbError::Schema)
+    }
+
+    /// Apply one ordered history batch atomically, reconstructing the projection once.
+    pub fn apply_records(
+        &mut self,
+        records: &[(MessageId, Record)],
+    ) -> Result<Vec<Option<Outcome>>, DbError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
         }
-        if let Record::Init(init) = record
-            && init.owner_telegram_user_id != self.binding.owner_id
-        {
-            return Err(DbError::Binding);
-        }
-        let digest = hex::encode(Sha256::digest(vault_protocol::encode(record)?));
         let vault = self.binding.vault_id.to_string();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let seen: Option<String> = tx
-            .query_row(
-                "SELECT record_sha256 FROM observed_messages WHERE vault_id=?1 AND message_id=?2",
-                params![vault, mid.get()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(seen) = seen {
-            if seen != digest {
-                return Err(DbError::MessageChanged);
-            }
-            return match record {
-                Record::Event(event) => {
-                    Ok(projection::receipt(&tx, &vault, event.op_id)?.map(|r| r.outcome))
-                }
-                _ => Ok(None),
-            };
-        }
-        let cursor: i64 = tx.query_row(
+        let before = projection::read(&tx, self.binding.vault_id)?;
+        let mut after = before.clone();
+        let mut cursor: i64 = tx.query_row(
             "SELECT cursor FROM sync_state WHERE vault_id=?1",
             [&vault],
             |r| r.get(0),
         )?;
-        if mid.get() <= cursor {
-            return Err(DomainError::OutOfOrder.into());
-        }
-        let outcome = if let Record::Event(event) = record {
-            let before = projection::read(&tx, self.binding.vault_id)?;
-            let mut after = before.clone();
-            let outcome = after.apply(mid, event)?;
-            projection::write_delta(&tx, &before, &after)?;
-            // A reconciled receipt, not the network ACK, makes the command terminal.
-            let status = match outcome {
-                Outcome::Applied | Outcome::NoOp(_) => CommandStatus::Applied,
-                Outcome::Rejected(_) => CommandStatus::RejectedByReducer,
+        let mut outcomes = Vec::with_capacity(records.len());
+
+        for (mid, record) in records {
+            if record.vault_id() != self.binding.vault_id {
+                return Err(DbError::Binding);
+            }
+            if let Record::Init(init) = record
+                && init.owner_telegram_user_id != self.binding.owner_id
+            {
+                return Err(DbError::Binding);
+            }
+            let digest = hex::encode(Sha256::digest(vault_protocol::encode(record)?));
+            let seen: Option<String> = tx
+                .query_row(
+                    "SELECT record_sha256 FROM observed_messages WHERE vault_id=?1 AND message_id=?2",
+                    params![vault, mid.get()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(seen) = seen {
+                if seen != digest {
+                    return Err(DbError::MessageChanged);
+                }
+                outcomes.push(match record {
+                    Record::Event(event) => Some(
+                        after
+                            .applied
+                            .get(&event.op_id)
+                            .ok_or(DbError::Schema)?
+                            .outcome
+                            .clone(),
+                    ),
+                    _ => None,
+                });
+                continue;
+            }
+            if mid.get() <= cursor {
+                return Err(DomainError::OutOfOrder.into());
+            }
+            let outcome = if let Record::Event(event) = record {
+                let outcome = after.apply(*mid, event)?;
+                // A reconciled receipt, not the network ACK, makes the command terminal.
+                let status = match outcome {
+                    Outcome::Applied | Outcome::NoOp(_) => CommandStatus::Applied,
+                    Outcome::Rejected(_) => CommandStatus::RejectedByReducer,
+                };
+                let receipt_id = after
+                    .applied
+                    .get(&event.op_id)
+                    .ok_or(DbError::Schema)?
+                    .message_id;
+                tx.execute("UPDATE inflight_commands SET status=?1,server_msg_id=?2,result_json=?3 WHERE vault_id=?4 AND op_id=?5",params![status.as_str(),receipt_id.get(),serde_json::to_string(&outcome)?,vault,event.op_id.to_string()])?;
+                Some(outcome)
+            } else {
+                None
             };
-            let receipt_id = after
-                .applied
-                .get(&event.op_id)
-                .ok_or(DbError::Schema)?
-                .message_id;
-            tx.execute("UPDATE inflight_commands SET status=?1,server_msg_id=?2,result_json=?3 WHERE vault_id=?4 AND op_id=?5",params![status.as_str(),receipt_id.get(),serde_json::to_string(&outcome)?,vault,event.op_id.to_string()])?;
-            Some(outcome)
-        } else {
-            None
-        };
-        tx.execute(
-            "INSERT INTO observed_messages VALUES (?1,?2,?3,?4)",
-            params![vault, mid.get(), record.kind(), digest],
-        )?;
-        tx.execute(
-            "UPDATE sync_state SET cursor=?1 WHERE vault_id=?2",
-            params![mid.get(), vault],
-        )?;
+            tx.execute(
+                "INSERT INTO observed_messages VALUES (?1,?2,?3,?4)",
+                params![vault, mid.get(), record.kind(), digest],
+            )?;
+            cursor = mid.get();
+            tx.execute(
+                "UPDATE sync_state SET cursor=?1 WHERE vault_id=?2",
+                params![cursor, vault],
+            )?;
+            outcomes.push(outcome);
+        }
+        projection::write_delta(&tx, &before, &after)?;
         tx.commit()?;
-        Ok(outcome)
+        Ok(outcomes)
     }
 
     /// Install only a verified full snapshot. Local cache/settings/commands survive.

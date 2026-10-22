@@ -11,7 +11,7 @@ end-to-end evidence is missing. No partial item is a completion claim.
 | 2 | TDLib adapter is real | Pass | Native tdjson worker, request correlation, updates, auth, history, send/upload/download paths; pinned 1.8.69 start/version/close smoke passes. |
 | 3 | Authorization and session persistence | Partial | Auth flow and OS-backed encrypted TDLib key are implemented; no account login/reopen was tested with a provided test account. Android secret storage is absent and fails closed. |
 | 4 | Vault discovery/creation | Pass (simulated) | Ownership/privacy and discovery/attach/create/resume paths have service and Telegram simulator coverage. No live vault operation was attempted. |
-| 5 | SQLite and migrations | Pass | Transaction, rollback, future-schema, FTS, snapshot-restore and reopen tests pass in `crates/vault-db/tests/transactions.rs`. |
+| 5 | SQLite and migrations | Pass | Transaction, atomic batch rollback, duplicate receipt, future-schema, FTS, snapshot-restore and reopen tests pass in `crates/vault-db/tests/transactions.rs`; mixed-action batch boundaries match pure and sequential replay in `batch_replay.rs`. |
 | 6 | Required reducer events | Pass | Reducer action and invariant tests in `crates/vault-domain/tests/reducer.rs`; wire format fixtures in `crates/vault-protocol/tests/wire.rs`. |
 | 7 | Shared writes require ONLINE_READY | Pass | Offline guard and no-queue behavior tested in `crates/vault-sync/tests/convergence.rs` and `crates/vault-core/tests/service.rs`. |
 | 8 | History and live-update sync | Pass (simulated) | Multi-client convergence, reverse/short pages, delayed/duplicate updates, lost ACK and catch-up tests in `crates/vault-sync/tests/convergence.rs`. Live Telegram account path remains untested. |
@@ -37,4 +37,6 @@ end-to-end evidence is missing. No partial item is a completion claim.
 - Exercise desktop output-device playback; decoder-only tests do not prove audible
   device playback.
 - Add/execute CI and Windows/Android target builds when those toolchains are available.
-- Measure long-history synchronization and add broader chaos/load tests.
+- Extend the 1,000-event sync regression and 10,000-event local SQLite benchmark to
+  larger end-to-end histories, and add broader chaos/load tests. Local debug replay
+  timings and reproduction commands are recorded in `implementation-status.md`.

@@ -331,9 +331,7 @@ impl<T: Telegram> SyncEngine<T> {
             )
             .await?;
             let last = messages.last().map(|m| m.id.get()).unwrap_or(cursor);
-            for message in messages {
-                self.apply_message(message).await?;
-            }
+            self.apply_messages(&messages, cancel).await?;
             // Drain updates before the independent head read. A subsequent update
             // remains queued and will invalidate the next mutation/status request.
             let changed = self.invalidate_from_updates();
@@ -361,20 +359,35 @@ impl<T: Telegram> SyncEngine<T> {
         }
         Err(SyncError::ReconcileRequired)
     }
-    async fn apply_message(&self, message: RemoteMessage) -> Result<(), SyncError> {
-        if let Some(record) = message.record()? {
-            if record.vault_id() != self.binding.vault_id {
-                return Err(SyncError::Integrity);
+    async fn apply_messages(
+        &self,
+        messages: &[RemoteMessage],
+        cancel: &CancellationToken,
+    ) -> Result<(), SyncError> {
+        for page in messages.chunks(100) {
+            if cancel.is_cancelled() {
+                return Err(TelegramError::Cancelled.into());
             }
-            if let Record::Commit(commit) = &record
-                && self.verified.as_ref().is_none_or(|r| {
-                    message.id > r.commit_id || commit.generation > r.commit.generation
-                })
-            {
-                return Err(SyncError::ReconcileRequired);
+            let mut records = Vec::with_capacity(page.len());
+            for message in page {
+                let Some(record) = message.record()? else {
+                    continue;
+                };
+                if record.vault_id() != self.binding.vault_id {
+                    return Err(SyncError::Integrity);
+                }
+                if let Record::Commit(commit) = &record
+                    && self.verified.as_ref().is_none_or(|r| {
+                        message.id > r.commit_id || commit.generation > r.commit.generation
+                    })
+                {
+                    return Err(SyncError::ReconcileRequired);
+                }
+                records.push((message.id, record));
             }
-            self.database(move |db| db.apply_record(message.id, &record))
-                .await?;
+            if !records.is_empty() {
+                self.database(move |db| db.apply_records(&records)).await?;
+            }
         }
         Ok(())
     }

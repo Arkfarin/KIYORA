@@ -53,8 +53,8 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   `x86_64-linux-gnu-gcc`; no system configuration was modified.
 - Remaining foundation checks: generated JSON schemas/fixtures, load benchmarks,
   expanded randomized all-action tests and acceptance-to-test traceability.
-- Database currently reconstructs the projection per event; delta writes avoid
-  rewriting untouched rows, but large-library replay still needs profiling.
+- Database reconstructs the projection once per bounded replay batch; delta writes
+  avoid rewriting untouched rows. See the measured replay results below.
 - TDLib official source inspected at commit
   `9d92b49bc5d0d2e29fe518239af647a88f8680e6` (1.8.69); native build next.
 
@@ -72,12 +72,26 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
 - Added `vault-testkit`: independent clients sharing a server, gaps, reverse/short
   history, delayed/lost/duplicated updates, timeouts, flood wait, lost ACK, deletion,
   corrupt snapshot files and injected failures before calls/after delete.
+- Catch-up applies ordered batches of up to 100 history messages in one SQLite
+  transaction, reconstructing the projection once and writing its final delta.
+  A 1,000-event recovery/catch-up integration test passes. Database regressions
+  verify duplicate outcomes within a batch and atomic rollback of projection,
+  receipts, FTS, observed-message markers, commands and cursor after a late failure.
+  A 96-case property test checks all actions, tombstones, large IDs, duplicates and
+  arbitrary batch boundaries against pure reducer and sequential SQLite replay.
+- File-backed SQLite WAL/FULL debug benchmark on 2026-10-22: 1,000 playlist creates
+  took 13,723 ms individually and 599 ms in batches of 100; 10,000 creates took
+  18,212 ms in batches of 100. All resulting states matched the pure reducer.
+  These are local single-run database measurements, excluding Telegram networking.
+  The decline in throughput at 10k still requires attention for larger libraries.
+  Reproduce with `cargo run -p vault-db --example replay-benchmark -- 1000` or
+  `cargo run -p vault-db --example replay-benchmark -- 10000 --batch-only`.
 - GC persists reviewable plans and progress, requires the exact confirmed digest,
   checks coordinator/current A/B before batches, selects covered events/barriers and
   old snapshot groups with checked copy dependencies, verifies deletion and resumes.
   Ancestry `previous_commit_message_id` is informational after full verification;
   it is not a required old-data dependency for a current full snapshot.
-- Eight sync integration tests pass: 3-client convergence; unknown protocol;
+- Nine sync integration tests pass: 1,000-event catch-up; 3-client convergence; unknown protocol;
   lost ACK/offline guard; old playlists/tombstones; corrupt A/B recovery;
   interrupted initialization; known manual deletion; crash-resumable conservative GC.
 - Six transport/security tests pass; codec context/digest/truncation tests pass.
@@ -110,9 +124,10 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
   Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
   volume controls; the decoder retains an active cache lease and emits state events.
-- Full `cargo test --workspace` reports 53 passed and one native TDLib smoke test
-  ignored by default; the opt-in run against pinned tdjson 1.8.69 passes.
-  `cargo check --workspace` passes.
+- The 2026-10-22 full backend gate reports 60 workspace tests passed and one native
+  TDLib smoke test ignored by default; the separate opt-in run against pinned
+  tdjson 1.8.69 also passes. Formatting, workspace check, all-target clippy with
+  denied warnings, CLI smoke and all three API schema comparisons pass.
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
 - Streaming/ranged Telegram downloads feed verified full files into the profile-local
@@ -137,8 +152,8 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: Android native layers, CI/platform builds,
-expanded chaos/load tests and final acceptance traceability. Windows and Android
+Remaining: streaming playback, Android native layers, CI/platform builds,
+larger end-to-end history profiling and expanded chaos/load tests. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend
 acceptance gate is claimed complete.
 Sync currently rechecks all post-barrier receipts per catch-up to detect known

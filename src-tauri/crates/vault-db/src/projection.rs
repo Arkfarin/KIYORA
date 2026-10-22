@@ -14,22 +14,6 @@ fn load<T: serde::de::DeserializeOwned>(
     }
     Ok(out)
 }
-pub(crate) fn receipt(
-    conn: &Connection,
-    vault: &str,
-    op: Uuid,
-) -> Result<Option<Receipt>, DbError> {
-    let row:Option<(i64,String,String,String)>=conn.query_row("SELECT message_id,action,event_sha256,outcome FROM applied_events WHERE vault_id=?1 AND op_id=?2",params![vault,op.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-    row.map(|(id, action, event_sha256, outcome)| {
-        Ok(Receipt {
-            message_id: MessageId::new(id).map_err(|_| DbError::Schema)?,
-            action,
-            event_sha256,
-            outcome: serde_json::from_str(&outcome)?,
-        })
-    })
-    .transpose()
-}
 pub(crate) fn read(conn: &Connection, vault_id: Uuid) -> Result<State, DbError> {
     let vault = vault_id.to_string();
     let mut state = State::new(vault_id);

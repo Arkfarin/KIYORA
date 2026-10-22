@@ -126,6 +126,45 @@ async fn three_clients_converge_with_short_reverse_pages_delayed_duplicate_updat
 }
 
 #[tokio::test]
+async fn long_history_catch_up_batches_a_thousand_events_and_reaches_ready_state() {
+    let (server, _) = setup().await;
+    let cancel = CancellationToken::new();
+    server
+        .set_faults(Faults {
+            history_page_size: Some(100),
+            ..Default::default()
+        })
+        .unwrap();
+    let transport = server.client().unwrap();
+    for index in 0..1_000u128 {
+        let event = Event {
+            vault_id: binding().vault_id,
+            op_id: Uuid::from_u128(10_000 + index),
+            device_id: "load-test".into(),
+            base_generation: 0,
+            entity_id: Uuid::from_u128(20_000 + index),
+            action: Action::PlaylistCreate {
+                title: format!("Playlist {index}"),
+            },
+        };
+        transport
+            .send_text(
+                binding().chat_id,
+                encode_text(&Record::Event(Box::new(event))).unwrap(),
+                &cancel,
+            )
+            .await
+            .unwrap();
+    }
+    let mut recovering = engine(&server, "recovery-load-test");
+    recovering.sync(&cancel).await.unwrap();
+    assert_eq!(recovering.mode(), RuntimeMode::OnlineReady);
+    let state = recovering.state().await.unwrap();
+    assert_eq!(state.playlists.len(), 1_000);
+    assert_eq!(state.applied.len(), 1_000);
+}
+
+#[tokio::test]
 async fn lost_ack_is_reconciled_without_duplicate_and_offline_never_queues_mutations() {
     let (server, mut a) = setup().await;
     let cancel = CancellationToken::new();
