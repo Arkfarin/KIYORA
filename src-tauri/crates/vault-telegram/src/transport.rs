@@ -99,6 +99,15 @@ pub trait Telegram: Send + Sync {
         limit: i64,
         cancel: &CancellationToken,
     ) -> impl Future<Output = Result<DownloadedRange, TelegramError>> + Send;
+    /// Forward one user-selected media message to one user-selected chat only.
+    fn forward_media(
+        &self,
+        source_chat: ChatId,
+        message_id: MessageId,
+        vault_id: uuid::Uuid,
+        recipient_chat: ChatId,
+        cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<RemoteMessage, TelegramError>> + Send;
     fn delete_messages(
         &self,
         chat: ChatId,
@@ -384,6 +393,72 @@ impl Telegram for TdTransport {
             available,
             complete,
         })
+    }
+    async fn forward_media(
+        &self,
+        source_chat: ChatId,
+        message_id: MessageId,
+        vault_id: uuid::Uuid,
+        recipient_chat: ChatId,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, TelegramError> {
+        if source_chat == recipient_chat {
+            return Err(TelegramError::InvalidInput);
+        }
+        let source = self
+            .message(source_chat, message_id, cancel)
+            .await?
+            .ok_or(TelegramError::Request { code: 404 })?;
+        let record = source.record()?;
+        if source.file.is_none()
+            || record.is_some_and(
+                |record| !matches!(record, Record::Media(media) if media.vault_id == vault_id),
+            )
+        {
+            return Err(TelegramError::Unshareable);
+        }
+        let properties = self
+            .client
+            .read(
+                json!({"@type":"getMessageProperties","chat_id":source_chat.get(),"message_id":message_id.get()}),
+                cancel,
+            )
+            .await?;
+        if properties["can_be_forwarded"] != true {
+            return Err(TelegramError::Unshareable);
+        }
+        let recipient = self
+            .client
+            .read(
+                json!({"@type":"getChat","chat_id":recipient_chat.get()}),
+                cancel,
+            )
+            .await?;
+        if integer(&recipient["id"])? != recipient_chat.get()
+            || !matches!(
+                recipient["type"]["@type"].as_str(),
+                Some("chatTypePrivate" | "chatTypeBasicGroup" | "chatTypeSupergroup")
+            )
+        {
+            return Err(TelegramError::InvalidInput);
+        }
+        let response = self
+            .client
+            .request(
+                json!({"@type":"forwardMessages","chat_id":recipient_chat.get(),"from_chat_id":source_chat.get(),"message_ids":[message_id.get()],"options":{"@type":"messageSendOptions","disable_notification":false,"from_background":false,"protect_content":true},"send_copy":true,"remove_caption":true}),
+                Duration::from_secs(60),
+                cancel,
+            )
+            .await?;
+        let messages = response["messages"]
+            .as_array()
+            .filter(|messages| messages.len() == 1)
+            .ok_or(TelegramError::InvalidResponse)?;
+        let forwarded = parse_message(&messages[0], recipient_chat)?;
+        if forwarded.file.is_none() {
+            return Err(TelegramError::InvalidResponse);
+        }
+        Ok(forwarded)
     }
     async fn delete_messages(
         &self,

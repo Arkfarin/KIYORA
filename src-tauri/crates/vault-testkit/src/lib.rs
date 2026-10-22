@@ -7,6 +7,7 @@ use std::{
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use vault_domain::*;
+use vault_protocol::Record;
 use vault_telegram::*;
 
 #[derive(Debug, Clone, Default)]
@@ -31,6 +32,7 @@ struct Server {
     next_file: i32,
     subscribers: Vec<broadcast::Sender<Update>>,
     delayed: VecDeque<Update>,
+    shared: Vec<(ChatId, MessageId, ChatId)>,
     faults: Faults,
 }
 #[derive(Clone)]
@@ -56,6 +58,7 @@ impl FakeServer {
             next_file: 1,
             subscribers: Vec::new(),
             delayed: VecDeque::new(),
+            shared: Vec::new(),
             faults: Faults::default(),
         })))
     }
@@ -85,6 +88,9 @@ impl FakeServer {
     }
     pub fn messages(&self) -> Result<Vec<RemoteMessage>, TelegramError> {
         Ok(self.lock()?.messages.values().cloned().collect())
+    }
+    pub fn shared_messages(&self) -> Result<Vec<(ChatId, MessageId, ChatId)>, TelegramError> {
+        Ok(self.lock()?.shared.clone())
     }
     pub fn corrupt_file(&self, file_id: i32) -> Result<(), TelegramError> {
         self.lock()?.files.insert(file_id, b"corrupt".to_vec());
@@ -306,6 +312,45 @@ impl Telegram for FakeTelegram {
             },
             complete: limit == 0 || offset + limit >= size,
         })
+    }
+    async fn forward_media(
+        &self,
+        source_chat: ChatId,
+        message_id: MessageId,
+        vault_id: uuid::Uuid,
+        recipient_chat: ChatId,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, TelegramError> {
+        let mut server = self.server.lock()?;
+        server.gate(cancel)?;
+        if source_chat == recipient_chat || source_chat != server.channel.chat_id {
+            return Err(TelegramError::InvalidInput);
+        }
+        let source = server
+            .messages
+            .get(&message_id)
+            .cloned()
+            .ok_or(TelegramError::Request { code: 404 })?;
+        let record = source.record()?;
+        if source.file.is_none()
+            || record.is_some_and(
+                |record| !matches!(record, Record::Media(media) if media.vault_id == vault_id),
+            )
+        {
+            return Err(TelegramError::Unshareable);
+        }
+        server
+            .shared
+            .push((source_chat, message_id, recipient_chat));
+        server.next = server
+            .next
+            .checked_add(17)
+            .ok_or(TelegramError::InvalidResponse)?;
+        let mut forwarded = source;
+        forwarded.chat_id = recipient_chat;
+        forwarded.id = MessageId::new(server.next).map_err(|_| TelegramError::InvalidResponse)?;
+        forwarded.trusted_control = false;
+        Ok(forwarded)
     }
     async fn delete_messages(
         &self,

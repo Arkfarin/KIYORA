@@ -38,6 +38,8 @@ pub enum TelegramError {
     AuthRequired,
     #[error("channel ownership or privacy validation failed")]
     UnsafeChannel,
+    #[error("selected media message is not allowed to be shared")]
+    Unshareable,
     #[error("vault marker is missing, ambiguous or incompatible")]
     InvalidVault,
     #[error("TDLib updates were lost; history reconciliation is required")]

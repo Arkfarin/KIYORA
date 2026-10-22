@@ -414,5 +414,25 @@ async fn handle<T: Telegram>(
             events.emit(context, EventData::Command(Box::new(command.clone())));
             VaultResponse::Command(Box::new(command))
         }
+        VaultRequest::ShareTrack {
+            track_id,
+            source_id,
+            recipient_chat_id,
+        } => {
+            let forwarded = engine
+                .share_track(track_id, source_id, recipient_chat_id, cancel)
+                .await?;
+            events.emit(
+                context,
+                EventData::Share {
+                    recipient_chat_id,
+                    message_id: forwarded.id,
+                },
+            );
+            VaultResponse::Shared {
+                recipient_chat_id,
+                message_id: forwarded.id,
+            }
+        }
     })
 }

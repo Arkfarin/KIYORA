@@ -252,6 +252,39 @@ async fn import_uploads_verified_media_then_registers_and_requires_duplicate_rev
         .unwrap();
     assert_eq!(media.file.as_ref().unwrap().size, 16044);
     assert_eq!(media.record().unwrap().unwrap().kind(), "MEDIA");
+    let recipient = ChatId::new(4242).unwrap();
+    let shared = service
+        .request(
+            VaultRequest::ShareTrack {
+                track_id: track,
+                source_id: source,
+                recipient_chat_id: recipient,
+            },
+            &token,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(shared, VaultResponse::Shared { recipient_chat_id, .. } if recipient_chat_id == recipient)
+    );
+    assert_eq!(
+        server.shared_messages().unwrap(),
+        vec![(binding.chat_id, media.id, recipient)]
+    );
+    assert!(
+        service
+            .request(
+                VaultRequest::ShareTrack {
+                    track_id: Uuid::new_v4(),
+                    source_id: source,
+                    recipient_chat_id: recipient,
+                },
+                &token,
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(server.shared_messages().unwrap().len(), 1);
     let before = server.messages().unwrap();
     let duplicate = service
         .request(

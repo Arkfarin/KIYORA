@@ -53,7 +53,7 @@ async fn run() -> Result<(), ApiError> {
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file>\n  media import <path> [--allow-duplicate]\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file>\n  media import <path> [--allow-duplicate]\n  diagnose"
     );
 }
 async fn active(backend: &Backend) -> Result<Status, ApiError> {
@@ -331,6 +331,27 @@ async fn library(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
             println!("removed track with {count} source(s); {response:?}");
         }
         Some("import") => import(backend, &status, args).await?,
+        Some("share") => {
+            let track_id = parse_uuid(args.get(1))?;
+            let source_id = parse_uuid(args.get(2))?;
+            let recipient_chat_id = args
+                .get(3)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?
+                .parse::<ChatId>()
+                .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
+            let result = backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::ShareTrack {
+                        track_id,
+                        source_id,
+                        recipient_chat_id,
+                    },
+                    &CancellationToken::new(),
+                )
+                .await?;
+            println!("{result:?}");
+        }
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     }
     Ok(())

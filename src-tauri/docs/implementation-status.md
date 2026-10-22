@@ -100,13 +100,18 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
 - Streaming/ranged Telegram downloads are available in the adapter, but media
   download progress/resume/cache coordination is not yet exposed as an application
-  service or CLI operation. Sharing is not implemented.
+  service or CLI operation. Sharing now supports one explicitly selected registered
+  media source and recipient, checks TDLib `can_be_forwarded`, uses `forwardMessages`
+  in copy mode with caption removed, rejects unrelated vault service records, and
+  exposes a CLI/API result. Simulator integration confirms only the selected
+  recipient is targeted. Incoming-audio discovery/import from other chats remains
+  incomplete.
 - Backup codec can verify/export and create new-vault reference plans; an integrated
   CLI restore execution flow remains incomplete. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: finish full workspace clippy after media changes; integrate media range
-download jobs/cache state, playback into application API, sharing, Android native
+Remaining: finish full workspace clippy after sharing changes; integrate media range
+download jobs/cache state, playback into application API, incoming-audio import, Android native
 layers, backup restore execution, generated schema/fixtures, CI/platform builds,
 expanded chaos/load tests and final acceptance traceability. Windows and Android
 toolchains are unavailable/unverified in this environment. No end-to-end backend

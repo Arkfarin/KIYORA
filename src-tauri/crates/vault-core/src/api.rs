@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use vault_db::Command;
-use vault_domain::{Action, MessageId};
+use vault_domain::{Action, ChatId, MessageId};
 use vault_snapshot::{Recovery, gc::GcProgress};
 use vault_sync::{RuntimeMode, RuntimeStatus, SyncError};
 use vault_telegram::TelegramError;
@@ -99,6 +99,7 @@ impl From<TelegramError> for ApiError {
             Request { .. } | UpdatesLost => ErrorCode::Network,
             InvalidInput => ErrorCode::InvalidInput,
             LocalFile => ErrorCode::Storage,
+            Unshareable => ErrorCode::Conflict,
             InvalidResponse | UnsafeChannel | InvalidVault | IncompleteHistory | Protocol => {
                 ErrorCode::Integrity
             }
@@ -180,6 +181,11 @@ pub enum VaultRequest {
         op_id: Uuid,
         allow_duplicate: bool,
     },
+    ShareTrack {
+        track_id: Uuid,
+        source_id: Uuid,
+        recipient_chat_id: ChatId,
+    },
     Mutate(Box<Mutation>),
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,5 +220,9 @@ pub enum VaultResponse {
         sha256: String,
         size_bytes: u64,
         duplicate_track_ids: Vec<Uuid>,
+    },
+    Shared {
+        recipient_chat_id: ChatId,
+        message_id: MessageId,
     },
 }

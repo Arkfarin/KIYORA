@@ -549,6 +549,34 @@ impl<T: Telegram> SyncEngine<T> {
             .await
             .map_err(Into::into)
     }
+    /// Shares only a registered source in this vault, after online reconciliation.
+    /// TDLib independently checks the message forwarding permission and recipient.
+    pub async fn share_track(
+        &mut self,
+        track_id: Uuid,
+        source_id: Uuid,
+        recipient_chat: vault_domain::ChatId,
+        cancel: &CancellationToken,
+    ) -> Result<vault_telegram::RemoteMessage, SyncError> {
+        self.require_online(cancel).await?;
+        let state = self.state().await?;
+        let track = state.tracks.get(&track_id).ok_or(SyncError::Integrity)?;
+        let source = track
+            .sources
+            .get(&source_id)
+            .filter(|source| source.chat_id == self.binding.chat_id)
+            .ok_or(SyncError::Integrity)?;
+        self.transport
+            .forward_media(
+                source.chat_id,
+                source.message_id,
+                self.binding.vault_id,
+                recipient_chat,
+                cancel,
+            )
+            .await
+            .map_err(Into::into)
+    }
     pub async fn request_snapshot(
         &mut self,
         cancel: &CancellationToken,

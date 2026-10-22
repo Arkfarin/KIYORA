@@ -21,6 +21,11 @@ pub enum EventData {
     Playlist { playlist_id: Uuid },
     #[serde(rename = "command.result")]
     Command(Box<Command>),
+    #[serde(rename = "share.result")]
+    Share {
+        recipient_chat_id: vault_domain::ChatId,
+        message_id: vault_domain::MessageId,
+    },
     #[serde(rename = "snapshot.progress")]
     Snapshot {
         running: bool,
