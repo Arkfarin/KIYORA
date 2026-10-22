@@ -37,7 +37,11 @@ async fn run() -> Result<(), ApiError> {
         "auth" => auth(&backend, &args[1..]).await?,
         "status" => {
             let status = active(&backend).await?;
-            print_status(&status);
+            if args.iter().any(|arg| arg == "--json") {
+                print_json(&status)?;
+            } else {
+                print_status(&status);
+            }
         }
         "vault" => vault(&backend, &args[1..]).await?,
         "sync" => sync(&backend, &args[1..]).await?,
@@ -56,7 +60,7 @@ async fn run() -> Result<(), ApiError> {
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list|create <label>|switch <uuid>\n  auth login|status|logout\n  status\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list [--json]|create <label>|switch <uuid>\n  auth login|status [--json]|logout\n  status [--json]\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
     );
     println!("  media import-incoming <chat-id> <message-id>");
     println!(
@@ -87,18 +91,28 @@ fn print_status(s: &Status) {
             .unwrap_or_else(|| "-".into())
     );
 }
+fn print_json(value: &impl serde::Serialize) -> Result<(), ApiError> {
+    let encoded = serde_json::to_string(value).map_err(|_| ApiError::new(ErrorCode::Storage))?;
+    println!("{encoded}");
+    Ok(())
+}
 async fn profiles(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     match args.first().map(String::as_str) {
         Some("list") => {
-            for p in backend.profiles()? {
-                println!(
-                    "{}\t{}\towner={}",
-                    p.profile_id,
-                    p.label,
-                    p.owner_id
-                        .map(|x| x.to_string())
-                        .unwrap_or_else(|| "-".into())
-                );
+            let profiles = backend.profiles()?;
+            if args.iter().any(|arg| arg == "--json") {
+                print_json(&profiles)?;
+            } else {
+                for p in profiles {
+                    println!(
+                        "{}\t{}\towner={}",
+                        p.profile_id,
+                        p.label,
+                        p.owner_id
+                            .map(|x| x.to_string())
+                            .unwrap_or_else(|| "-".into())
+                    );
+                }
             }
         }
         Some("create") => {
@@ -115,10 +129,14 @@ async fn profiles(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
 async fn auth(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
     match args.first().map(String::as_str) {
-        Some("status") => println!(
-            "{:?}",
-            backend.auth_status(status.context.session_id).await?
-        ),
+        Some("status") => {
+            let auth = backend.auth_status(status.context.session_id).await?;
+            if args.iter().any(|arg| arg == "--json") {
+                print_json(&auth)?;
+            } else {
+                println!("{auth:?}");
+            }
+        }
         Some("logout") => backend.logout(status.context.session_id).await?,
         Some("login") => login(backend, status).await?,
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),

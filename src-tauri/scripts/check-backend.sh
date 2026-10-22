@@ -5,6 +5,7 @@ cargo fmt --all -- --check
 cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo run -q -p vault-core --bin kiyora-cli -- --help | grep -q 'profiles list \[--json\]'
 schema_tmp="$(mktemp -d)"
 trap 'rm -rf "$schema_tmp"' EXIT
 cargo run -q -p vault-core --example generate-api-schema -- "$schema_tmp"
