@@ -25,6 +25,7 @@ struct Job {
 struct DownloadJob {
     cancel: CancellationToken,
     info: DownloadInfo,
+    source_id: Uuid,
     updated: Instant,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -160,10 +161,12 @@ impl VaultService {
             VaultRequest::DownloadForOffline {
                 download_id,
                 track_id,
+                source_id,
                 pinned,
-                ..
             } => Some((
                 *download_id,
+                *track_id,
+                *source_id,
                 DownloadInfo {
                     download_id: *download_id,
                     track_id: *track_id,
@@ -176,12 +179,18 @@ impl VaultService {
             _ => None,
         };
         let download_cancel = download.as_ref().map(|_| self.lifetime.0.child_token());
-        if let Some((id, info)) = &download {
+        if let Some((id, track_id, source_id, info)) = &download {
             let mut jobs = self
                 .downloads
                 .lock()
                 .map_err(|_| ApiError::new(ErrorCode::Internal))?;
-            if jobs.contains_key(id) {
+            if jobs.contains_key(id)
+                || jobs.values().any(|job| {
+                    job.info.track_id == *track_id
+                        && job.source_id == *source_id
+                        && job.info.state == DownloadState::Downloading
+                })
+            {
                 return Err(ApiError::new(ErrorCode::Conflict));
             }
             prune_downloads(&mut jobs);
@@ -193,6 +202,7 @@ impl VaultService {
                         .cloned()
                         .ok_or_else(|| ApiError::new(ErrorCode::Internal))?,
                     info: info.clone(),
+                    source_id: *source_id,
                     updated: Instant::now(),
                     task: None,
                 },
@@ -207,7 +217,7 @@ impl VaultService {
             if let Some(download_cancel) = &download_cancel {
                 download_cancel.cancel();
             }
-            if let Some((id, _)) = &download
+            if let Some((id, _, _, _)) = &download
                 && let Ok(mut jobs) = self.downloads.lock()
             {
                 jobs.remove(id);
@@ -291,6 +301,20 @@ impl VaultService {
                 bytes_downloaded: lease.entry.size_bytes,
                 total_bytes: Some(lease.entry.size_bytes),
                 pinned: lease.entry.pinned,
+            });
+        }
+        if let Some(cache) = &self.cache
+            && let Some((bytes_downloaded, total_bytes)) = cache
+                .partial_download_progress(&key)
+                .map_err(ApiError::from)?
+        {
+            return Ok(DownloadInfo {
+                download_id: id,
+                track_id,
+                state: DownloadState::PartiallyCached,
+                bytes_downloaded,
+                total_bytes: Some(total_bytes),
+                pinned: false,
             });
         }
         Ok(DownloadInfo {

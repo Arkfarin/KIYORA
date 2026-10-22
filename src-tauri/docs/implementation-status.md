@@ -110,17 +110,19 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   audio device. It supports configured FLAC, MP3, MP4/AAC, Vorbis and WAV decoders.
   Tauri and CLI expose cached-source playback, state, pause/resume/stop, seek, and
   volume controls; the decoder retains an active cache lease and emits state events.
-- Full `cargo test --workspace` now passes 53 tests; one native TDLib smoke test is
+- Full `cargo test --workspace` passes 54 tests; one native TDLib smoke test is
   opt-in/ignored by default. `cargo check --workspace` passes.
 - Android secure storage, Android media session/foreground playback and CPAL
   Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
 - Streaming/ranged Telegram downloads feed verified full files into the profile-local
   cache. Service requests expose byte progress, status, cancellation, cache usage
   and quota statistics, pinning and clearing unpinned cache; CLI supports cache
-  stats and offline download/cache clear and waits for
-  completion, sending cancellation on Ctrl-C. Downloads run outside the sync actor,
-  and shutdown cancels and joins active download tasks. Partial downloads restart
-  after process exit. Sharing supports one explicitly selected registered
+  stats and offline download/cache clear and waits for completion, sending
+  cancellation on Ctrl-C. Downloads run outside the sync actor, and shutdown
+  cancels and joins active download tasks. Partial ranged downloads are durably
+  staged in the profile cache, resume from the last complete chunk after reopening,
+  and are reported as `PARTIALLY_CACHED`; concurrent jobs for the same source are
+  rejected. Sharing supports one explicitly selected registered
   media source and recipient, checks TDLib `can_be_forwarded`, uses `forwardMessages`
   in copy mode with caption removed, rejects unrelated vault service records, and
   exposes a CLI/API result. Simulator integration confirms only the selected

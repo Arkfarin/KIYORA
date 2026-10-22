@@ -1,11 +1,11 @@
-use crate::{CacheLease, CacheManager, MAX_IMPORT_BYTES, MediaError};
+use crate::{CacheLease, CacheManager, DOWNLOAD_CHUNK_BYTES, MAX_IMPORT_BYTES, MediaError};
 use sha2::{Digest, Sha256};
-use std::io::SeekFrom;
+use std::io::{Read as StdRead, SeekFrom};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use vault_telegram::{RemoteFile, Telegram};
 
-const RANGE_BYTES: i64 = 1024 * 1024;
+const RANGE_BYTES: i64 = DOWNLOAD_CHUNK_BYTES as i64;
 const MAX_RETRIES: usize = 3;
 
 #[derive(Debug, Clone)]
@@ -37,12 +37,34 @@ pub async fn download_to_cache<T: Telegram>(
         return Err(MediaError::Range);
     }
     let total = u64::try_from(file.size).map_err(|_| MediaError::Range)?;
-    let mut staged = tempfile::Builder::new()
-        .prefix("kiyora-download-")
-        .tempfile()?;
-    let mut output = tokio::fs::File::from_std(staged.as_file_mut().try_clone()?);
+    let (staged_path, resumed) = cache.prepare_partial_download(
+        &options.cache_key,
+        i64::from(file.file_id),
+        total,
+        options.expected_sha256.as_deref(),
+    )?;
+    let mut staged = std::fs::File::open(&staged_path)?;
     let mut hasher = Sha256::new();
-    let mut offset = 0i64;
+    let mut hashed = 0u64;
+    let mut hash_buffer = [0u8; 256 * 1024];
+    while hashed < resumed {
+        let remaining = usize::try_from((resumed - hashed).min(hash_buffer.len() as u64))
+            .map_err(|_| MediaError::Range)?;
+        let read = staged.read(&mut hash_buffer[..remaining])?;
+        if read == 0 {
+            return Err(MediaError::Range);
+        }
+        hasher.update(&hash_buffer[..read]);
+        hashed = hashed.checked_add(read as u64).ok_or(MediaError::Range)?;
+    }
+    drop(staged);
+    let mut output = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&staged_path)
+        .await?;
+    output.seek(SeekFrom::Start(resumed)).await?;
+    let mut offset = i64::try_from(resumed).map_err(|_| MediaError::Range)?;
+    progress(resumed, total);
     while offset < file.size {
         if cancel.is_cancelled() {
             return Err(MediaError::Telegram(
@@ -112,20 +134,29 @@ pub async fn download_to_cache<T: Telegram>(
             remaining -= read;
         }
         offset = offset.checked_add(limit).ok_or(MediaError::Range)?;
+        output.sync_data().await?;
         progress(u64::try_from(offset).map_err(|_| MediaError::Range)?, total);
     }
     output.flush().await?;
+    output.sync_all().await?;
     drop(output);
-    staged.as_file().sync_all()?;
     let digest = hex::encode(hasher.finalize());
     if options
         .expected_sha256
         .as_deref()
         .is_some_and(|expected| expected != digest)
     {
+        cache.finish_partial_download(&options.cache_key)?;
         return Err(MediaError::Range);
     }
-    cache.insert(options.cache_key, staged.path(), &digest, options.pinned)
+    let lease = cache.insert(
+        options.cache_key.clone(),
+        &staged_path,
+        &digest,
+        options.pinned,
+    )?;
+    cache.finish_partial_download(&options.cache_key)?;
+    Ok(lease)
 }
 
 fn valid_digest(value: &str) -> bool {

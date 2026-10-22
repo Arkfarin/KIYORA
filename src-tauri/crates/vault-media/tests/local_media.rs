@@ -180,3 +180,93 @@ async fn ranged_download_hashes_and_publishes_only_verified_complete_media() {
     );
     assert!(cache.acquire("bad-digest").unwrap().is_none());
 }
+
+#[tokio::test]
+async fn cancelled_range_download_resumes_after_cache_manager_reopens() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("remote-large.bin");
+    let bytes = (0..2_500_000usize)
+        .map(|index| (index % 239) as u8)
+        .collect::<Vec<_>>();
+    std::fs::write(&source, &bytes).unwrap();
+    let chat = ChatId::new(-101).unwrap();
+    let server = FakeServer::new(chat, UserId::new(43).unwrap());
+    let telegram = server.client().unwrap();
+    let remote = telegram
+        .send_document(chat, source, String::new(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let file = remote.file.unwrap();
+    let cache_root = dir.path().join("cache");
+    let cache = CacheManager::open(&cache_root, 3_000_000).unwrap();
+    let cancel = CancellationToken::new();
+    let cancel_on_progress = cancel.clone();
+    let interrupted = download_to_cache(
+        &telegram,
+        &file,
+        &cache,
+        DownloadOptions {
+            cache_key: "resume-track:source".into(),
+            expected_sha256: Some(hex::encode(Sha256::digest(&bytes))),
+            pinned: false,
+        },
+        &cancel,
+        &move |downloaded, _| {
+            if downloaded >= 1024 * 1024 {
+                cancel_on_progress.cancel();
+            }
+        },
+    )
+    .await;
+    assert!(matches!(
+        interrupted,
+        Err(MediaError::Telegram(
+            vault_telegram::TelegramError::Cancelled
+        ))
+    ));
+    drop(cache);
+
+    let cache = CacheManager::open(&cache_root, 3_000_000).unwrap();
+    let (partial, offset) = cache
+        .prepare_partial_download(
+            "resume-track:source",
+            i64::from(file.file_id),
+            bytes.len() as u64,
+            Some(&hex::encode(Sha256::digest(&bytes))),
+        )
+        .unwrap();
+    assert_eq!(offset, 1024 * 1024);
+    assert_eq!(std::fs::metadata(partial).unwrap().len(), offset);
+    assert_eq!(
+        cache
+            .partial_download_progress("resume-track:source")
+            .unwrap(),
+        Some((offset, bytes.len() as u64))
+    );
+
+    let resumed_progress = std::sync::Mutex::new(Vec::new());
+    let lease = download_to_cache(
+        &telegram,
+        &file,
+        &cache,
+        DownloadOptions {
+            cache_key: "resume-track:source".into(),
+            expected_sha256: Some(hex::encode(Sha256::digest(&bytes))),
+            pinned: false,
+        },
+        &CancellationToken::new(),
+        &|downloaded, _| resumed_progress.lock().unwrap().push(downloaded),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&lease.path).unwrap(), bytes);
+    assert_eq!(resumed_progress.lock().unwrap().first(), Some(&offset));
+    assert_eq!(cache.entries().unwrap().len(), 1);
+    assert!(std::fs::read_dir(&cache_root).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("partial-")
+    }));
+}

@@ -288,6 +288,7 @@ pub struct SnapshotInfo {
 pub enum DownloadState {
     RemoteOnly,
     Downloading,
+    PartiallyCached,
     FullyCached,
     FailedRetryable,
     FailedPermanent,

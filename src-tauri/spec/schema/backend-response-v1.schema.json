@@ -586,6 +586,7 @@
       "enum": [
         "remote_only",
         "downloading",
+        "partially_cached",
         "fully_cached",
         "failed_retryable",
         "failed_permanent",

@@ -3,12 +3,24 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
 };
 use uuid::Uuid;
+
+pub(crate) const DOWNLOAD_CHUNK_BYTES: u64 = 1024 * 1024;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialDownload {
+    schema: u32,
+    key: String,
+    remote_file_id: i64,
+    size_bytes: u64,
+    expected_sha256: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,6 +145,139 @@ impl CacheManager {
         }
         Ok(stats)
     }
+    pub fn prepare_partial_download(
+        &self,
+        key: &str,
+        remote_file_id: i64,
+        size_bytes: u64,
+        expected_sha256: Option<&str>,
+    ) -> Result<(PathBuf, u64), MediaError> {
+        if key.is_empty()
+            || key.len() > 128
+            || remote_file_id <= 0
+            || size_bytes == 0
+            || expected_sha256.is_some_and(|value| !valid_digest(value))
+        {
+            return Err(MediaError::Range);
+        }
+        let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let name = hex::encode(Sha256::digest(key.as_bytes()));
+        let data_path = state.root.join(format!("partial-{name}.data"));
+        let metadata_path = state.root.join(format!("partial-{name}.json"));
+        let expected = PartialDownload {
+            schema: 1,
+            key: key.to_owned(),
+            remote_file_id,
+            size_bytes,
+            expected_sha256: expected_sha256.map(str::to_owned),
+        };
+        let mut reusable = false;
+        if metadata_path.exists() {
+            let metadata = fs::symlink_metadata(&metadata_path)?;
+            if !metadata.file_type().is_symlink() && metadata.is_file() && metadata.len() <= 4096 {
+                let existing =
+                    serde_json::from_slice::<PartialDownload>(&fs::read(&metadata_path)?).ok();
+                reusable = existing.is_some_and(|value| {
+                    value.schema == expected.schema
+                        && value.key == expected.key
+                        && value.remote_file_id == expected.remote_file_id
+                        && value.size_bytes == expected.size_bytes
+                        && value.expected_sha256 == expected.expected_sha256
+                });
+            }
+        }
+        if !reusable {
+            remove_if_regular_or_missing(&metadata_path)?;
+            remove_if_regular_or_missing(&data_path)?;
+            let encoded = serde_json::to_vec(&expected).map_err(|_| MediaError::CacheIndex)?;
+            let mut temp = tempfile::NamedTempFile::new_in(&state.root)?;
+            temp.write_all(&encoded)?;
+            temp.as_file().sync_all()?;
+            temp.persist(&metadata_path)
+                .map_err(|error| MediaError::Io(error.error))?;
+            #[cfg(unix)]
+            File::open(&state.root)?.sync_all()?;
+        }
+        if !data_path.exists() {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            options.open(&data_path)?.sync_all()?;
+        }
+        let data_metadata = fs::symlink_metadata(&data_path)?;
+        if !data_metadata.is_file() || data_metadata.file_type().is_symlink() {
+            return Err(MediaError::CacheIndex);
+        }
+        let available = data_metadata.len().min(size_bytes);
+        let mut offset = available / DOWNLOAD_CHUNK_BYTES * DOWNLOAD_CHUNK_BYTES;
+        if offset == size_bytes {
+            offset = size_bytes;
+        }
+        let file = OpenOptions::new().write(true).open(&data_path)?;
+        file.set_len(offset)?;
+        file.sync_data()?;
+        Ok((data_path, offset))
+    }
+    pub fn partial_download_progress(&self, key: &str) -> Result<Option<(u64, u64)>, MediaError> {
+        if key.is_empty() || key.len() > 128 {
+            return Err(MediaError::Range);
+        }
+        let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let name = hex::encode(Sha256::digest(key.as_bytes()));
+        let data_path = state.root.join(format!("partial-{name}.data"));
+        let metadata_path = state.root.join(format!("partial-{name}.json"));
+        let metadata = match fs::symlink_metadata(&metadata_path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(MediaError::Io(error)),
+        };
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 4096 {
+            return Err(MediaError::CacheIndex);
+        }
+        let partial: PartialDownload = serde_json::from_slice(&fs::read(metadata_path)?)
+            .map_err(|_| MediaError::CacheIndex)?;
+        if partial.schema != 1
+            || partial.key != key
+            || partial.remote_file_id <= 0
+            || partial.size_bytes == 0
+            || partial
+                .expected_sha256
+                .as_deref()
+                .is_some_and(|value| !valid_digest(value))
+        {
+            return Err(MediaError::CacheIndex);
+        }
+        let data_metadata = match fs::symlink_metadata(data_path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(MediaError::Io(error)),
+        };
+        if !data_metadata.is_file() || data_metadata.file_type().is_symlink() {
+            return Err(MediaError::CacheIndex);
+        }
+        let available = data_metadata.len().min(partial.size_bytes);
+        let complete = if available == partial.size_bytes {
+            available
+        } else {
+            available / DOWNLOAD_CHUNK_BYTES * DOWNLOAD_CHUNK_BYTES
+        };
+        Ok((complete > 0).then_some((complete, partial.size_bytes)))
+    }
+    pub fn finish_partial_download(&self, key: &str) -> Result<(), MediaError> {
+        if key.is_empty() || key.len() > 128 {
+            return Err(MediaError::Range);
+        }
+        let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let name = hex::encode(Sha256::digest(key.as_bytes()));
+        for path in [
+            state.root.join(format!("partial-{name}.data")),
+            state.root.join(format!("partial-{name}.json")),
+        ] {
+            remove_if_regular_or_missing(&path)?;
+        }
+        #[cfg(unix)]
+        File::open(&state.root)?.sync_all()?;
+        Ok(())
+    }
     pub fn insert(
         &self,
         key: String,
@@ -168,6 +313,7 @@ impl CacheManager {
                     .and_modify(|n| *n += 1)
                     .or_insert(1);
                 persist(&lock)?;
+                cleanup_partial_files(&lock.root, &result.key)?;
                 return Ok(CacheLease {
                     path: old_path,
                     entry: result,
@@ -249,6 +395,7 @@ impl CacheManager {
         for old in evicted {
             let _ = fs::remove_file(cache_path(&lock.root, old));
         }
+        let _ = cleanup_partial_files(&lock.root, &entry.key);
         lock.leases.insert(id, 1);
         Ok(CacheLease {
             path: destination,
@@ -261,6 +408,7 @@ impl CacheManager {
         let Some(entry) = state.index.entries.get(key).cloned() else {
             return Ok(None);
         };
+        cleanup_partial_files(&state.root, key)?;
         let path = cache_path(&state.root, entry.file_id);
         verify_file(&path, entry.size_bytes, &entry.sha256)?;
         let entry = state
@@ -338,6 +486,26 @@ fn cache_path(root: &Path, id: Uuid) -> PathBuf {
 }
 fn valid_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+fn remove_if_regular_or_missing(path: &Path) -> Result<(), MediaError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            fs::remove_file(path)?;
+            Ok(())
+        }
+        Ok(_) => Err(MediaError::CacheIndex),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(MediaError::Io(error)),
+    }
+}
+fn cleanup_partial_files(root: &Path, key: &str) -> Result<(), MediaError> {
+    if key.is_empty() || key.len() > 128 {
+        return Err(MediaError::Range);
+    }
+    let name = hex::encode(Sha256::digest(key.as_bytes()));
+    remove_if_regular_or_missing(&root.join(format!("partial-{name}.data")))?;
+    remove_if_regular_or_missing(&root.join(format!("partial-{name}.json")))?;
+    Ok(())
 }
 fn now() -> u64 {
     std::time::SystemTime::now()

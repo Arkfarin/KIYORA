@@ -428,6 +428,24 @@ async fn offline_download_uses_verified_cache_progress_status_and_pin() {
         .await
         .unwrap();
 
+    let resume_key = format!("{track_id}:{source_id}");
+    let (partial_path, _) = cache
+        .prepare_partial_download(&resume_key, 123, 2_500_000, None)
+        .unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(partial_path)
+        .unwrap()
+        .set_len(1024 * 1024)
+        .unwrap();
+    let partial = service
+        .download_status(Uuid::new_v4(), track_id, source_id)
+        .unwrap();
+    assert_eq!(partial.state, DownloadState::PartiallyCached);
+    assert_eq!(partial.bytes_downloaded, 1024 * 1024);
+    assert_eq!(partial.total_bytes, Some(2_500_000));
+    cache.finish_partial_download(&resume_key).unwrap();
+
     server
         .set_faults(Faults {
             download_delay_ms: 3_000,
@@ -476,6 +494,23 @@ async fn offline_download_uses_verified_cache_progress_status_and_pin() {
     })
     .await
     .unwrap();
+    assert!(matches!(
+        service
+            .request(
+                VaultRequest::DownloadForOffline {
+                    download_id: Uuid::new_v4(),
+                    track_id,
+                    source_id,
+                    pinned: false,
+                },
+                &CancellationToken::new(),
+            )
+            .await,
+        Err(ApiError {
+            code: ErrorCode::Conflict,
+            ..
+        })
+    ));
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while server.download_calls().unwrap() == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;

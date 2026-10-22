@@ -18,7 +18,7 @@ end-to-end evidence is missing. No partial item is a completion claim.
 | 9 | Snapshot recovery | Pass (simulated) | A/B validation, corrupt-copy recovery, interrupted initialization and old-state recovery tests in sync/snapshot suites. |
 | 10 | Safe verifiable GC | Pass (simulated) | Digest-confirmed, resumable deletion and recovery tests in `crates/vault-sync/tests/convergence.rs`; no live Telegram deletion run. |
 | 11 | Local audio import | Pass | Real audio metadata probing, hash/duplicate and invalid-input tests in `crates/vault-media/tests/local_media.rs`; service test verifies upload/register flow through simulator. |
-| 12 | Downloads, cache and real playback | Partial | Bounded verified downloads, cache quota/pin/lease and decoder tests pass. Desktop output-device playback was not exercised on hardware; Android playback is not implemented. |
+| 12 | Downloads, cache and real playback | Partial | Bounded verified downloads resume after cancellation and cache-manager reopen; cache quota/pin/lease and decoder tests pass. Desktop output-device playback was not exercised on hardware; Android playback is not implemented. |
 | 13 | Sharing | Pass (simulated) | Explicit recipient/source checks and simulator integration verify selected recipient; real Telegram forwarding is untested. |
 | 14 | Backup/export/import | Pass (simulated) | Codec and service tests cover metadata/full export, media integrity, fresh-vault ID remapping and restore. Upload/recovery against Telegram is untested. |
 | 15 | CLI works | Pass | `kiyora-cli` integration tests cover help, exit codes, shared profile store/status and JSON output. Full backend check runs the CLI help smoke. |

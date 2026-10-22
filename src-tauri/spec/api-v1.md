@@ -70,5 +70,6 @@ The CLI is a second adapter over the same `vault-core` services. Run
 guards, API errors, sync and mutation logic with Tauri.
 
 This contract describes implemented commands. Download jobs are cancellable while
-the process is running; interrupted partial files are restarted after process exit.
+the process is running; completed ranged chunks resume after process exit and are
+reported as `partially_cached` until the full file passes integrity verification.
 Native Android playback/session commands are not part of v1 yet.
