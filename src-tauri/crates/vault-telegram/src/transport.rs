@@ -1,6 +1,10 @@
 use crate::{TdClient, TelegramError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, Weak},
+};
 use std::{future::Future, path::PathBuf, time::Duration};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -131,6 +135,33 @@ pub struct TdTransport {
     client: TdClient,
     updates: broadcast::Sender<Update>,
     _pump: std::sync::Arc<Pump>,
+    downloads: Arc<DownloadLocks>,
+}
+#[derive(Default)]
+struct DownloadLocks(Mutex<HashMap<i32, Weak<tokio::sync::Mutex<()>>>>);
+impl DownloadLocks {
+    async fn acquire(
+        &self,
+        file_id: i32,
+        cancel: &CancellationToken,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, TelegramError> {
+        let lock = {
+            let mut files = self.0.lock().map_err(|_| TelegramError::Closed)?;
+            files.retain(|_, lock| lock.strong_count() != 0);
+            if let Some(lock) = files.get(&file_id).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                files.insert(file_id, Arc::downgrade(&lock));
+                lock
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(TelegramError::Cancelled),
+            guard = lock.lock_owned() => Ok(guard),
+        }
+    }
 }
 struct Pump(CancellationToken);
 impl Drop for Pump {
@@ -164,6 +195,7 @@ impl TdTransport {
             client,
             updates,
             _pump: std::sync::Arc::new(Pump(token)),
+            downloads: Arc::new(DownloadLocks::default()),
         }
     }
     pub fn client(&self) -> &TdClient {
@@ -355,6 +387,9 @@ impl Telegram for TdTransport {
         if file.file_id <= 0 || offset < 0 || limit < 0 || offset.checked_add(limit).is_none() {
             return Err(TelegramError::InvalidInput);
         }
+        // TDLib ends an outstanding synchronous download when another range for
+        // that file is requested. Share a per-file gate across transport clones.
+        let _download = self.downloads.acquire(file.file_id, cancel).await?;
         let response=self.client.request(json!({"@type":"downloadFile","file_id":file.file_id,"priority":16,"offset":offset,"limit":limit,"synchronous":true}),Duration::from_secs(300),cancel).await;
         let value = match response {
             Ok(value) => value,
@@ -364,39 +399,9 @@ impl Telegram for TdTransport {
                 return Err(error);
             }
         };
-        if integer(&value["id"])? != i64::from(file.file_id) {
-            return Err(TelegramError::InvalidResponse);
-        }
-        let local = &value["local"];
-        let complete = local["is_downloading_completed"] == true;
-        let start = integer(&local["download_offset"])?;
-        let prefix = integer(&local["downloaded_prefix_size"])?;
-        if start > offset || start.checked_add(prefix).is_none_or(|end| end < offset) {
-            return Err(TelegramError::InvalidResponse);
-        }
-        let available = if complete {
-            integer(&value["size"])? - offset
-        } else {
-            start + prefix - offset
-        };
-        if available < 0
-            || (limit == 0 && !complete)
-            || (limit > 0 && available < limit && !complete)
-        {
-            return Err(TelegramError::Timeout);
-        }
-        Ok(DownloadedRange {
-            path: PathBuf::from(
-                local["path"]
-                    .as_str()
-                    .ok_or(TelegramError::InvalidResponse)?,
-            ),
-            file_offset: start,
-            offset,
-            available,
-            complete,
-        })
+        downloaded_range(&value, &file, offset, limit)
     }
+
     async fn forward_media(
         &self,
         source_chat: ChatId,
@@ -626,4 +631,142 @@ fn parse_update(value: &Value) -> Result<Option<Update>, TelegramError> {
         Some("updateAuthorizationState") => Some(Update::Connected),
         _ => None,
     })
+}
+
+fn downloaded_range(
+    value: &Value,
+    file: &RemoteFile,
+    offset: i64,
+    limit: i64,
+) -> Result<DownloadedRange, TelegramError> {
+    if integer(&value["id"])? != i64::from(file.file_id) {
+        return Err(TelegramError::InvalidResponse);
+    }
+    let local = &value["local"];
+    let complete = local["is_downloading_completed"] == true;
+    let start = integer(&local["download_offset"])?;
+    let prefix = integer(&local["downloaded_prefix_size"])?;
+    let size = integer(&value["size"])?;
+    if start < 0 || prefix < 0 || size < 0 || size != file.size || offset > size {
+        return Err(TelegramError::InvalidResponse);
+    }
+    let available = if complete {
+        size - offset
+    } else {
+        let end = start
+            .checked_add(prefix)
+            .filter(|end| *end <= size)
+            .ok_or(TelegramError::InvalidResponse)?;
+        if start > offset || end < offset {
+            return Err(TelegramError::Timeout);
+        }
+        end - offset
+    };
+    if available < 0 || (limit == 0 && !complete) || (limit > 0 && available < limit && !complete) {
+        return Err(TelegramError::Timeout);
+    }
+    Ok(DownloadedRange {
+        path: PathBuf::from(
+            local["path"]
+                .as_str()
+                .ok_or(TelegramError::InvalidResponse)?,
+        ),
+        // download_offset locates the ready prefix, not the beginning of local
+        // file contents: TDLib 1.8.69 FileDownloader writes with pwrite(part.offset).
+        file_offset: 0,
+        offset,
+        available,
+        complete,
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod download_tests {
+    use super::*;
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    fn remote() -> RemoteFile {
+        RemoteFile {
+            file_id: 5,
+            size: 8192,
+            name: "test.wav".into(),
+            mime_type: "audio/wav".into(),
+        }
+    }
+    fn response(path: &std::path::Path, complete: bool) -> Value {
+        json!({"@type":"file", "id":5, "size":8192, "local":{
+            "path":path, "download_offset":4096, "downloaded_prefix_size":2048,
+            "is_downloading_completed":complete
+        }})
+    }
+    #[test]
+    fn nonzero_tdlib_download_offset_does_not_shift_local_file_origin() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file_mut().seek(SeekFrom::Start(4096)).unwrap();
+        file.write_all(&[7u8; 2048]).unwrap();
+        let range = downloaded_range(&response(file.path(), false), &remote(), 4128, 64).unwrap();
+        assert_eq!(range.file_offset, 0);
+        let mut input = std::fs::File::open(range.path).unwrap();
+        input
+            .seek(SeekFrom::Start((range.offset - range.file_offset) as u64))
+            .unwrap();
+        let mut bytes = [0u8; 64];
+        input.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [7u8; 64]);
+    }
+    #[test]
+    fn complete_file_covers_ranges_before_the_last_download_offset() {
+        let range = downloaded_range(
+            &response(std::path::Path::new("file"), true),
+            &remote(),
+            0,
+            64,
+        )
+        .unwrap();
+        assert_eq!(range.file_offset, 0);
+        assert_eq!(range.available, 8192);
+    }
+    #[tokio::test]
+    async fn same_file_ranges_serialize_and_waiting_is_cancellable() {
+        let locks = DownloadLocks::default();
+        let first = locks.acquire(5, &CancellationToken::new()).await.unwrap();
+        let other_file = locks.acquire(6, &CancellationToken::new()).await.unwrap();
+        let cancel = CancellationToken::new();
+        let waiter = locks.acquire(5, &cancel);
+        tokio::pin!(waiter);
+        assert!(matches!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(waiter.as_mut().poll(cx))).await,
+            std::task::Poll::Pending
+        ));
+        cancel.cancel();
+        assert!(matches!(waiter.await, Err(TelegramError::Cancelled)));
+        drop(first);
+        drop(other_file);
+        assert!(locks.acquire(5, &CancellationToken::new()).await.is_ok());
+    }
+    #[test]
+    fn incomplete_or_malformed_ranges_never_expose_unready_bytes() {
+        let path = std::path::Path::new("file");
+        assert!(matches!(
+            downloaded_range(&response(path, false), &remote(), 0, 64),
+            Err(TelegramError::Timeout)
+        ));
+        assert!(matches!(
+            downloaded_range(&response(path, false), &remote(), 6100, 64),
+            Err(TelegramError::Timeout)
+        ));
+        for (field, value) in [
+            ("download_offset", -1),
+            ("downloaded_prefix_size", -1),
+            ("downloaded_prefix_size", i64::MAX),
+        ] {
+            let mut input = response(path, false);
+            input["local"][field] = json!(value);
+            assert!(matches!(
+                downloaded_range(&input, &remote(), 4128, 64),
+                Err(TelegramError::InvalidResponse)
+            ));
+        }
+    }
 }

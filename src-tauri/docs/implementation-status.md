@@ -62,6 +62,11 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
 
 - Added real `vault-telegram` native JSON worker, auth requests, channel ownership
   and privacy checks, main/archive discovery, confirmed sends, range downloads.
+- TDLib range mapping was verified against the pinned `FileDownloader.cpp`:
+  downloaded bytes retain absolute file offsets. Nonzero range, completed-file,
+  malformed-range and cancellable per-file serialization regressions pass.
+  Per-file gates prevent concurrent synchronous range requests from interrupting
+  each other inside TDLib. Live account download behavior remains unverified.
 - Added `vault-security`: profile directories, OS locks, account binding and
   Linux Secret Service / Windows Credential Manager / macOS Keychain providers.
   Android secure-store provider is still missing and explicitly refuses secrets.
