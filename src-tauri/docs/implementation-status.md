@@ -21,6 +21,7 @@ Project/CLI name: kiyora. Protocol marker remains TMV, protocol version 1.
 Each step needs implementation and tests; this list is not a completion claim.
 Track evidence and remaining gaps here as modules land. Final acceptance must cover
 all 20 criteria in the task, all RFC invariants, and the A01–G10 regression matrix.
+The current criterion-by-criterion evidence and gaps are in `docs/acceptance-status.md`.
 
 ## Environment audit
 
@@ -84,7 +85,8 @@ all 20 criteria in the task, all RFC invariants, and the A01–G10 regression ma
   export, media digests, new-vault reference mapping, traversal/link/duplicate/size
   rejection. Restore planning exists; application-service execution is pending.
 - Pinned Linux tdjson build completed, and its credential-free native start/version/
-  close smoke passed. Real Telegram account operations remain unverified and were
+  close smoke passed. The full backend check plus that opt-in native smoke was
+  repeated on 2026-10-22 and passed. Real Telegram account operations remain unverified and were
   not attempted.
 
 ## Application service, CLI and local media (in progress)
