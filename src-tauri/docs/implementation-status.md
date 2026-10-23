@@ -30,10 +30,11 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
 - Linux x86_64, system Rust/Cargo 1.99.1, GTK/WebKit/ALSA development packages present.
 - `rustup` is unavailable. The system Rust sysroot contains only the Linux target;
   a matching official compiler and Android arm64 standard library were installed
-  locally under `target/android-tools` and used to check the native plugin.
+  locally under `target/android-tools` and used to build/link the full arm64 Rust library.
 - Android SDK 36/build-tools 36.0.0, Gradle 8.14.3 and an API 35 AOSP emulator were
-  installed locally for native plugin assembly, Lint and Keystore tests. No Android
-  NDK or Windows linker is installed. `scripts/check-backend.sh` runs the complete
+  installed locally for native plugin assembly, Lint, Keystore and playback service
+  tests. Android NDK r28c is installed locally; no Windows linker is installed.
+  `scripts/check-backend.sh` runs the complete
   portable Rust check suite and runs the native TDLib lifecycle smoke when
   `KIYORA_TDJSON` is set.
 - Generated request, response/error, and backend event schemas cover the typed
@@ -139,7 +140,7 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   track position. Streamed prefixes are never labeled verified full cache entries.
   The CLI keeps playback alive with in-process controls. Audible hardware output
   and actual Telegram account streaming have not been exercised.
-- The 2026-10-22 full backend gate reports 85 workspace tests passed and one native
+- The 2026-10-22 full backend gate reports 98 workspace tests passed and one native
   TDLib smoke test ignored by default; the separate opt-in run against pinned
   tdjson 1.8.69 also passes. Formatting, workspace check, all-target clippy with
   denied warnings, CLI smoke and all three API schema comparisons pass.
@@ -147,10 +148,12 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   bounded records, atomic persistence/read-back and refusal to reset corrupt or
   keyless records. The private native plugin rejects all WebView invokes, tested
   even with an artificial ACL grant. Native assembly, test APK, Lint and the arm64
-  Rust plugin check pass; five AndroidKeyStore tests pass on an Android 15/API 35
+  Rust application check pass; six AndroidKeyStore tests pass on an Android 15/API 35
   x86_64 AOSP emulator. Full app startup, physical-device storage and TDLib login
-  remain unverified. Android media session/foreground playback and CPAL
-  Activity/JavaVM wiring are not implemented. Android playback fails explicitly.
+  remain unverified. Android MediaSession, foreground service, audio focus and
+  notifications are implemented with OS instrumentation coverage. The Rust
+  adapter uses Tao's initialized JNI/ndk context. App minimum is API 26 (AAudio).
+  Full Rust/Tauri/native PCM playback and physical-device audio remain unverified.
 - Streaming/ranged Telegram downloads feed verified full files into the profile-local
   cache. Service requests expose byte progress, status, cancellation, cache usage
   and quota statistics, pinning and clearing unpinned cache; CLI supports cache
@@ -180,7 +183,7 @@ The current criterion-by-criterion evidence and gaps are in `docs/acceptance-sta
   recovery. Native TDLib account authorization,
   upload and recovery were not exercised against a real account.
 
-Remaining: real-account and hardware streaming verification, Android playback, CI/platform builds,
+Remaining: real-account and hardware streaming verification, complete Android integration, CI/platform builds,
 larger end-to-end history profiling and expanded chaos/load tests. Windows and complete
 Android app/TDLib builds remain unverified. No end-to-end backend
 acceptance gate is claimed complete.
@@ -189,3 +192,6 @@ manual deletion. Performance of long tails must be measured before optimizing.
 Initial setup/discovery currently scans history for INIT; cold recovery itself
 reads recent commit plus post-barrier history. Search-based INIT hints remain.
 No end-to-end backend acceptance gate is claimed complete.
+The full audit and current remediation backlog are tracked in
+[remediation-status.md](remediation-status.md); the earlier implementation bullets
+above do not imply that those outstanding end-to-end scenarios are complete.

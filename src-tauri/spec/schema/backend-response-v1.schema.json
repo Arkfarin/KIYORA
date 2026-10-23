@@ -1,44 +1,23 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "BackendResponse",
-  "oneOf": [
-    {
-      "type": "object",
-      "required": [
-        "response",
-        "scope"
-      ],
-      "properties": {
-        "response": {
-          "$ref": "#/definitions/VaultResponse"
-        },
-        "scope": {
-          "type": "string",
-          "enum": [
-            "vault"
-          ]
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "response",
-        "scope"
-      ],
-      "properties": {
-        "response": {
-          "$ref": "#/definitions/ApiError"
-        },
-        "scope": {
-          "type": "string",
-          "enum": [
-            "error"
-          ]
-        }
-      }
-    }
+  "type": "object",
+  "required": [
+    "result",
+    "version"
   ],
+  "properties": {
+    "result": {
+      "$ref": "#/definitions/Result_of_BackendReply_or_ApiError"
+    },
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "maximum": 1.0,
+      "minimum": 1.0
+    }
+  },
+  "additionalProperties": false,
   "definitions": {
     "Action": {
       "oneOf": [
@@ -394,6 +373,28 @@
         }
       ]
     },
+    "AlbumSummary": {
+      "type": "object",
+      "required": [
+        "artist",
+        "title",
+        "track_count"
+      ],
+      "properties": {
+        "artist": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "track_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "ApiError": {
       "description": "Deliberately contains no raw server messages, credentials or filesystem paths.",
       "type": "object",
@@ -411,6 +412,24 @@
         },
         "retryable": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ArtistSummary": {
+      "type": "object",
+      "required": [
+        "name",
+        "track_count"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "track_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
         }
       },
       "additionalProperties": false
@@ -440,6 +459,675 @@
         }
       },
       "additionalProperties": false
+    },
+    "ArtworkData": {
+      "type": "object",
+      "required": [
+        "bytes",
+        "mime_type",
+        "sha256"
+      ],
+      "properties": {
+        "bytes": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0.0
+          }
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "AudioInfo": {
+      "type": "object",
+      "required": [
+        "duration_ms",
+        "file",
+        "performer",
+        "title"
+      ],
+      "properties": {
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "file": {
+          "$ref": "#/definitions/RemoteFile"
+        },
+        "performer": {
+          "type": "string"
+        },
+        "thumbnail": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RemoteFile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "AuthStatus": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "PARAMETERS_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "PHONE_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "CODE_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "PASSWORD_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "link",
+            "state"
+          ],
+          "properties": {
+            "link": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "QR_CONFIRMATION"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "EMAIL_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "EMAIL_CODE_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "REGISTRATION_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "PREMIUM_REQUIRED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "READY"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "LOGGING_OUT"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "CLOSING"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "CLOSED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "UNSUPPORTED"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "BackendReply": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "storage"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/StorageUsage"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "artwork"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ArtworkData"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "queue"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/QueueInfo"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "queue_page"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/QueuePage"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "job"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/JobInfo"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "jobs"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/JobInfo"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "profiles"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Profile"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "profile"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/Profile"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "status"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/Status"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "auth"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/AuthStatus"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "vaults"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/VaultCandidate"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "tracks"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Track"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "playlists"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Playlist"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "query"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/LocalResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "vault"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/VaultResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "backup"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/Manifest"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "repaired"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/SnapshotInfo"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "playback"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/PlaybackState"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "done"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BackupKind": {
+      "type": "string",
+      "enum": [
+        "metadata",
+        "full"
+      ]
+    },
+    "BulkItemResult": {
+      "type": "object",
+      "required": [
+        "op_id",
+        "result"
+      ],
+      "properties": {
+        "op_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "result": {
+          "$ref": "#/definitions/Result_of_VaultResponse_or_ApiError"
+        }
+      }
     },
     "CacheStats": {
       "type": "object",
@@ -517,6 +1205,43 @@
       },
       "additionalProperties": false
     },
+    "ChannelInfo": {
+      "type": "object",
+      "required": [
+        "chat_id",
+        "owner_id",
+        "title"
+      ],
+      "properties": {
+        "chat_id": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "Checksum": {
+      "type": "object",
+      "required": [
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Command": {
       "type": "object",
       "required": [
@@ -561,6 +1286,53 @@
         "TELEGRAM_ERROR"
       ]
     },
+    "Context": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "session_id"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "vault_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeviceInfo": {
+      "type": "object",
+      "required": [
+        "cache_quota_bytes",
+        "context",
+        "device_id"
+      ],
+      "properties": {
+        "cache_quota_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "context": {
+          "$ref": "#/definitions/Context"
+        },
+        "device_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "DownloadInfo": {
       "type": "object",
       "required": [
@@ -604,6 +1376,7 @@
     "DownloadState": {
       "type": "string",
       "enum": [
+        "unavailable",
         "remote_only",
         "downloading",
         "partially_cached",
@@ -626,13 +1399,18 @@
         "CONFLICT",
         "READONLY",
         "INTEGRITY",
+        "UNSAFE_VAULT",
+        "PROTOCOL_UNSUPPORTED",
+        "SNAPSHOT_UNAVAILABLE",
         "BACKPRESSURE",
         "CANCELLED",
         "TIMEOUT",
         "RATE_LIMITED",
         "NETWORK",
         "STORAGE",
+        "DATABASE_CORRUPT",
         "MEDIA_UNAVAILABLE",
+        "MEDIA_SOURCE_MISSING",
         "PLAYBACK_UNAVAILABLE",
         "CLOSED",
         "INTERNAL"
@@ -718,6 +1496,22 @@
       },
       "additionalProperties": false
     },
+    "GcPlanSummary": {
+      "type": "object",
+      "required": [
+        "plan_id",
+        "status"
+      ],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
     "GcProgress": {
       "type": "object",
       "required": [
@@ -748,8 +1542,505 @@
         "planned",
         "running",
         "complete",
-        "stopped"
+        "stopped",
+        "abandoned"
       ]
+    },
+    "ImportInfo": {
+      "type": "object",
+      "required": [
+        "metadata",
+        "op_id",
+        "sha256",
+        "size_bytes",
+        "source_id",
+        "stage",
+        "track_id"
+      ],
+      "properties": {
+        "media_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "op_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "stage": {
+          "$ref": "#/definitions/ImportStage"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ImportStage": {
+      "type": "string",
+      "enum": [
+        "staging",
+        "prepared",
+        "upload_unknown",
+        "uploaded",
+        "complete"
+      ]
+    },
+    "JobInfo": {
+      "type": "object",
+      "required": [
+        "completed",
+        "job_id",
+        "state",
+        "total"
+      ],
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApiError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JobResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/JobState"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "JobResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "vault"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/VaultResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "backup"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/Manifest"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "repaired"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/SnapshotInfo"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "bulk"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/BulkItemResult"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "JobState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    },
+    "LocalResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "sources"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SourceHealth"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "imports"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ImportInfo"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "playlist"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/PlaylistDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "command_status"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/Command"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "favorite_sets"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "favorites"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/TrackPage"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "settings"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/SharedSettings"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "device"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/DeviceInfo"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "albums"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/AlbumSummary"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "artists"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ArtistSummary"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Manifest": {
+      "type": "object",
+      "required": [
+        "entries",
+        "format",
+        "generation",
+        "kind",
+        "owner_id",
+        "playlist_count",
+        "protocol",
+        "state_schema",
+        "track_count",
+        "vault_id"
+      ],
+      "properties": {
+        "barrier_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Checksum"
+          }
+        },
+        "format": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "kind": {
+          "$ref": "#/definitions/BackupKind"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "playlist_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "protocol": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "state_schema": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "track_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "vault_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
     },
     "Metadata": {
       "type": "object",
@@ -923,6 +2214,41 @@
         "already_deleted"
       ]
     },
+    "OrphanMedia": {
+      "type": "object",
+      "required": [
+        "import_id",
+        "message_id",
+        "recoverable_import"
+      ],
+      "properties": {
+        "import_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "recoverable_import": {
+          "type": "boolean"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "Outcome": {
       "oneOf": [
         {
@@ -977,6 +2303,419 @@
         }
       ]
     },
+    "PlaybackState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "idle"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "playback_id",
+            "state",
+            "track_id"
+          ],
+          "properties": {
+            "playback_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "ended"
+              ]
+            },
+            "track_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "duration_ms",
+            "position_ms",
+            "state",
+            "track_id"
+          ],
+          "properties": {
+            "duration_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "position_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "buffering"
+              ]
+            },
+            "track_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "duration_ms",
+            "position_ms",
+            "state",
+            "track_id"
+          ],
+          "properties": {
+            "duration_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "position_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "playing"
+              ]
+            },
+            "track_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "duration_ms",
+            "position_ms",
+            "state",
+            "track_id"
+          ],
+          "properties": {
+            "duration_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "position_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "paused"
+              ]
+            },
+            "track_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "code",
+            "state"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "failed"
+              ]
+            },
+            "track_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          }
+        }
+      ]
+    },
+    "Playlist": {
+      "type": "object",
+      "required": [
+        "created_order",
+        "playlist_id",
+        "title",
+        "updated_order"
+      ],
+      "properties": {
+        "created_order": {
+          "type": "string"
+        },
+        "playlist_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_order": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PlaylistDetail": {
+      "type": "object",
+      "required": [
+        "items",
+        "offset",
+        "playlist",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PlaylistItem"
+          }
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "playlist": {
+          "$ref": "#/definitions/Playlist"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "PlaylistEntry": {
+      "type": "object",
+      "required": [
+        "entry_id",
+        "order_key",
+        "playlist_id",
+        "track_id"
+      ],
+      "properties": {
+        "after_entry_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "entry_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "order_key": {
+          "type": "string"
+        },
+        "playlist_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PlaylistItem": {
+      "type": "object",
+      "required": [
+        "entry",
+        "track"
+      ],
+      "properties": {
+        "entry": {
+          "$ref": "#/definitions/PlaylistEntry"
+        },
+        "track": {
+          "$ref": "#/definitions/Track"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Profile": {
+      "type": "object",
+      "required": [
+        "label",
+        "profile_id"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProjectionDiagnostics": {
+      "description": "Local, read-only accounting; no Telegram completeness is inferred from it.",
+      "type": "object",
+      "required": [
+        "active_playlists",
+        "active_tracks",
+        "cursor",
+        "database_bytes",
+        "gc_plans",
+        "generation",
+        "pending_commands",
+        "playlist_entries",
+        "snapshot_barrier",
+        "uncovered_events"
+      ],
+      "properties": {
+        "active_playlists": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "active_tracks": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "database_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "gc_plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GcPlanSummary"
+          }
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "pending_commands": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "playlist_entries": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "snapshot_barrier": {
+          "type": "string"
+        },
+        "uncovered_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueueInfo": {
+      "type": "object",
+      "required": [
+        "queue_id",
+        "total"
+      ],
+      "properties": {
+        "current_track_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "position": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "queue_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      }
+    },
+    "QueuePage": {
+      "type": "object",
+      "required": [
+        "info",
+        "offset",
+        "track_ids"
+      ],
+      "properties": {
+        "info": {
+          "$ref": "#/definitions/QueueInfo"
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "track_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
     "RejectReason": {
       "type": "string",
       "enum": [
@@ -987,6 +2726,126 @@
         "wrong_entity",
         "future_generation"
       ]
+    },
+    "RemoteFile": {
+      "type": "object",
+      "required": [
+        "file_id",
+        "mime_type",
+        "name",
+        "size"
+      ],
+      "properties": {
+        "file_id": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "Result_of_BackendReply_or_ApiError": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "Ok"
+          ],
+          "properties": {
+            "Ok": {
+              "$ref": "#/definitions/BackendReply"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "Err"
+          ],
+          "properties": {
+            "Err": {
+              "$ref": "#/definitions/ApiError"
+            }
+          }
+        }
+      ]
+    },
+    "Result_of_VaultResponse_or_ApiError": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "Ok"
+          ],
+          "properties": {
+            "Ok": {
+              "$ref": "#/definitions/VaultResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "Err"
+          ],
+          "properties": {
+            "Err": {
+              "$ref": "#/definitions/ApiError"
+            }
+          }
+        }
+      ]
+    },
+    "RuntimeMode": {
+      "type": "string",
+      "enum": [
+        "AUTH_REQUIRED",
+        "DISCOVERING",
+        "SYNCING",
+        "ONLINE_READY",
+        "RECONNECTING",
+        "DEGRADED_READONLY"
+      ]
+    },
+    "RuntimeStatus": {
+      "type": "object",
+      "required": [
+        "cursor",
+        "generation",
+        "mode",
+        "vault_id"
+      ],
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "mode": {
+          "$ref": "#/definitions/RuntimeMode"
+        },
+        "vault_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "verified_commit_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     },
     "SharedSettings": {
       "type": "object",
@@ -1070,8 +2929,462 @@
       },
       "additionalProperties": false
     },
+    "SourceAvailability": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "available",
+        "unavailable",
+        "failed_retryable",
+        "failed_permanent"
+      ]
+    },
+    "SourceHealth": {
+      "type": "object",
+      "required": [
+        "availability",
+        "chat_id",
+        "message_id",
+        "source_id",
+        "track_id"
+      ],
+      "properties": {
+        "availability": {
+          "$ref": "#/definitions/SourceAvailability"
+        },
+        "chat_id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Status": {
+      "type": "object",
+      "required": [
+        "context",
+        "mode"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/definitions/Context"
+        },
+        "mode": {
+          "$ref": "#/definitions/RuntimeMode"
+        },
+        "vault": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuntimeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "StorageUsage": {
+      "type": "object",
+      "required": [
+        "cache_directory_bytes",
+        "context",
+        "other_profile_bytes",
+        "profile_bytes",
+        "projection_bytes",
+        "staged_import_bytes",
+        "staged_import_limit_bytes",
+        "tdlib_database_bytes",
+        "tdlib_files_bytes",
+        "verified_cache"
+      ],
+      "properties": {
+        "cache_directory_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "context": {
+          "$ref": "#/definitions/Context"
+        },
+        "other_profile_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "profile_bytes": {
+          "description": "Sum of regular-file lengths in this profile; filesystem compression, sparse allocation and OS secure storage are outside this measurement.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "projection_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "staged_import_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "staged_import_limit_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "tdlib_database_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "tdlib_files_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "telegram": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TdStorageStats"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verified_cache": {
+          "$ref": "#/definitions/CacheStats"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TdStorageStats": {
+      "type": "object",
+      "required": [
+        "database_bytes",
+        "files",
+        "files_bytes",
+        "language_pack_bytes",
+        "log_bytes"
+      ],
+      "properties": {
+        "database_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "files": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "files_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "language_pack_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "log_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Track": {
+      "type": "object",
+      "required": [
+        "metadata",
+        "sources",
+        "track_id",
+        "updated_order"
+      ],
+      "properties": {
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Source"
+          }
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "updated_order": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TrackPage": {
+      "type": "object",
+      "required": [
+        "offset",
+        "total",
+        "tracks"
+      ],
+      "properties": {
+        "offset": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "VaultCandidate": {
+      "type": "object",
+      "required": [
+        "channel",
+        "init",
+        "init_message_id"
+      ],
+      "properties": {
+        "channel": {
+          "$ref": "#/definitions/ChannelInfo"
+        },
+        "init": {
+          "$ref": "#/definitions/VaultInit"
+        },
+        "init_message_id": {
+          "type": "string"
+        }
+      }
+    },
+    "VaultDiagnostics": {
+      "type": "object",
+      "required": [
+        "known_missing_media_sources",
+        "mode",
+        "projection",
+        "recovered_from_history",
+        "snapshot_recommended",
+        "source_checks_failed",
+        "unchecked_media_sources",
+        "vault_id"
+      ],
+      "properties": {
+        "backup_healthy": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "gc_coordinator_device_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "known_missing_media_sources": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "mode": {
+          "$ref": "#/definitions/RuntimeMode"
+        },
+        "primary_healthy": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "projection": {
+          "$ref": "#/definitions/ProjectionDiagnostics"
+        },
+        "recovered_from_history": {
+          "type": "boolean"
+        },
+        "snapshot_age_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "snapshot_recommended": {
+          "type": "boolean"
+        },
+        "source_checks_failed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "unchecked_media_sources": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "uncovered_log_text_bytes": {
+          "description": "UTF-8 text bytes in the last fully audited post-barrier history.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "unknown_protocol_records": {
+          "description": "None means the current history has not been completely verified.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "vault_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VaultInit": {
+      "type": "object",
+      "required": [
+        "created_at_utc",
+        "created_by",
+        "owner_telegram_user_id",
+        "vault_id"
+      ],
+      "properties": {
+        "created_at_utc": {
+          "type": "string"
+        },
+        "created_by": {
+          "type": "string"
+        },
+        "owner_telegram_user_id": {
+          "type": "string"
+        },
+        "vault_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
     "VaultResponse": {
       "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "audio_info"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AudioInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "diagnostics"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/VaultDiagnostics"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "sources"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SourceHealth"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "orphan_media"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/OrphanMedia"
+              }
+            }
+          }
+        },
         {
           "type": "object",
           "required": [
@@ -1179,6 +3492,7 @@
               "required": [
                 "duplicate_track_ids",
                 "metadata",
+                "possible_duplicate_track_ids",
                 "sha256",
                 "size_bytes"
               ],
@@ -1192,6 +3506,13 @@
                 },
                 "metadata": {
                   "$ref": "#/definitions/Metadata"
+                },
+                "possible_duplicate_track_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
                 },
                 "sha256": {
                   "type": "string"

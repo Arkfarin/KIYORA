@@ -1,12 +1,14 @@
 //! Local audio import inspection, bounded transfer, and device-local cache.
 mod cache;
 mod download;
+mod duplicates;
 mod import;
 mod pcm;
 mod playback;
 mod stream;
 pub use cache::*;
 pub use download::*;
+pub use duplicates::*;
 pub use import::*;
 pub use pcm::PlaybackInput;
 pub use playback::*;

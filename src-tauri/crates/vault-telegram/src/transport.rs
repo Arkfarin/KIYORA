@@ -11,15 +11,25 @@ use tokio_util::sync::CancellationToken;
 use vault_domain::{ChatId, MessageId, UserId};
 use vault_protocol::Record;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RemoteFile {
     pub file_id: i32,
     pub size: i64,
     pub name: String,
     pub mime_type: String,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AudioInfo {
+    pub title: String,
+    pub performer: String,
+    pub duration_ms: u64,
+    pub file: RemoteFile,
+    pub thumbnail: Option<RemoteFile>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMessage {
+    #[serde(default)]
+    pub sent_at_unix: Option<u64>,
     pub chat_id: ChatId,
     pub id: MessageId,
     pub text: String,
@@ -37,9 +47,11 @@ impl RemoteMessage {
         Ok(record)
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelInfo {
+    #[schemars(with = "String")]
     pub chat_id: ChatId,
+    #[schemars(with = "String")]
     pub owner_id: UserId,
     pub title: String,
 }
@@ -62,6 +74,23 @@ pub enum Update {
 /// Transport methods return only confirmed, permanent messages. A timeout on a
 /// send has unknown outcome: the caller must reconcile, never blindly resend.
 pub trait Telegram: Send + Sync {
+    /// Positive search results are hints only. None always falls back to history;
+    /// a search miss never authorizes creation or proves absence of a vault.
+    fn init_hint(
+        &self,
+        _chat: ChatId,
+        _cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<Option<RemoteMessage>, TelegramError>> + Send {
+        async { Ok(None) }
+    }
+    fn audio_info(
+        &self,
+        _chat: ChatId,
+        _id: MessageId,
+        _cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<Option<AudioInfo>, TelegramError>> + Send {
+        async { Ok(None) }
+    }
     fn subscribe(&self) -> broadcast::Receiver<Update>;
     fn verify_channel(
         &self,
@@ -121,6 +150,9 @@ pub trait Telegram: Send + Sync {
 }
 #[derive(Debug, Clone)]
 pub struct DownloadedRange {
+    /// Keep alive until the caller has finished reading the file. Maintenance
+    /// must not remove TDLib's local file while a consumer is using this range.
+    pub storage_lease: Option<Arc<tokio::sync::OwnedRwLockReadGuard<()>>>,
     pub path: PathBuf,
     /// Absolute offset represented by byte zero of `path`.
     pub file_offset: i64,
@@ -136,6 +168,7 @@ pub struct TdTransport {
     updates: broadcast::Sender<Update>,
     _pump: std::sync::Arc<Pump>,
     downloads: Arc<DownloadLocks>,
+    pub(crate) storage: Arc<tokio::sync::RwLock<()>>,
 }
 #[derive(Default)]
 struct DownloadLocks(Mutex<HashMap<i32, Weak<tokio::sync::Mutex<()>>>>);
@@ -196,6 +229,7 @@ impl TdTransport {
             updates,
             _pump: std::sync::Arc::new(Pump(token)),
             downloads: Arc::new(DownloadLocks::default()),
+            storage: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
     pub fn client(&self) -> &TdClient {
@@ -250,6 +284,58 @@ impl TdTransport {
     }
 }
 impl Telegram for TdTransport {
+    async fn init_hint(
+        &self,
+        chat: ChatId,
+        cancel: &CancellationToken,
+    ) -> Result<Option<RemoteMessage>, TelegramError> {
+        let result=self.client.read(json!({"@type":"searchChatMessages","chat_id":chat.get(),"topic_id":null,
+            "query":"VAULT_INIT","sender_id":null,"from_message_id":0,"offset":0,"limit":100,"filter":null}),cancel).await?;
+        let values = result["messages"]
+            .as_array()
+            .ok_or(TelegramError::InvalidResponse)?;
+        let mut candidate = None;
+        for value in values {
+            let message = parse_message(value, chat)?;
+            if matches!(message.record()?, Some(Record::Init(_))) {
+                if candidate.is_some() {
+                    return Err(TelegramError::InvalidVault);
+                }
+                candidate = Some(message);
+            }
+        }
+        // Incomplete search results are never treated as an authoritative marker.
+        if integer(&result["next_from_message_id"])? != 0 {
+            return Ok(None);
+        }
+        if let Some(hint) = candidate {
+            let actual = self.message(chat, hint.id, cancel).await?;
+            if actual.as_ref() != Some(&hint) {
+                return Err(TelegramError::InvalidVault);
+            }
+            Ok(actual)
+        } else {
+            Ok(None)
+        }
+    }
+    async fn audio_info(
+        &self,
+        chat: ChatId,
+        id: MessageId,
+        cancel: &CancellationToken,
+    ) -> Result<Option<AudioInfo>, TelegramError> {
+        let value = self
+            .client
+            .read(
+                json!({"@type":"getMessage","chat_id":chat.get(),"message_id":id.get()}),
+                cancel,
+            )
+            .await?;
+        if parse_message(&value, chat)?.id != id {
+            return Err(TelegramError::InvalidResponse);
+        }
+        parse_audio_info(&value["content"])
+    }
     fn subscribe(&self) -> broadcast::Receiver<Update> {
         self.updates.subscribe()
     }
@@ -390,6 +476,11 @@ impl Telegram for TdTransport {
         // TDLib ends an outstanding synchronous download when another range for
         // that file is requested. Share a per-file gate across transport clones.
         let _download = self.downloads.acquire(file.file_id, cancel).await?;
+        let lease = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(TelegramError::Cancelled),
+            lease = self.storage.clone().read_owned() => lease,
+        };
         let response=self.client.request(json!({"@type":"downloadFile","file_id":file.file_id,"priority":16,"offset":offset,"limit":limit,"synchronous":true}),Duration::from_secs(300),cancel).await;
         let value = match response {
             Ok(value) => value,
@@ -399,7 +490,9 @@ impl Telegram for TdTransport {
                 return Err(error);
             }
         };
-        downloaded_range(&value, &file, offset, limit)
+        let mut range = downloaded_range(&value, &file, offset, limit)?;
+        range.storage_lease = Some(Arc::new(lease));
+        Ok(range)
     }
 
     async fn forward_media(
@@ -500,6 +593,63 @@ pub fn integer(value: &Value) -> Result<i64, TelegramError> {
     }
     Err(TelegramError::InvalidResponse)
 }
+fn parse_audio_info(content: &Value) -> Result<Option<AudioInfo>, TelegramError> {
+    if content["@type"] != "messageAudio" {
+        return Ok(None);
+    }
+    let audio = &content["audio"];
+    let duration =
+        u64::try_from(integer(&audio["duration"])?).map_err(|_| TelegramError::InvalidResponse)?;
+    let file =
+        |raw: &Value, name: String, mime_type: String| -> Result<RemoteFile, TelegramError> {
+            let file_id =
+                i32::try_from(integer(&raw["id"])?).map_err(|_| TelegramError::InvalidResponse)?;
+            let size = integer(&raw["size"])?;
+            if file_id <= 0 || size < 0 {
+                return Err(TelegramError::InvalidResponse);
+            }
+            Ok(RemoteFile {
+                file_id,
+                size,
+                name,
+                mime_type,
+            })
+        };
+    let thumbnail = if audio["album_cover_thumbnail"].is_null() {
+        None
+    } else {
+        let mime = match audio["album_cover_thumbnail"]["format"]["@type"].as_str() {
+            Some("thumbnailFormatJpeg") => "image/jpeg",
+            Some("thumbnailFormatPng") => "image/png",
+            Some("thumbnailFormatWebp") => "image/webp",
+            _ => "application/octet-stream",
+        };
+        Some(file(
+            &audio["album_cover_thumbnail"]["file"],
+            String::new(),
+            mime.into(),
+        )?)
+    };
+    Ok(Some(AudioInfo {
+        title: audio["title"]
+            .as_str()
+            .ok_or(TelegramError::InvalidResponse)?
+            .into(),
+        performer: audio["performer"]
+            .as_str()
+            .ok_or(TelegramError::InvalidResponse)?
+            .into(),
+        duration_ms: duration
+            .checked_mul(1000)
+            .ok_or(TelegramError::InvalidResponse)?,
+        file: file(
+            &audio["audio"],
+            audio["file_name"].as_str().unwrap_or("").into(),
+            audio["mime_type"].as_str().unwrap_or("").into(),
+        )?,
+        thumbnail,
+    }))
+}
 fn validate_server_id(n: i64) -> Result<MessageId, TelegramError> {
     if n <= 0 || n > ((i64::from(i32::MAX)) << 20) || n & ((1 << 20) - 1) != 0 {
         return Err(TelegramError::InvalidResponse);
@@ -554,6 +704,10 @@ pub fn parse_message(value: &Value, chat: ChatId) -> Result<RemoteMessage, Teleg
         && value["sender_id"]["@type"] == "messageSenderChat"
         && integer(&value["sender_id"]["chat_id"]).ok() == Some(chat.get());
     Ok(RemoteMessage {
+        sent_at_unix: integer(&value["date"])
+            .ok()
+            .and_then(|n| u64::try_from(n).ok())
+            .filter(|n| *n > 0),
         chat_id: chat,
         id,
         text,
@@ -599,26 +753,49 @@ fn parse_update(value: &Value) -> Result<Option<Update>, TelegramError> {
     let chat = |v: &Value| ChatId::new(integer(v)?).map_err(|_| TelegramError::InvalidResponse);
     Ok(match value["@type"].as_str() {
         Some("updateNewMessage") => {
-            if !value["message"]["sending_state"].is_null() {
+            if !value["message"]["sending_state"].is_null()
+                || !value["message"]["scheduling_state"].is_null()
+            {
                 None
             } else {
                 let id = chat(&value["message"]["chat_id"])?;
                 Some(Update::New(parse_message(&value["message"], id)?))
             }
         }
-        Some("updateMessageContent" | "updateMessageEdited") => Some(Update::Changed {
-            chat_id: chat(&value["chat_id"])?,
-            message_id: validate_server_id(integer(&value["message_id"])?)?,
-        }),
-        Some("updateDeleteMessages") if value["is_permanent"] == true => Some(Update::Deleted {
-            chat_id: chat(&value["chat_id"])?,
-            message_ids: value["message_ids"]
+        Some("updateMessageContent" | "updateMessageEdited") => {
+            let id = integer(&value["message_id"])?;
+            // TDLib also updates pending/local and scheduled messages. Those
+            // IDs never enter the vault log and are not a connection failure.
+            validate_server_id(id)
+                .ok()
+                .map(|message_id| {
+                    chat(&value["chat_id"]).map(|chat_id| Update::Changed {
+                        chat_id,
+                        message_id,
+                    })
+                })
+                .transpose()?
+        }
+        Some("updateDeleteMessages") if value["is_permanent"] == true => {
+            let ids = value["message_ids"]
                 .as_array()
                 .ok_or(TelegramError::InvalidResponse)?
                 .iter()
-                .map(|v| validate_server_id(integer(v)?))
-                .collect::<Result<_, _>>()?,
-        }),
+                .map(integer)
+                .collect::<Result<Vec<_>, _>>()?;
+            let message_ids: Vec<_> = ids
+                .into_iter()
+                .filter_map(|id| validate_server_id(id).ok())
+                .collect();
+            if message_ids.is_empty() {
+                None
+            } else {
+                Some(Update::Deleted {
+                    chat_id: chat(&value["chat_id"])?,
+                    message_ids,
+                })
+            }
+        }
         Some("updateConnectionState") if value["state"]["@type"] != "connectionStateReady" => {
             Some(Update::Disconnected)
         }
@@ -666,6 +843,7 @@ fn downloaded_range(
         return Err(TelegramError::Timeout);
     }
     Ok(DownloadedRange {
+        storage_lease: None,
         path: PathBuf::from(
             local["path"]
                 .as_str()
@@ -683,6 +861,29 @@ fn downloaded_range(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod download_tests {
+    #[test]
+    fn pending_message_changes_do_not_report_a_disconnection() {
+        use serde_json::json;
+        for kind in ["updateMessageContent", "updateMessageEdited"] {
+            assert!(
+                super::parse_update(&json!({"@type":kind,"chat_id":-100,"message_id":10485761}))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let deletion = super::parse_update(&json!({"@type":"updateDeleteMessages", "chat_id":-100,
+            "message_ids":[10485761,10485760],"is_permanent":true}))
+        .unwrap();
+        assert!(
+            matches!(deletion, Some(super::Update::Deleted {message_ids,..}) if message_ids.len()==1 && message_ids[0].get()==10485760)
+        );
+        assert!(
+            super::parse_update(
+                &json!({"@type":"updateMessageContent","chat_id":-100,"message_id":1.5})
+            )
+            .is_err()
+        );
+    }
     use super::*;
     use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -768,5 +969,30 @@ mod download_tests {
                 Err(TelegramError::InvalidResponse)
             ));
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod metadata_tests {
+    use super::*;
+    #[test]
+    fn audio_preview_reads_metadata_and_thumbnail_without_download() {
+        let content = json!({"@type":"messageAudio","audio":{"duration":180,"title":"Song","performer":"Artist",
+            "file_name":"song.mp3","mime_type":"audio/mpeg","audio":{"id":8,"size":5000000},
+            "album_cover_thumbnail":{"format":{"@type":"thumbnailFormatJpeg"},"file":{"id":9,"size":1200}}}});
+        let result = parse_audio_info(&content).unwrap().unwrap();
+        assert_eq!(result.title, "Song");
+        assert_eq!(result.duration_ms, 180000);
+        assert_eq!(result.file.size, 5000000);
+        assert_eq!(result.thumbnail.unwrap().size, 1200);
+        let mut invalid = content;
+        invalid["audio"]["duration"] = json!(-1);
+        assert!(parse_audio_info(&invalid).is_err());
+        assert!(
+            parse_audio_info(&json!({"@type":"messageDocument"}))
+                .unwrap()
+                .is_none()
+        );
     }
 }

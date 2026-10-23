@@ -15,7 +15,9 @@ import javax.crypto.spec.GCMParameterSpec
 /** Keystore wraps 32-byte secrets; only authenticated ciphertext reaches disk. */
 internal class KeystoreSecrets(
     context: Context,
-    private val directory: File = File(context.noBackupFilesDir, "kiyora-secrets-v1"),
+    // Android's framework-owned base may be /data/user/0 -> /data/data. Resolve
+    // that base only; our own directory and records must remain symlink-free.
+    private val directory: File = File(context.noBackupFilesDir.canonicalFile, "kiyora-secrets-v1"),
     private val aliasPrefix: String = "io.github.arkfarin.kiyora.secret.v1."
 ) {
     companion object {

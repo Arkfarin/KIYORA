@@ -51,6 +51,7 @@ pub enum GcStatus {
     Running,
     Complete,
     Stopped,
+    Abandoned,
 }
 
 pub fn plan(

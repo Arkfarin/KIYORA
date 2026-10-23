@@ -13,6 +13,60 @@
         "name": {
           "type": "string",
           "enum": [
+            "vault.operation.progress"
+          ]
+        },
+        "payload": {
+          "$ref": "#/definitions/OperationProgress"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "name",
+        "payload"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "playback.queue.changed"
+          ]
+        },
+        "payload": {
+          "$ref": "#/definitions/QueueInfo"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "name",
+        "payload"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "job.progress"
+          ]
+        },
+        "payload": {
+          "$ref": "#/definitions/JobInfo"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "name",
+        "payload"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
             "runtime.mode.changed"
           ]
         },
@@ -133,6 +187,24 @@
         },
         "payload": {
           "$ref": "#/definitions/Command"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "name",
+        "payload"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "import.progress"
+          ]
+        },
+        "payload": {
+          "$ref": "#/definitions/ImportInfo"
         }
       }
     },
@@ -742,6 +814,41 @@
       },
       "additionalProperties": false
     },
+    "AudioInfo": {
+      "type": "object",
+      "required": [
+        "duration_ms",
+        "file",
+        "performer",
+        "title"
+      ],
+      "properties": {
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "file": {
+          "$ref": "#/definitions/RemoteFile"
+        },
+        "performer": {
+          "type": "string"
+        },
+        "thumbnail": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RemoteFile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
     "AuthStatus": {
       "oneOf": [
         {
@@ -946,6 +1053,123 @@
         }
       ]
     },
+    "BackupKind": {
+      "type": "string",
+      "enum": [
+        "metadata",
+        "full"
+      ]
+    },
+    "BulkItemResult": {
+      "type": "object",
+      "required": [
+        "op_id",
+        "result"
+      ],
+      "properties": {
+        "op_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "result": {
+          "$ref": "#/definitions/Result_of_VaultResponse_or_ApiError"
+        }
+      }
+    },
+    "CacheStats": {
+      "type": "object",
+      "required": [
+        "entries",
+        "partial_bytes",
+        "partial_entries",
+        "pinned_entries",
+        "quota_bytes",
+        "reserved_bytes",
+        "used_bytes"
+      ],
+      "properties": {
+        "entries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "partial_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "partial_entries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "pinned_entries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "quota_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "reserved_bytes": {
+          "description": "Bytes not yet written but reserved by active downloads.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "used_bytes": {
+          "description": "Completed files plus bytes already written by partial downloads.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Candidate": {
+      "type": "object",
+      "required": [
+        "kind",
+        "message_id",
+        "reason",
+        "record_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "record_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Checksum": {
+      "type": "object",
+      "required": [
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Command": {
       "type": "object",
       "required": [
@@ -1058,6 +1282,7 @@
     "DownloadState": {
       "type": "string",
       "enum": [
+        "unavailable",
         "remote_only",
         "downloading",
         "partially_cached",
@@ -1080,13 +1305,18 @@
         "CONFLICT",
         "READONLY",
         "INTEGRITY",
+        "UNSAFE_VAULT",
+        "PROTOCOL_UNSUPPORTED",
+        "SNAPSHOT_UNAVAILABLE",
         "BACKPRESSURE",
         "CANCELLED",
         "TIMEOUT",
         "RATE_LIMITED",
         "NETWORK",
         "STORAGE",
+        "DATABASE_CORRUPT",
         "MEDIA_UNAVAILABLE",
+        "MEDIA_SOURCE_MISSING",
         "PLAYBACK_UNAVAILABLE",
         "CLOSED",
         "INTERNAL"
@@ -1121,6 +1351,372 @@
         "op_id": {
           "type": "string",
           "format": "uuid"
+        },
+        "vault_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GcPlan": {
+      "type": "object",
+      "required": [
+        "barrier_id",
+        "candidates",
+        "commit_id",
+        "coordinator",
+        "generation",
+        "plan_id",
+        "vault_id"
+      ],
+      "properties": {
+        "barrier_id": {
+          "type": "string"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Candidate"
+          }
+        },
+        "commit_id": {
+          "type": "string"
+        },
+        "coordinator": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "plan_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "vault_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GcPlanSummary": {
+      "type": "object",
+      "required": [
+        "plan_id",
+        "status"
+      ],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "GcProgress": {
+      "type": "object",
+      "required": [
+        "completed",
+        "plan",
+        "status"
+      ],
+      "properties": {
+        "completed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "plan": {
+          "$ref": "#/definitions/GcPlan"
+        },
+        "status": {
+          "$ref": "#/definitions/GcStatus"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GcStatus": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "running",
+        "complete",
+        "stopped",
+        "abandoned"
+      ]
+    },
+    "ImportInfo": {
+      "type": "object",
+      "required": [
+        "metadata",
+        "op_id",
+        "sha256",
+        "size_bytes",
+        "source_id",
+        "stage",
+        "track_id"
+      ],
+      "properties": {
+        "media_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "op_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "stage": {
+          "$ref": "#/definitions/ImportStage"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ImportStage": {
+      "type": "string",
+      "enum": [
+        "staging",
+        "prepared",
+        "upload_unknown",
+        "uploaded",
+        "complete"
+      ]
+    },
+    "JobInfo": {
+      "type": "object",
+      "required": [
+        "completed",
+        "job_id",
+        "state",
+        "total"
+      ],
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApiError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JobResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/JobState"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "JobResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "vault"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/VaultResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "backup"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/Manifest"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "repaired"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/SnapshotInfo"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "bulk"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/BulkItemResult"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "JobState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    },
+    "Manifest": {
+      "type": "object",
+      "required": [
+        "entries",
+        "format",
+        "generation",
+        "kind",
+        "owner_id",
+        "playlist_count",
+        "protocol",
+        "state_schema",
+        "track_count",
+        "vault_id"
+      ],
+      "properties": {
+        "barrier_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Checksum"
+          }
+        },
+        "format": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "kind": {
+          "$ref": "#/definitions/BackupKind"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "playlist_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "protocol": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "state_schema": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "track_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
         },
         "vault_id": {
           "type": "string",
@@ -1301,6 +1897,78 @@
         "already_deleted"
       ]
     },
+    "Operation": {
+      "type": "string",
+      "enum": [
+        "sync",
+        "snapshot",
+        "gc"
+      ]
+    },
+    "OperationProgress": {
+      "type": "object",
+      "required": [
+        "completed",
+        "operation",
+        "phase"
+      ],
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "operation": {
+          "$ref": "#/definitions/Operation"
+        },
+        "phase": {
+          "$ref": "#/definitions/Phase"
+        },
+        "total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        }
+      }
+    },
+    "OrphanMedia": {
+      "type": "object",
+      "required": [
+        "import_id",
+        "message_id",
+        "recoverable_import"
+      ],
+      "properties": {
+        "import_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "recoverable_import": {
+          "type": "boolean"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "Outcome": {
       "oneOf": [
         {
@@ -1355,6 +2023,19 @@
         }
       ]
     },
+    "Phase": {
+      "type": "string",
+      "enum": [
+        "verify",
+        "replay",
+        "reconcile_head",
+        "barrier",
+        "encode",
+        "publish_copies",
+        "delete_batch",
+        "complete"
+      ]
+    },
     "PlaybackState": {
       "oneOf": [
         {
@@ -1368,6 +2049,30 @@
               "enum": [
                 "idle"
               ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "playback_id",
+            "state",
+            "track_id"
+          ],
+          "properties": {
+            "playback_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "ended"
+              ]
+            },
+            "track_id": {
+              "type": "string",
+              "format": "uuid"
             }
           }
         },
@@ -1491,6 +2196,105 @@
         }
       ]
     },
+    "ProjectionDiagnostics": {
+      "description": "Local, read-only accounting; no Telegram completeness is inferred from it.",
+      "type": "object",
+      "required": [
+        "active_playlists",
+        "active_tracks",
+        "cursor",
+        "database_bytes",
+        "gc_plans",
+        "generation",
+        "pending_commands",
+        "playlist_entries",
+        "snapshot_barrier",
+        "uncovered_events"
+      ],
+      "properties": {
+        "active_playlists": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "active_tracks": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "database_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "gc_plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GcPlanSummary"
+          }
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "pending_commands": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "playlist_entries": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "snapshot_barrier": {
+          "type": "string"
+        },
+        "uncovered_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueueInfo": {
+      "type": "object",
+      "required": [
+        "queue_id",
+        "total"
+      ],
+      "properties": {
+        "current_track_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "position": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "queue_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      }
+    },
     "RejectReason": {
       "type": "string",
       "enum": [
@@ -1500,6 +2304,57 @@
         "invalid_payload",
         "wrong_entity",
         "future_generation"
+      ]
+    },
+    "RemoteFile": {
+      "type": "object",
+      "required": [
+        "file_id",
+        "mime_type",
+        "name",
+        "size"
+      ],
+      "properties": {
+        "file_id": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "Result_of_VaultResponse_or_ApiError": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "Ok"
+          ],
+          "properties": {
+            "Ok": {
+              "$ref": "#/definitions/VaultResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "Err"
+          ],
+          "properties": {
+            "Err": {
+              "$ref": "#/definitions/ApiError"
+            }
+          }
+        }
       ]
     },
     "RuntimeMode": {
@@ -1627,6 +2482,46 @@
       },
       "additionalProperties": false
     },
+    "SourceAvailability": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "available",
+        "unavailable",
+        "failed_retryable",
+        "failed_permanent"
+      ]
+    },
+    "SourceHealth": {
+      "type": "object",
+      "required": [
+        "availability",
+        "chat_id",
+        "message_id",
+        "source_id",
+        "track_id"
+      ],
+      "properties": {
+        "availability": {
+          "$ref": "#/definitions/SourceAvailability"
+        },
+        "chat_id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
     "Status": {
       "type": "object",
       "required": [
@@ -1652,6 +2547,480 @@
         }
       },
       "additionalProperties": false
+    },
+    "VaultDiagnostics": {
+      "type": "object",
+      "required": [
+        "known_missing_media_sources",
+        "mode",
+        "projection",
+        "recovered_from_history",
+        "snapshot_recommended",
+        "source_checks_failed",
+        "unchecked_media_sources",
+        "vault_id"
+      ],
+      "properties": {
+        "backup_healthy": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "gc_coordinator_device_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "known_missing_media_sources": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "mode": {
+          "$ref": "#/definitions/RuntimeMode"
+        },
+        "primary_healthy": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "projection": {
+          "$ref": "#/definitions/ProjectionDiagnostics"
+        },
+        "recovered_from_history": {
+          "type": "boolean"
+        },
+        "snapshot_age_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "snapshot_recommended": {
+          "type": "boolean"
+        },
+        "source_checks_failed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "unchecked_media_sources": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "uncovered_log_text_bytes": {
+          "description": "UTF-8 text bytes in the last fully audited post-barrier history.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "unknown_protocol_records": {
+          "description": "None means the current history has not been completely verified.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "vault_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VaultResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "audio_info"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AudioInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "diagnostics"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/VaultDiagnostics"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "sources"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SourceHealth"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "orphan_media"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/OrphanMedia"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "synced"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "initialized"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "command"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/Command"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "snapshot"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/SnapshotInfo"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "gc"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/GcProgress"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "import_review"
+              ]
+            },
+            "result": {
+              "type": "object",
+              "required": [
+                "duplicate_track_ids",
+                "metadata",
+                "possible_duplicate_track_ids",
+                "sha256",
+                "size_bytes"
+              ],
+              "properties": {
+                "duplicate_track_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "metadata": {
+                  "$ref": "#/definitions/Metadata"
+                },
+                "possible_duplicate_track_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0.0
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "shared"
+              ]
+            },
+            "result": {
+              "type": "object",
+              "required": [
+                "message_id",
+                "recipient_chat_id"
+              ],
+              "properties": {
+                "message_id": {
+                  "type": "string"
+                },
+                "recipient_chat_id": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "download"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/DownloadInfo"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "cache_pinned"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "cache_stats"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/CacheStats"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "cache_cleared"
+              ]
+            },
+            "result": {
+              "type": "object",
+              "required": [
+                "bytes_removed"
+              ],
+              "properties": {
+                "bytes_removed": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0.0
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "backup_restored"
+              ]
+            },
+            "result": {
+              "type": "object",
+              "required": [
+                "operations",
+                "playlists",
+                "source_vault_id",
+                "tracks"
+              ],
+              "properties": {
+                "operations": {
+                  "type": "integer",
+                  "format": "uint",
+                  "minimum": 0.0
+                },
+                "playlists": {
+                  "type": "integer",
+                  "format": "uint",
+                  "minimum": 0.0
+                },
+                "source_vault_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "tracks": {
+                  "type": "integer",
+                  "format": "uint",
+                  "minimum": 0.0
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

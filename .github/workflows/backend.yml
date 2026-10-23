@@ -1,0 +1,72 @@
+name: Backend
+on:
+  push:
+    paths: ['src-tauri/**', '.github/workflows/backend.yml']
+  pull_request:
+    paths: ['src-tauri/**', '.github/workflows/backend.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libssl-dev libdbus-1-dev cmake gperf
+      - run: bash scripts/check-backend.sh
+      - name: Scale acceptance (simulated)
+        run: cargo run --locked --release -p vault-sync --example scale-benchmark
+      - name: Pinned native TDLib
+        run: bash scripts/build-tdlib.sh
+      - name: Credential-free native lifecycle
+        run: KIYORA_TDJSON="$PWD/target/native/td-build/libtdjson.so" cargo test --locked -p vault-telegram --test real_tdlib -- --ignored
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --locked --workspace --all-targets
+      - run: cargo test --locked --workspace
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          gradle-version: '8.14.3'
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+      - name: Rust arm64, JNI and 16 KiB alignment
+        run: NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" bash scripts/check-android-rust.sh
+      - name: Plugin APK and Lint
+        run: bash scripts/check-android-plugin.sh

@@ -33,6 +33,13 @@ impl TdParameters {
             "api_id":self.api_id,"api_hash":*self.api_hash,"system_language_code":"en","device_model":"kiyora",
             "system_version":std::env::consts::OS,"application_version":env!("CARGO_PKG_VERSION")
         })).await?;
+        // The application coordinates local file eviction with range readers.
+        // This option requires initialized database state; setting it before
+        // setTdlibParameters can leave its response waiting for initialization.
+        client
+            .call(json!({"@type":"setOption", "name":"use_storage_optimizer",
+            "value":{"@type":"optionValueBoolean","value":false}}))
+            .await?;
         Ok(())
     }
 }

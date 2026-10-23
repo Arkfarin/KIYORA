@@ -16,11 +16,11 @@ const CAPACITY: usize = 128;
 type Reply = oneshot::Sender<Result<Value, TelegramError>>;
 struct Request {
     value: Value,
-    deadline: Instant,
+    deadline: Option<Instant>,
     reply: Reply,
 }
 struct Pending {
-    deadline: Instant,
+    deadline: Option<Instant>,
     reply: Reply,
 }
 
@@ -121,7 +121,7 @@ impl TdClient {
         self.requests
             .try_send(Request {
                 value,
-                deadline,
+                deadline: Some(deadline),
                 reply,
             })
             .map_err(|e| match e {
@@ -138,6 +138,28 @@ impl TdClient {
         self.request(value, Duration::from_secs(30), &CancellationToken::new())
             .await
     }
+    /// Internal maintenance requests must hold their storage gate until the
+    /// native response (or client close), even if the API caller goes away.
+    pub(crate) async fn maintenance(&self, value: Value) -> Result<Value, TelegramError> {
+        if self.shutdown.is_cancelled() || *self.closed.borrow() {
+            return Err(TelegramError::Closed);
+        }
+        if value["@type"] != "optimizeStorage" || value.get("@extra").is_some() {
+            return Err(TelegramError::InvalidInput);
+        }
+        let (reply, rx) = oneshot::channel();
+        self.requests
+            .try_send(Request {
+                value,
+                deadline: None,
+                reply,
+            })
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => TelegramError::Backpressure,
+                mpsc::error::TrySendError::Closed(_) => TelegramError::Closed,
+            })?;
+        rx.await.map_err(|_| TelegramError::Closed)?
+    }
     /// Only use for idempotent reads. Writes are never automatically retried.
     pub async fn read(
         &self,
@@ -148,9 +170,11 @@ impl TdClient {
             value["@type"].as_str(),
             Some(
                 "getMe"
+                    | "getAuthorizationState"
                     | "getChat"
                     | "getMessage"
                     | "getChatHistory"
+                    | "searchChatMessages"
                     | "getSupergroup"
                     | "getSupergroupFullInfo"
                     | "getChatMember"
@@ -244,7 +268,10 @@ impl Worker {
                     if request.reply.is_closed() {
                         continue;
                     }
-                    if request.deadline <= Instant::now() {
+                    if request
+                        .deadline
+                        .is_some_and(|deadline| deadline <= Instant::now())
+                    {
                         let _ = request.reply.send(Err(TelegramError::Timeout));
                         continue;
                     }
@@ -303,7 +330,11 @@ impl Worker {
             let expired: Vec<_> = self
                 .pending
                 .iter()
-                .filter(|(_, p)| p.deadline <= Instant::now() || p.reply.is_closed())
+                .filter(|(_, p)| {
+                    p.deadline
+                        .is_some_and(|deadline| deadline <= Instant::now())
+                        || p.reply.is_closed()
+                })
                 .map(|(key, _)| key.clone())
                 .collect();
             for key in expired {

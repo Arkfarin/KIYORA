@@ -5,13 +5,17 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use vault_core::{
-    ApiError, Backend, ErrorCode, Mutation, PlaybackAction, Status, VaultRequest, VaultResponse,
+    ApiError, Backend, CoordinatorTarget, ErrorCode, LocalQuery, LocalResponse, Mutation,
+    PlaybackAction, Status, VaultRequest, VaultResponse,
 };
 use vault_domain::{Action, ChatId};
 use zeroize::Zeroizing;
+#[path = "kiyora-cli/simulation.rs"]
+mod simulation;
 
 #[tokio::main]
 async fn main() {
+    vault_core::initialize_diagnostics();
     if let Err(error) = run().await {
         eprintln!("error[{:?}]: {}", error.code, error.message);
         std::process::exit(exit_code(error.code));
@@ -31,8 +35,35 @@ async fn run() -> Result<(), ApiError> {
         print_help();
         return Ok(());
     }
+    if args[0] == "simulate" {
+        return simulation::run(&args[1..]).await;
+    }
     let backend = Backend::default_backend()?;
     match args[0].as_str() {
+        "serve" => vault_core::serve_stdio(&backend).await?,
+        "storage" => {
+            let status = active(&backend).await?;
+            let cancel = CancellationToken::new();
+            let report = match args.get(1).map(String::as_str) {
+                None | Some("status") => {
+                    backend
+                        .storage_usage(status.context.session_id, &cancel)
+                        .await?
+                }
+                Some("trim") => {
+                    wait_authorized(&backend, status.context.session_id).await?;
+                    let bytes = args
+                        .get(2)
+                        .and_then(|v| v.parse().ok())
+                        .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+                    backend
+                        .trim_telegram_storage(status.context.session_id, bytes, &cancel)
+                        .await?
+                }
+                _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
+            };
+            print_json(&report)?;
+        }
         "profiles" => profiles(&backend, &args[1..]).await?,
         "auth" => auth(&backend, &args[1..]).await?,
         "status" => {
@@ -53,6 +84,58 @@ async fn run() -> Result<(), ApiError> {
         "media" => media(&backend, &args[1..]).await?,
         "playback" => playback(&backend, &args[1..]).await?,
         "diagnose" => diagnose(&backend).await?,
+        "repair" => {
+            let status = active(&backend).await?;
+            wait_authorized(&backend, status.context.session_id).await?;
+            let cancel = CancellationToken::new();
+            let result = match args.get(1) {
+                None => {
+                    backend
+                        .repair_local_database(status.context.session_id, &cancel)
+                        .await?
+                }
+                Some(path) if args.len() == 2 => {
+                    backend
+                        .recover_database_from_backup(
+                            status.context.session_id,
+                            path.into(),
+                            &cancel,
+                        )
+                        .await?
+                }
+                _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
+            };
+            print_json(&result)?;
+        }
+        "device" => {
+            let status = active(&backend).await?;
+            print_json(
+                &backend
+                    .query(status.context.session_id, LocalQuery::Device)
+                    .await?,
+            )?;
+        }
+        "command" => {
+            let status = active(&backend).await?;
+            print_json(
+                &backend
+                    .query(
+                        status.context.session_id,
+                        LocalQuery::CommandStatus {
+                            op_id: parse_uuid(args.get(1))?,
+                        },
+                    )
+                    .await?,
+            )?;
+        }
+        "settings" => {
+            let status = active(&backend).await?;
+            print_json(
+                &backend
+                    .query(status.context.session_id, LocalQuery::Settings)
+                    .await?,
+            )?;
+        }
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     }
     backend.shutdown().await?;
@@ -67,6 +150,30 @@ fn print_help() {
         "  playlist show <id>|add <playlist-id> <track-id> [after-entry-id]|remove <entry-id>|move <entry-id> [after-entry-id]"
     );
     println!("  library favorite <track-id> <set-name> on|off");
+    println!("  device | command <op-id> | settings");
+    println!("  gc coordinator this|none|<device-id> [--force-confirmed] | abandon <plan-id>");
+    println!("  media cache quota <bytes>");
+    println!("  media imports|resume <op-id>|orphans");
+    println!("  vault resume <chat-id>");
+    println!("  library metadata <track-id> <patch.json>");
+    println!("  simulate [event-count] (three simulated clients; no Telegram account)");
+    println!("  snapshot repair (publishes a new verified A/B generation)");
+    println!("  playback playlist <playlist-id> (interactive next/previous/pause/resume/stop)");
+    println!("  repair [backup-file] (verified recovery; keeps the original SQLite files)");
+    println!("  storage status|trim <target-bytes> (local TDLib files only)");
+    println!("  serve (persistent JSON-lines API, including jobs and playback controls)");
+}
+async fn wait_authorized(backend: &Backend, session_id: Uuid) -> Result<(), ApiError> {
+    for _ in 0..60 {
+        match backend.auth_status(session_id).await? {
+            vault_telegram::AuthStatus::Ready => return Ok(()),
+            vault_telegram::AuthStatus::ParametersRequired => {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await
+            }
+            _ => return Err(ApiError::new(ErrorCode::AuthRequired)),
+        }
+    }
+    Err(ApiError::new(ErrorCode::Timeout))
 }
 async fn active(backend: &Backend) -> Result<Status, ApiError> {
     let id = backend
@@ -287,6 +394,17 @@ async fn vault(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                 .create_vault(status.context.session_id, &token)
                 .await?,
         ),
+        Some("resume") => {
+            let chat = args
+                .get(1)
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            print_status(
+                &backend
+                    .resume_vault_creation(status.context.session_id, chat, &token)
+                    .await?,
+            );
+        }
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     }
     Ok(())
@@ -333,6 +451,31 @@ async fn library(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                     t.track_id, t.metadata.performer, t.metadata.title
                 );
             }
+        }
+        Some("metadata") => {
+            let track_id = parse_uuid(args.get(1))?;
+            let path = args
+                .get(2)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            if tokio::fs::metadata(path).await?.len() > 64 * 1024 {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            let bytes = tokio::fs::read(path).await?;
+            let patch = serde_json::from_slice(&bytes)
+                .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
+            print_json(
+                &backend
+                    .service_request(
+                        status.context.session_id,
+                        VaultRequest::Mutate(Box::new(Mutation {
+                            op_id: Uuid::new_v4(),
+                            entity_id: track_id,
+                            action: Action::TrackMetadataUpdate { patch },
+                        })),
+                        &CancellationToken::new(),
+                    )
+                    .await?,
+            )?;
         }
         Some("delete") => {
             let id = parse_uuid(args.get(1))?;
@@ -410,6 +553,8 @@ async fn import(backend: &Backend, status: &Status, args: &[String]) -> Result<(
     let path = args
         .get(1)
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+    let op_id = Uuid::new_v4();
+    println!("operation={op_id}");
     let response = backend
         .service_request(
             status.context.session_id,
@@ -417,7 +562,7 @@ async fn import(backend: &Backend, status: &Status, args: &[String]) -> Result<(
                 path: path.clone(),
                 track_id: Uuid::new_v4(),
                 source_id: Uuid::new_v4(),
-                op_id: Uuid::new_v4(),
+                op_id,
                 allow_duplicate: args.iter().any(|v| v == "--allow-duplicate"),
             },
             &CancellationToken::new(),
@@ -449,6 +594,52 @@ async fn import(backend: &Backend, status: &Status, args: &[String]) -> Result<(
 async fn media(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
     match args.first().map(String::as_str) {
+        Some("imports") => print_json(
+            &backend
+                .query(
+                    status.context.session_id,
+                    LocalQuery::Imports {
+                        offset: 0,
+                        limit: 500,
+                    },
+                )
+                .await?,
+        ),
+        Some("resume") => print_json(
+            &backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::ResumeImport {
+                        op_id: parse_uuid(args.get(1))?,
+                    },
+                    &CancellationToken::new(),
+                )
+                .await?,
+        ),
+        Some("orphans") => print_json(
+            &backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::InspectOrphanMedia,
+                    &CancellationToken::new(),
+                )
+                .await?,
+        ),
+        Some("cache") if args.get(1).is_some_and(|arg| arg == "quota") => {
+            let bytes = args
+                .get(2)
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            print_json(
+                &backend
+                    .service_request(
+                        status.context.session_id,
+                        VaultRequest::SetCacheQuota { bytes },
+                        &CancellationToken::new(),
+                    )
+                    .await?,
+            )
+        }
         Some("cache") if args.get(1).is_some_and(|arg| arg == "stats") => {
             let result = backend
                 .service_request(
@@ -579,6 +770,13 @@ async fn playback(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
     let session_id = status.context.session_id;
     let state = match args.first().map(String::as_str) {
+        Some("playlist") => {
+            let events = backend.subscribe_events();
+            backend
+                .queue_playlist(session_id, parse_uuid(args.get(1))?, 0, true)
+                .await?;
+            return playback_session(backend, session_id, events).await;
+        }
         Some("play") => {
             let events = backend.subscribe_events();
             backend
@@ -637,7 +835,7 @@ async fn playback_session(
     mut events: tokio::sync::broadcast::Receiver<vault_core::BackendEvent>,
 ) -> Result<(), ApiError> {
     eprintln!(
-        "Playing. Controls: pause, resume, seek <ms>, volume <0..1>, stop. Ctrl-C stops playback."
+        "Playing. Controls: next, previous, pause, resume, seek <ms>, volume <0..1>, stop. Ctrl-C stops playback."
     );
     let (tx, mut lines) = tokio::sync::mpsc::channel(8);
     std::thread::Builder::new()
@@ -666,6 +864,8 @@ async fn playback_session(
                 let Some(line) = line else { input_open = false; continue; };
                 let words: Vec<_> = line.split_whitespace().collect();
                 let action = match words.as_slice() {
+                    ["next"] => Some(PlaybackAction::Next),
+                    ["previous"] => Some(PlaybackAction::Previous),
                     ["pause"] => Some(PlaybackAction::Pause),
                     ["resume"] => Some(PlaybackAction::Resume),
                     ["stop"] => Some(PlaybackAction::Stop),
@@ -689,7 +889,8 @@ async fn playback_session(
                     Err(_) => return Err(ApiError::new(ErrorCode::Closed)),
                 };
                 if matches!(state, vault_media::PlaybackState::Failed { .. }) { return Err(ApiError::new(ErrorCode::PlaybackUnavailable)); }
-                if matches!(state, vault_media::PlaybackState::Idle) { return Ok(()); }
+                if matches!(state, vault_media::PlaybackState::Idle)
+                    && backend.playback_queue(session_id,0,1).await?.info.position.is_none() { return Ok(()); }
                 // Print transitions, not a line for every position tick.
                 let kind = std::mem::discriminant(&state);
                 if last_state != Some(kind) { println!("{state:?}"); last_state = Some(kind); }
@@ -717,30 +918,29 @@ async fn playlist(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     }
     if op == "show" {
         let playlist_id = parse_uuid(args.get(1))?;
-        let state = backend
-            .local_reader(status.context.session_id)
-            .await?
-            .state()
-            .await
-            .map_err(ApiError::from)?;
-        let playlist = state
-            .playlists
-            .get(&playlist_id)
-            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
-        println!("{}\t{}", playlist.playlist_id, playlist.title);
-        let mut entries = state
-            .entries
-            .values()
-            .filter(|entry| entry.playlist_id == playlist_id)
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.order_key);
-        for entry in entries {
-            let title = state
-                .tracks
-                .get(&entry.track_id)
-                .map(|track| track.metadata.title.as_str())
-                .unwrap_or("<missing track>");
-            println!("{}\t{}\t{}", entry.entry_id, entry.track_id, title);
+        let reader = backend.local_reader(status.context.session_id).await?;
+        let mut offset = 0u32;
+        loop {
+            let page = reader
+                .playlist_detail(playlist_id, offset, 500)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            if offset == 0 {
+                println!("{}\t{}", page.playlist.playlist_id, page.playlist.title);
+            }
+            for item in &page.items {
+                println!(
+                    "{}\t{}\t{}",
+                    item.entry.entry_id, item.entry.track_id, item.track.metadata.title
+                );
+            }
+            offset = offset
+                .checked_add(page.items.len() as u32)
+                .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+            if u64::from(offset) >= page.total || page.items.is_empty() {
+                break;
+            }
         }
         return Ok(());
     }
@@ -818,6 +1018,7 @@ async fn snapshot(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
     let request = match args.first().map(String::as_str) {
         Some("create") => VaultRequest::Snapshot,
+        Some("repair") => VaultRequest::Snapshot,
         Some("verify") => VaultRequest::Verify,
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     };
@@ -837,6 +1038,43 @@ async fn gc(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
     let request = match args.first().map(String::as_str) {
         Some("plan") => VaultRequest::PlanGc,
+        Some("abandon") => VaultRequest::AbandonGc {
+            plan_id: parse_uuid(args.get(1))?,
+        },
+        Some("coordinator") => {
+            let target = match args.get(1).map(String::as_str) {
+                Some("this") => CoordinatorTarget::ThisDevice,
+                Some("none") => CoordinatorTarget::Disabled,
+                Some(value) if !value.starts_with('-') => CoordinatorTarget::Device(value.into()),
+                _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
+            };
+            // Refresh before presenting the previous role to the command. The
+            // engine checks it again immediately before sending the event.
+            backend
+                .service_request(
+                    status.context.session_id,
+                    VaultRequest::Sync,
+                    &CancellationToken::new(),
+                )
+                .await?;
+            let LocalResponse::Settings(settings) = backend
+                .query(status.context.session_id, LocalQuery::Settings)
+                .await?
+            else {
+                return Err(ApiError::new(ErrorCode::Internal));
+            };
+            let op_id = Uuid::new_v4();
+            println!(
+                "op_id={op_id} previous_coordinator={}",
+                settings.gc_device_id.as_deref().unwrap_or("none")
+            );
+            VaultRequest::AssignGcCoordinator {
+                op_id,
+                target,
+                expected_previous: settings.gc_device_id,
+                force_confirmed: args.iter().any(|arg| arg == "--force-confirmed"),
+            }
+        }
         Some("inspect") => VaultRequest::InspectGc {
             plan_id: parse_uuid(args.get(1))?,
         },
@@ -927,8 +1165,26 @@ async fn diagnose(backend: &Backend) -> Result<(), ApiError> {
             .map(|_| "configured".to_owned())
             .unwrap_or_else(|| "system loader default".into())
     );
-    if let Ok(s) = backend.runtime_status().await {
-        print_status(&s);
+    if backend.active_profile_id()?.is_some() {
+        let status = active(backend).await?;
+        print_status(&status);
+        if let Ok(reader) = backend.local_reader(status.context.session_id).await {
+            print_json(&reader.diagnostics().await.map_err(ApiError::from)?)?;
+        }
+        if wait_authorized(backend, status.context.session_id)
+            .await
+            .is_ok()
+        {
+            print_json(
+                &backend
+                    .service_request(
+                        status.context.session_id,
+                        VaultRequest::Diagnose,
+                        &CancellationToken::new(),
+                    )
+                    .await?,
+            )?;
+        }
     }
     Ok(())
 }

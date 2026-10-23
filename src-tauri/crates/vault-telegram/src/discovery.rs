@@ -7,10 +7,11 @@ use uuid::Uuid;
 use vault_domain::{ChatId, MessageId, UserId};
 use vault_protocol::{Record, VaultInit};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct VaultCandidate {
     pub channel: ChannelInfo,
     pub init: VaultInit,
+    #[schemars(with = "String")]
     pub init_message_id: MessageId,
 }
 
@@ -72,6 +73,24 @@ pub async fn inspect_vault<T: Telegram>(
     cancel: &CancellationToken,
 ) -> Result<VaultCandidate, TelegramError> {
     let channel = transport.verify_channel(chat, owner, cancel).await?;
+    if let Some(message) = transport.init_hint(chat, cancel).await? {
+        let Some(Record::Init(init)) = message.record()? else {
+            return Err(TelegramError::InvalidVault);
+        };
+        if message.chat_id != chat
+            || init.owner_telegram_user_id != owner
+            || expected.is_some_and(|id| init.vault_id != id)
+        {
+            return Err(TelegramError::InvalidVault);
+        }
+        // Discovery identifies a candidate, never grants ONLINE_READY. Attach's
+        // sync validates the newest snapshot and complete post-barrier history.
+        return Ok(VaultCandidate {
+            channel,
+            init,
+            init_message_id: message.id,
+        });
+    }
     let messages = scan_history(transport, chat, 0, None, 1_000_000, cancel).await?;
     let mut init = None;
     let mut vault_ids = BTreeSet::new();
@@ -167,7 +186,19 @@ impl TdTransport {
         owner: UserId,
         cancel: &CancellationToken,
     ) -> Result<ChannelInfo, TelegramError> {
-        let result=self.client().request(json!({"@type":"createNewSupergroupChat","title":format!("kiyora.{owner}"),"is_forum":false,"is_channel":true,"description":"kiyora personal music vault","location":null,"message_auto_delete_time":0,"for_import":false}),std::time::Duration::from_secs(60),cancel).await?;
+        self.create_channel_named(owner, None, cancel).await
+    }
+    pub async fn create_channel_named(
+        &self,
+        owner: UserId,
+        title: Option<String>,
+        cancel: &CancellationToken,
+    ) -> Result<ChannelInfo, TelegramError> {
+        let title = title.unwrap_or_else(|| format!("kiyora.{owner}"));
+        if title.trim().is_empty() || title.chars().count() > 128 || title.contains('\0') {
+            return Err(TelegramError::InvalidInput);
+        }
+        let result=self.client().request(json!({"@type":"createNewSupergroupChat","title":title,"is_forum":false,"is_channel":true,"description":"kiyora personal music vault","location":null,"message_auto_delete_time":0,"for_import":false}),std::time::Duration::from_secs(60),cancel).await?;
         let chat =
             ChatId::new(integer(&result["id"])?).map_err(|_| TelegramError::InvalidResponse)?;
         self.verify_channel(chat, owner, cancel).await

@@ -32,6 +32,6 @@ if [[ "${KIYORA_ANDROID_DEVICE_TESTS:-0}" == 1 ]]; then
 import pathlib, re
 result = pathlib.Path('target/android-plugin/instrumentation.log').read_text()
 if not re.search(r'OK \([1-9][0-9]* tests?\)', result) or 'FAILURES!!!' in result:
-    raise SystemExit('Android Keystore instrumentation did not pass')
+    raise SystemExit('Android native plugin instrumentation did not pass')
 PY
 fi

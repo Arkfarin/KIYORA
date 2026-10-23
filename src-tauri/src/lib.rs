@@ -1,5 +1,15 @@
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+// The generated mobile entry point expects (), whereas desktop startup reports
+// errors to main. Do not silently discard setup failures at the JNI boundary.
+#[cfg(mobile)]
+#[tauri::mobile_entry_point]
+fn run_mobile() {
+    if run().is_err() {
+        panic!("kiyora application startup failed");
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    vault_core::initialize_diagnostics();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_kiyora_native::init())
@@ -10,11 +20,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let backend = {
                 let secrets = app.state::<tauri_plugin_kiyora_native::AndroidSecrets<tauri::Wry>>();
                 let paths = secrets.storage_paths()?;
-                std::sync::Arc::new(vault_core::Backend::with_secrets(
-                    vault_security::ProfileStore::at(paths.profiles)?,
-                    paths.tdjson,
-                    std::sync::Arc::new(secrets.inner().clone()),
-                ))
+                let media = app.state::<tauri_plugin_kiyora_native::AndroidMedia<tauri::Wry>>();
+                let documents =
+                    app.state::<tauri_plugin_kiyora_native::AndroidDocuments<tauri::Wry>>();
+                std::sync::Arc::new(
+                    vault_core::Backend::with_secrets(
+                        vault_security::ProfileStore::at(paths.profiles)?,
+                        paths.tdjson,
+                        std::sync::Arc::new(secrets.inner().clone()),
+                    )
+                    .with_playback_platform(std::sync::Arc::new(media.inner().clone()))
+                    .with_import_resolver(std::sync::Arc::new(documents.inner().clone())),
+                )
             };
             let mut events = backend.subscribe_events();
             app.manage(backend);
@@ -41,6 +58,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            backend_invoke,
             backend_list_profiles,
             backend_create_profile,
             backend_switch_profile,
@@ -54,6 +72,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             backend_resume_vault_creation,
             backend_library,
             backend_playlists,
+            backend_query,
             backend_vault_request,
             backend_export_backup,
             backend_play_track,
@@ -73,41 +92,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri::State;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use vault_core::LoginInput;
 use vault_core::{ApiError, Backend, Profile, Status, VaultRequest, VaultResponse};
-use vault_telegram::{AuthInput, AuthStatus, VaultCandidate};
+use vault_telegram::{AuthStatus, VaultCandidate};
 use zeroize::Zeroizing;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "value",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum LoginInput {
-    Phone(String),
-    Code(String),
-    Password(String),
-    Qr,
-    Email(String),
-    EmailCode(String),
-}
-impl From<LoginInput> for AuthInput {
-    fn from(input: LoginInput) -> Self {
-        match input {
-            LoginInput::Phone(v) => Self::Phone(Zeroizing::new(v)),
-            LoginInput::Code(v) => Self::Code(Zeroizing::new(v)),
-            LoginInput::Password(v) => Self::Password(Zeroizing::new(v)),
-            LoginInput::Qr => Self::Qr,
-            LoginInput::Email(v) => Self::Email(Zeroizing::new(v)),
-            LoginInput::EmailCode(v) => Self::EmailCode(Zeroizing::new(v)),
-        }
-    }
+#[tauri::command]
+async fn backend_invoke(
+    backend: State<'_, std::sync::Arc<Backend>>,
+    request: vault_core::BackendRequest,
+) -> Result<vault_core::BackendResponse, ApiError> {
+    Ok(backend.invoke(request, &CancellationToken::new()).await)
 }
 #[tauri::command]
 fn backend_list_profiles(
@@ -230,6 +229,14 @@ async fn backend_playlists(
         .playlists(query, offset, limit)
         .await
         .map_err(Into::into)
+}
+#[tauri::command]
+async fn backend_query(
+    backend: State<'_, std::sync::Arc<Backend>>,
+    session_id: Uuid,
+    query: vault_core::LocalQuery,
+) -> Result<vault_core::LocalResponse, ApiError> {
+    backend.query(session_id, query).await
 }
 #[tauri::command]
 async fn backend_vault_request(

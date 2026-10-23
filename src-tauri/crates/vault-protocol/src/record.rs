@@ -4,10 +4,11 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 use vault_domain::{Action, Event, MessageId, UserId, valid_digest};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VaultInit {
     pub vault_id: Uuid,
+    #[schemars(with = "String")]
     pub owner_telegram_user_id: UserId,
     pub created_by: String,
     pub created_at_utc: String,

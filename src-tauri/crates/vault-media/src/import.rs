@@ -52,6 +52,14 @@ pub struct ArtworkAsset {
 /// Reads a supported local format, normalizes common tags, and hashes the complete
 /// source in bounded memory. Symlinks and special files are refused.
 pub fn inspect(path: &Path) -> Result<ImportAsset, MediaError> {
+    inspect_with_cancel(path, &tokio_util::sync::CancellationToken::new())
+}
+
+pub fn inspect_with_cancel(
+    path: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<ImportAsset, MediaError> {
+    check_cancel(cancel)?;
     let metadata = std::fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(MediaError::InvalidAudio);
@@ -157,6 +165,7 @@ pub fn inspect(path: &Path) -> Result<ImportAsset, MediaError> {
     let mut buffer = [0u8; 256 * 1024];
     let mut read_total = 0u64;
     loop {
+        check_cancel(cancel)?;
         let count = file.read(&mut buffer)?;
         if count == 0 {
             break;
@@ -196,6 +205,19 @@ fn parse_number(value: &str) -> Option<u32> {
 /// Copies a selected import to a private staging file while recalculating its digest.
 /// The caller can then upload from a stable file descriptor path.
 pub fn stage(asset: &ImportAsset, root: &Path) -> Result<tempfile::NamedTempFile, MediaError> {
+    stage_with_cancel(asset, root, &tokio_util::sync::CancellationToken::new())
+}
+
+pub fn stage_with_cancel(
+    asset: &ImportAsset,
+    root: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<tempfile::NamedTempFile, MediaError> {
+    check_cancel(cancel)?;
+    let metadata = std::fs::symlink_metadata(&asset.path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(MediaError::InvalidAudio);
+    }
     let mut input = BufReader::new(File::open(&asset.path)?);
     let extension = asset
         .path
@@ -210,6 +232,7 @@ pub fn stage(asset: &ImportAsset, root: &Path) -> Result<tempfile::NamedTempFile
     let mut buffer = [0u8; 256 * 1024];
     let mut total = 0u64;
     loop {
+        check_cancel(cancel)?;
         let count = input.read(&mut buffer)?;
         if count == 0 {
             break;
@@ -229,4 +252,43 @@ pub fn stage(asset: &ImportAsset, root: &Path) -> Result<tempfile::NamedTempFile
     }
     out.as_file().sync_all()?;
     Ok(out)
+}
+
+fn check_cancel(cancel: &tokio_util::sync::CancellationToken) -> Result<(), MediaError> {
+    if cancel.is_cancelled() {
+        return Err(vault_telegram::TelegramError::Cancelled.into());
+    }
+    Ok(())
+}
+
+/// Read embedded artwork from an already verified audio blob whose cache name
+/// need not retain the original file extension.
+pub fn embedded_artwork(path: &Path) -> Result<Option<ArtworkAsset>, MediaError> {
+    if std::fs::metadata(path)?.len() > MAX_IMPORT_BYTES {
+        return Err(MediaError::TooLarge);
+    }
+    let tagged = Probe::open(path)
+        .map_err(|_| MediaError::InvalidAudio)?
+        .guess_file_type()
+        .map_err(|_| MediaError::InvalidAudio)?
+        .read()
+        .map_err(|_| MediaError::InvalidAudio)?;
+    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+        return Ok(None);
+    };
+    Ok(tag.pictures().iter().find_map(|picture| {
+        let mime = picture.mime_type()?.to_string();
+        if picture.data().is_empty()
+            || picture.data().len() > MAX_ARTWORK_BYTES
+            || !matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/webp")
+        {
+            return None;
+        }
+        let bytes = picture.data().to_vec();
+        Some(ArtworkAsset {
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            mime_type: mime,
+            bytes,
+        })
+    }))
 }

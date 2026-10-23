@@ -29,6 +29,7 @@ tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs", "io-util", "test-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "registry", "std"] }
 vault-domain = { path = "crates/vault-domain" }
 vault-protocol = { path = "crates/vault-protocol" }
 vault-db = { path = "crates/vault-db" }
@@ -78,6 +79,7 @@ tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 zeroize = "1"
+
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

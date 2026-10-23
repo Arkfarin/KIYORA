@@ -20,7 +20,7 @@ impl ProjectionReader {
     pub fn binding(&self) -> Binding {
         self.binding
     }
-    async fn read<R: Send + 'static>(
+    pub(crate) async fn read<R: Send + 'static>(
         &self,
         f: impl FnOnce(&Database) -> Result<R, DbError> + Send + 'static,
     ) -> Result<R, SyncError> {
@@ -35,11 +35,74 @@ impl ProjectionReader {
     pub async fn state(&self) -> Result<State, SyncError> {
         self.read(Database::state).await
     }
+    pub async fn diagnostics(&self) -> Result<vault_db::ProjectionDiagnostics, SyncError> {
+        self.read(Database::diagnostics).await
+    }
+    pub async fn playlist_revisions(
+        &self,
+    ) -> Result<std::collections::BTreeMap<Uuid, String>, SyncError> {
+        self.read(Database::playlist_revisions).await
+    }
+    pub async fn command_revisions(&self) -> Result<Vec<Command>, SyncError> {
+        self.read(Database::command_revisions).await
+    }
     pub async fn cursor(&self) -> Result<i64, SyncError> {
         self.read(Database::cursor).await
     }
     pub async fn command(&self, op: Uuid) -> Result<Option<Command>, SyncError> {
         self.read(move |db| db.command(op)).await
+    }
+    pub async fn has_applied_operation(&self, op: Uuid) -> Result<bool, SyncError> {
+        self.read(move |db| db.has_applied_operation(op)).await
+    }
+    pub async fn local_settings(
+        &self,
+        prefix: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<(String, String)>, SyncError> {
+        self.read(move |db| db.local_settings(&prefix, offset, limit))
+            .await
+    }
+    pub async fn playlist_detail(
+        &self,
+        id: Uuid,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Option<vault_db::PlaylistDetail>, SyncError> {
+        self.read(move |db| db.playlist_detail(id, offset, limit))
+            .await
+    }
+    pub async fn shared_settings(&self) -> Result<vault_domain::SharedSettings, SyncError> {
+        self.read(Database::shared_settings).await
+    }
+    pub async fn favorite_sets(&self, offset: u32, limit: u32) -> Result<Vec<String>, SyncError> {
+        self.read(move |db| db.favorite_sets(offset, limit)).await
+    }
+    pub async fn favorites(
+        &self,
+        set_name: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<vault_db::TrackPage, SyncError> {
+        self.read(move |db| db.favorites(&set_name, offset, limit))
+            .await
+    }
+    pub async fn albums(
+        &self,
+        query: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<vault_db::AlbumSummary>, SyncError> {
+        self.read(move |db| db.albums(&query, offset, limit)).await
+    }
+    pub async fn artists(
+        &self,
+        query: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<vault_db::ArtistSummary>, SyncError> {
+        self.read(move |db| db.artists(&query, offset, limit)).await
     }
     pub async fn library(
         &self,

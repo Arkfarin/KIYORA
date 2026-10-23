@@ -12,6 +12,10 @@ use vault_telegram::*;
 
 #[derive(Debug, Clone, Default)]
 pub struct Faults {
+    /// Definite remote rejection: no message was created, retry is safe.
+    pub reject_document: bool,
+    /// Simulates an ambiguous upload timeout with no message visible yet.
+    pub document_timeout_before_send: bool,
     pub fail_after_delete: bool,
     pub offline: bool,
     pub lost_ack: bool,
@@ -32,6 +36,7 @@ struct Server {
     files: BTreeMap<i32, Vec<u8>>,
     next_file: i32,
     download_calls: usize,
+    history_calls: usize,
     subscribers: Vec<broadcast::Sender<Update>>,
     delayed: VecDeque<Update>,
     shared: Vec<(ChatId, MessageId, ChatId)>,
@@ -59,6 +64,7 @@ impl FakeServer {
             files: BTreeMap::new(),
             next_file: 1,
             download_calls: 0,
+            history_calls: 0,
             subscribers: Vec::new(),
             delayed: VecDeque::new(),
             shared: Vec::new(),
@@ -122,6 +128,9 @@ impl FakeServer {
     }
     pub fn download_calls(&self) -> Result<usize, TelegramError> {
         Ok(self.lock()?.download_calls)
+    }
+    pub fn history_calls(&self) -> Result<usize, TelegramError> {
+        Ok(self.lock()?.history_calls)
     }
     pub fn corrupt_file(&self, file_id: i32) -> Result<(), TelegramError> {
         self.lock()?.files.insert(file_id, b"corrupt".to_vec());
@@ -199,6 +208,7 @@ impl Server {
             .ok_or(TelegramError::InvalidResponse)?;
         let id = MessageId::new(self.next).map_err(|_| TelegramError::InvalidResponse)?;
         let message = RemoteMessage {
+            sent_at_unix: Some(1_792_713_600),
             chat_id: chat,
             id,
             text,
@@ -238,6 +248,7 @@ impl Telegram for FakeTelegram {
         cancel: &CancellationToken,
     ) -> Result<Vec<RemoteMessage>, TelegramError> {
         let mut server = self.server.lock()?;
+        server.history_calls += 1;
         server.gate(cancel)?;
         if server.channel.chat_id != chat {
             return Err(TelegramError::UnsafeChannel);
@@ -292,6 +303,12 @@ impl Telegram for FakeTelegram {
             .map_err(|_| TelegramError::LocalFile)?;
         let mut server = self.server.lock()?;
         server.gate(cancel)?;
+        if std::mem::take(&mut server.faults.reject_document) {
+            return Err(TelegramError::Request { code: 400 });
+        }
+        if std::mem::take(&mut server.faults.document_timeout_before_send) {
+            return Err(TelegramError::Timeout);
+        }
         let file_id = server.next_file;
         server.next_file += 1;
         let file = RemoteFile {
@@ -346,6 +363,7 @@ impl Telegram for FakeTelegram {
             .await
             .map_err(|_| TelegramError::LocalFile)?;
         Ok(DownloadedRange {
+            storage_lease: None,
             path,
             file_offset: 0,
             offset,

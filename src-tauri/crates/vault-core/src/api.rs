@@ -19,13 +19,18 @@ pub enum ErrorCode {
     Conflict,
     Readonly,
     Integrity,
+    UnsafeVault,
+    ProtocolUnsupported,
+    SnapshotUnavailable,
     Backpressure,
     Cancelled,
     Timeout,
     RateLimited,
     Network,
     Storage,
+    DatabaseCorrupt,
     MediaUnavailable,
+    MediaSourceMissing,
     PlaybackUnavailable,
     Closed,
     Internal,
@@ -56,13 +61,24 @@ impl ApiError {
             Conflict => "request conflicts with persisted state",
             Readonly => "shared changes require ONLINE_READY",
             Integrity => "vault integrity or compatibility check failed",
+            UnsafeVault => "vault must be a private channel owned only by this account",
+            ProtocolUnsupported => {
+                "vault protocol is invalid or unsupported; update the application and verify the vault"
+            }
+            SnapshotUnavailable => {
+                "both snapshot copies are unavailable; recover from a matching backup or retained history"
+            }
             Backpressure => "job queue is full",
             Cancelled => "job cancelled; inspect its command before retrying",
             Timeout => "request timed out; inspect its command before retrying",
             RateLimited => "Telegram rate limit reached",
             Network => "Telegram request failed",
             Storage => "local storage operation failed",
+            DatabaseCorrupt => {
+                "local database is damaged; restore it from a verified Telegram snapshot"
+            }
             MediaUnavailable => "media is not available in the local cache",
+            MediaSourceMissing => "registered media sources are missing or no longer match",
             PlaybackUnavailable => "system audio playback is unavailable",
             Closed => "session is closed",
             Internal => "backend worker failed",
@@ -80,13 +96,23 @@ impl From<SyncError> for ApiError {
         match error {
             Telegram(error) => error.into(),
             Database(vault_db::DbError::CommandCollision) => Self::new(ErrorCode::Conflict),
-            Database(_) => Self::new(ErrorCode::Storage),
+            Database(error) => Self::new(if error.is_corruption() {
+                ErrorCode::DatabaseCorrupt
+            } else {
+                ErrorCode::Storage
+            }),
             Readonly => Self::new(ErrorCode::Readonly),
+            CoordinatorConflict => Self::new(ErrorCode::Conflict),
             InitializationRequired => Self::new(ErrorCode::NoVault),
             Worker => Self::new(ErrorCode::Internal),
             UnknownOutcome => Self::new(ErrorCode::Timeout),
             ReconcileRequired => Self::new(ErrorCode::Network),
+            Snapshot(vault_snapshot::SnapshotError::BothCopiesInvalid) => {
+                Self::new(ErrorCode::SnapshotUnavailable)
+            }
+            Snapshot(vault_snapshot::SnapshotError::Telegram(error)) => error.into(),
             Snapshot(_) | Integrity => Self::new(ErrorCode::Integrity),
+            MediaSourceMissing => Self::new(ErrorCode::MediaSourceMissing),
         }
     }
 }
@@ -106,9 +132,9 @@ impl From<TelegramError> for ApiError {
             InvalidInput => ErrorCode::InvalidInput,
             LocalFile => ErrorCode::Storage,
             Unshareable => ErrorCode::Conflict,
-            InvalidResponse | UnsafeChannel | InvalidVault | IncompleteHistory | Protocol => {
-                ErrorCode::Integrity
-            }
+            UnsafeChannel => ErrorCode::UnsafeVault,
+            Protocol => ErrorCode::ProtocolUnsupported,
+            InvalidResponse | InvalidVault | IncompleteHistory => ErrorCode::Integrity,
         })
     }
 }
@@ -183,6 +209,78 @@ pub struct Status {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    content = "payload",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum LocalQuery {
+    SourceHealth {
+        track_id: Uuid,
+    },
+    Imports {
+        offset: u32,
+        limit: u32,
+    },
+    Playlist {
+        playlist_id: Uuid,
+        offset: u32,
+        limit: u32,
+    },
+    CommandStatus {
+        op_id: Uuid,
+    },
+    FavoriteSets {
+        offset: u32,
+        limit: u32,
+    },
+    Favorites {
+        set_name: String,
+        offset: u32,
+        limit: u32,
+    },
+    Settings,
+    Device,
+    Albums {
+        query: String,
+        offset: u32,
+        limit: u32,
+    },
+    Artists {
+        query: String,
+        offset: u32,
+        limit: u32,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceInfo {
+    pub context: Context,
+    pub device_id: String,
+    pub cache_quota_bytes: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    content = "result",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum LocalResponse {
+    Sources(Vec<vault_sync::SourceHealth>),
+    Imports(Vec<crate::ImportInfo>),
+    Playlist(Option<vault_db::PlaylistDetail>),
+    CommandStatus(Option<Box<Command>>),
+    FavoriteSets(Vec<String>),
+    Favorites(vault_db::TrackPage),
+    Settings(vault_domain::SharedSettings),
+    Device(DeviceInfo),
+    Albums(Vec<vault_db::AlbumSummary>),
+    Artists(Vec<vault_db::ArtistSummary>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mutation {
     pub op_id: Uuid,
@@ -198,6 +296,8 @@ pub struct Mutation {
     deny_unknown_fields
 )]
 pub enum PlaybackAction {
+    Next,
+    Previous,
     Pause,
     Resume,
     Stop,
@@ -213,11 +313,41 @@ pub enum PlaybackAction {
     deny_unknown_fields
 )]
 pub enum VaultRequest {
+    PreviewIncomingAudio {
+        #[schemars(with = "String")]
+        chat_id: ChatId,
+        #[schemars(with = "String")]
+        message_id: MessageId,
+    },
+    RelinkSource {
+        track_id: Uuid,
+        source_id: Uuid,
+        #[schemars(with = "String")]
+        message_id: MessageId,
+        op_id: Uuid,
+    },
+    Diagnose,
+    CheckSources {
+        track_id: Option<Uuid>,
+    },
+    ResumeImport {
+        op_id: Uuid,
+    },
+    InspectOrphanMedia,
     Sync,
     Initialize,
     Verify,
     Snapshot,
     PlanGc,
+    AssignGcCoordinator {
+        op_id: Uuid,
+        target: CoordinatorTarget,
+        expected_previous: Option<String>,
+        force_confirmed: bool,
+    },
+    AbandonGc {
+        plan_id: Uuid,
+    },
     ExecuteGc {
         plan_id: Uuid,
         confirmed_hash: String,
@@ -262,6 +392,9 @@ pub enum VaultRequest {
         pinned: bool,
     },
     GetCacheStats,
+    SetCacheQuota {
+        bytes: u64,
+    },
     ClearLocalCache,
     ImportBackup {
         path: String,
@@ -273,6 +406,18 @@ pub enum VaultRequest {
         recipient_chat_id: ChatId,
     },
     Mutate(Box<Mutation>),
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    content = "device_id",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum CoordinatorTarget {
+    ThisDevice,
+    Device(String),
+    Disabled,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SnapshotInfo {
@@ -287,6 +432,7 @@ pub struct SnapshotInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DownloadState {
+    Unavailable,
     RemoteOnly,
     Downloading,
     PartiallyCached,
@@ -319,6 +465,10 @@ impl From<Recovery> for SnapshotInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "result", rename_all = "snake_case")]
 pub enum VaultResponse {
+    AudioInfo(Option<vault_telegram::AudioInfo>),
+    Diagnostics(vault_sync::VaultDiagnostics),
+    Sources(Vec<vault_sync::SourceHealth>),
+    OrphanMedia(Vec<crate::OrphanMedia>),
     Synced,
     Initialized,
     Command(Box<Command>),
@@ -329,6 +479,7 @@ pub enum VaultResponse {
         sha256: String,
         size_bytes: u64,
         duplicate_track_ids: Vec<Uuid>,
+        possible_duplicate_track_ids: Vec<Uuid>,
     },
     Shared {
         #[schemars(with = "String")]

@@ -41,6 +41,51 @@ fn track() -> Action {
 }
 
 #[test]
+fn large_entry_forest_rejects_cycles_or_cross_playlist_anchors_without_recursion() {
+    let mut state = State::new(id(1));
+    apply(&mut state, 10, 20, track());
+    apply(
+        &mut state,
+        11,
+        30,
+        Action::PlaylistCreate {
+            title: "Long chain".into(),
+        },
+    );
+    apply(
+        &mut state,
+        12,
+        31,
+        Action::PlaylistCreate {
+            title: "Another".into(),
+        },
+    );
+    for i in 0..20_000_u128 {
+        let entry_id = id(100_000 + i);
+        state.entries.insert(
+            entry_id,
+            PlaylistEntry {
+                entry_id,
+                playlist_id: id(30),
+                track_id: id(20),
+                after_entry_id: (i != 0).then(|| id(99_999 + i)),
+                order_key: MessageId::new(12).unwrap(),
+            },
+        );
+    }
+    state.validate().unwrap();
+    state.entries.get_mut(&id(100_000)).unwrap().after_entry_id = Some(id(119_999));
+    assert!(state.validate().is_err());
+    state.entries.get_mut(&id(100_000)).unwrap().after_entry_id = None;
+    state.entries.get_mut(&id(119_999)).unwrap().playlist_id = id(31);
+    assert!(state.validate().is_err());
+    state.entries.get_mut(&id(119_999)).unwrap().after_entry_id = None;
+    state.validate().unwrap();
+    state.entries.get_mut(&id(119_999)).unwrap().after_entry_id = Some(id(999_999));
+    assert!(state.validate().is_err());
+}
+
+#[test]
 fn duplicate_operation_is_a_pure_no_change_and_collision_fails() {
     let mut s = State::new(id(1));
     let e = event(

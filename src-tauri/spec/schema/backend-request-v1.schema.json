@@ -1,44 +1,23 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "BackendRequest",
-  "oneOf": [
-    {
-      "type": "object",
-      "required": [
-        "request",
-        "scope"
-      ],
-      "properties": {
-        "request": {
-          "$ref": "#/definitions/VaultRequest"
-        },
-        "scope": {
-          "type": "string",
-          "enum": [
-            "vault"
-          ]
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "request",
-        "scope"
-      ],
-      "properties": {
-        "request": {
-          "$ref": "#/definitions/PlaybackAction"
-        },
-        "scope": {
-          "type": "string",
-          "enum": [
-            "playback"
-          ]
-        }
-      }
-    }
+  "type": "object",
+  "required": [
+    "request",
+    "version"
   ],
+  "properties": {
+    "request": {
+      "$ref": "#/definitions/BackendCommand"
+    },
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "maximum": 1.0,
+      "minimum": 1.0
+    }
+  },
+  "additionalProperties": false,
   "definitions": {
     "Action": {
       "oneOf": [
@@ -420,6 +399,1808 @@
       },
       "additionalProperties": false
     },
+    "BackendCommand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "path",
+                "session_id"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "recover_database_from_backup"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "storage_usage"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id",
+                "target_bytes"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "target_bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0.0
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "trim_telegram_storage"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id",
+                "track_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "artwork"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "autoplay",
+                "position",
+                "session_id",
+                "track_ids"
+              ],
+              "properties": {
+                "autoplay": {
+                  "type": "boolean"
+                },
+                "position": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "set_queue"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "autoplay",
+                "playlist_id",
+                "position",
+                "session_id"
+              ],
+              "properties": {
+                "autoplay": {
+                  "type": "boolean"
+                },
+                "playlist_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "position": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "queue_playlist"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "session_id"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "playback_queue"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "job_id",
+                "request",
+                "session_id"
+              ],
+              "properties": {
+                "job_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "request": {
+                  "$ref": "#/definitions/JobRequest"
+                },
+                "resume": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "start_job"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "job_id",
+                "session_id"
+              ],
+              "properties": {
+                "job_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "job_status"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "list_jobs"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "job_id",
+                "session_id"
+              ],
+              "properties": {
+                "job_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "cancel_job"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "job_id",
+                "session_id"
+              ],
+              "properties": {
+                "job_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "forget_job"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "command"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "enum": [
+                "list_profiles"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "label"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "create_profile"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "profile_id"
+              ],
+              "properties": {
+                "profile_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "switch_profile"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "command"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "enum": [
+                "runtime_status"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "repair_local_database"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "api_hash",
+                "api_id",
+                "session_id"
+              ],
+              "properties": {
+                "api_hash": {
+                  "type": "string"
+                },
+                "api_id": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "connect_telegram"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "input",
+                "session_id"
+              ],
+              "properties": {
+                "input": {
+                  "$ref": "#/definitions/LoginInput"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "authenticate"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "auth_status"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "discover_vaults"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "chat_id",
+                "session_id"
+              ],
+              "properties": {
+                "chat_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "attach_vault"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "title": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "create_vault"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "chat_id",
+                "session_id"
+              ],
+              "properties": {
+                "chat_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "resume_vault_creation"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "session_id"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "query": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "library"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "session_id"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "query": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "playlists"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "query",
+                "session_id"
+              ],
+              "properties": {
+                "query": {
+                  "$ref": "#/definitions/LocalQuery"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "query"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "request",
+                "session_id"
+              ],
+              "properties": {
+                "request": {
+                  "$ref": "#/definitions/VaultRequest"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "vault"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "kind",
+                "path",
+                "session_id"
+              ],
+              "properties": {
+                "kind": {
+                  "$ref": "#/definitions/BackupKind"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "export_backup"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id",
+                "source_id",
+                "track_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "source_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "play_track"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "playback_state"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "action",
+                "session_id"
+              ],
+              "properties": {
+                "action": {
+                  "$ref": "#/definitions/PlaybackAction"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "control_playback"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "logout"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "disconnect"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BackupKind": {
+      "type": "string",
+      "enum": [
+        "metadata",
+        "full"
+      ]
+    },
+    "CoordinatorTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "this_device"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "device_id",
+            "kind"
+          ],
+          "properties": {
+            "device_id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "device"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "disabled"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ImportFile": {
+      "type": "object",
+      "required": [
+        "allow_duplicate",
+        "op_id",
+        "path",
+        "source_id",
+        "track_id"
+      ],
+      "properties": {
+        "allow_duplicate": {
+          "type": "boolean"
+        },
+        "op_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "path": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "JobRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "vault"
+              ]
+            },
+            "payload": {
+              "$ref": "#/definitions/VaultRequest"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "export_backup"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "kind",
+                "path"
+              ],
+              "properties": {
+                "kind": {
+                  "$ref": "#/definitions/BackupKind"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "repair_database"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "recover_database_from_backup"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "bulk_import"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "files"
+              ],
+              "properties": {
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/ImportFile"
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "LocalQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "source_health"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "track_id"
+              ],
+              "properties": {
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "imports"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "playlist"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "playlist_id"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "playlist_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "command_status"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "op_id"
+              ],
+              "properties": {
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "favorite_sets"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "favorites"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "set_name"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "set_name": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "settings"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "device"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "albums"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "query"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "query": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "artists"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "query"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "query": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "LoginInput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "phone"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "code"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "password"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "qr"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "email"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "email_code"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "Metadata": {
       "type": "object",
       "required": [
@@ -618,6 +2399,36 @@
             "kind": {
               "type": "string",
               "enum": [
+                "next"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "previous"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
                 "pause"
               ]
             }
@@ -755,6 +2566,169 @@
         {
           "type": "object",
           "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "preview_incoming_audio"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "chat_id",
+                "message_id"
+              ],
+              "properties": {
+                "chat_id": {
+                  "type": "string"
+                },
+                "message_id": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "relink_source"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "message_id",
+                "op_id",
+                "source_id",
+                "track_id"
+              ],
+              "properties": {
+                "message_id": {
+                  "type": "string"
+                },
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "source_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "diagnose"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "check_sources"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "track_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "resume_import"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "op_id"
+              ],
+              "properties": {
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "inspect_orphan_media"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
             "kind"
           ],
           "properties": {
@@ -823,6 +2797,78 @@
               "enum": [
                 "plan_gc"
               ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "assign_gc_coordinator"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "force_confirmed",
+                "op_id",
+                "target"
+              ],
+              "properties": {
+                "expected_previous": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "force_confirmed": {
+                  "type": "boolean"
+                },
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "target": {
+                  "$ref": "#/definitions/CoordinatorTarget"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "abandon_gc"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "plan_id"
+              ],
+              "properties": {
+                "plan_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -1147,6 +3193,36 @@
               "enum": [
                 "get_cache_stats"
               ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "set_cache_quota"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "bytes"
+              ],
+              "properties": {
+                "bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0.0
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

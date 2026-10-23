@@ -5,6 +5,77 @@ use vault_snapshot::gc::{GcPlan, GcProgress, GcStatus};
 use vault_telegram::{Telegram, scan_history};
 
 impl<T: Telegram> SyncEngine<T> {
+    pub(crate) async fn check_coordinator_change(
+        &self,
+        previous: &Option<String>,
+        force_confirmed: bool,
+    ) -> Result<(), SyncError> {
+        if !force_confirmed
+            && (previous.as_deref().is_some_and(|id| id != self.device_id)
+                || self.database(|db| db.has_pending_gc()).await?)
+        {
+            return Err(SyncError::CoordinatorConflict);
+        }
+        Ok(())
+    }
+
+    /// This is an application role, not a Telegram lock. A forced takeover
+    /// requires explicit confirmation and cannot make a concurrently running
+    /// old client stop a delete request that Telegram has already accepted.
+    pub async fn assign_gc_coordinator(
+        &mut self,
+        op_id: Uuid,
+        target: Option<String>,
+        expected_previous: Option<String>,
+        force_confirmed: bool,
+        cancel: &CancellationToken,
+    ) -> Result<vault_db::Command, SyncError> {
+        self.require_online(cancel).await?;
+        if let Some(existing) = self.command(op_id).await? {
+            if existing.intent.entity_id != self.binding.vault_id
+                || !matches!(&existing.intent.action, vault_domain::Action::VaultSettingsUpdate { settings } if settings.gc_device_id == target)
+            {
+                return Err(vault_db::DbError::CommandCollision.into());
+            }
+            return Ok(existing);
+        }
+        if target
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+        {
+            return Err(SyncError::CoordinatorConflict);
+        }
+        let mut settings = self.reader().shared_settings().await?;
+        if settings.gc_device_id != expected_previous {
+            return Err(SyncError::CoordinatorConflict);
+        }
+        if settings.gc_device_id != target {
+            self.check_coordinator_change(&settings.gc_device_id, force_confirmed)
+                .await?;
+            if force_confirmed {
+                // Discard local stale plans before publishing the takeover. A
+                // new coordinator must build a fresh verified dry-run plan.
+                self.database(|db| db.abandon_gc_plans()).await?;
+            }
+        }
+        settings.gc_device_id = target;
+        self.submit_action(
+            op_id,
+            self.binding.vault_id,
+            vault_domain::Action::VaultSettingsUpdate { settings },
+            cancel,
+        )
+        .await
+    }
+
+    pub async fn abandon_gc(&self, id: Uuid) -> Result<GcProgress, SyncError> {
+        let mut progress = self.inspect_gc(id).await?.ok_or(SyncError::Integrity)?;
+        if progress.status != GcStatus::Complete {
+            progress.status = GcStatus::Abandoned;
+            self.persist_gc(&progress).await?;
+        }
+        Ok(progress)
+    }
     /// Builds and persists a reviewable dry-run allowlist. Does not delete anything.
     pub async fn plan_gc(&mut self, cancel: &CancellationToken) -> Result<GcProgress, SyncError> {
         self.require_online(cancel).await?;
@@ -67,11 +138,15 @@ impl<T: Telegram> SyncEngine<T> {
     ) -> Result<GcProgress, SyncError> {
         self.require_online(cancel).await?;
         let mut progress = self.inspect_gc(id).await?.ok_or(SyncError::Integrity)?;
-        if progress.plan.hash()? != confirmed_hash
+        if progress.status == GcStatus::Abandoned
+            || progress.plan.hash()? != confirmed_hash
             || progress.plan.vault_id != self.binding.vault_id
             || progress.plan.coordinator != self.device_id
         {
             return Err(SyncError::Readonly);
+        }
+        if progress.status == GcStatus::Complete {
+            return Ok(progress);
         }
         let result = self.execute_gc_inner(&mut progress, cancel).await;
         if let Err(error) = &result {
@@ -123,6 +198,18 @@ impl<T: Telegram> SyncEngine<T> {
             cancel,
         )
         .await?;
+        // Even if the role was transferred away and later back, a plan from
+        // the previous tenure cannot resume. A newer commit also invalidates
+        // it above, including when old settings events have been pruned.
+        for message in &all {
+            if message.id > plan.commit_id
+                && let Some(vault_protocol::Record::Event(event)) = message.record()?
+                && let vault_domain::Action::VaultSettingsUpdate { settings } = event.action
+                && settings.gc_device_id.as_deref() != Some(&self.device_id)
+            {
+                return Err(SyncError::CoordinatorConflict);
+            }
+        }
         let fresh = vault_snapshot::gc::plan(&all, &verified, &state, &self.device_id)?;
         for candidate in &plan.candidates {
             if let Some(message) = all.iter().find(|m| m.id == candidate.message_id) {
@@ -211,10 +298,22 @@ impl<T: Telegram> SyncEngine<T> {
                 progress.completed.insert(candidate.message_id);
             }
             self.persist_gc(progress).await?;
+            self.report(
+                crate::Operation::Gc,
+                crate::Phase::DeleteBatch,
+                progress.completed.len(),
+                Some(progress.plan.candidates.len()),
+            );
         }
         self.validate_gc_head(&progress.plan, cancel).await?;
         progress.status = GcStatus::Complete;
         self.persist_gc(progress).await?;
+        self.report(
+            crate::Operation::Gc,
+            crate::Phase::Complete,
+            progress.completed.len(),
+            Some(progress.plan.candidates.len()),
+        );
         Ok(())
     }
 }

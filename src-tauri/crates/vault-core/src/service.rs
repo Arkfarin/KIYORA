@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use vault_sync::{ProjectionReader, RuntimeMode, SyncEngine, SyncError};
@@ -89,6 +89,22 @@ impl VaultService {
         });
         let (closed_tx, closed) = watch::channel(false);
         let cancel = CancellationToken::new();
+        let mut progress = engine.subscribe_progress();
+        let token = cancel.clone();
+        let progress_events = events.clone();
+        let progress_context = context.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    update = progress.recv() => match update {
+                        Ok(update) => progress_events.emit(&progress_context, EventData::Operation(update)),
+                        Err(broadcast::error::RecvError::Lagged(_)) => {},
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
         let downloads = Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(run(
             engine,
@@ -337,42 +353,51 @@ impl VaultService {
         {
             return Ok(job.info.clone());
         }
-        let key = media_cache_key(track_id, source_id);
-        if let Some(cache) = &self.cache
-            && let Some(lease) = cache.acquire(&key).map_err(ApiError::from)?
-        {
-            return Ok(DownloadInfo {
-                download_id: id,
-                track_id,
-                state: DownloadState::FullyCached,
-                bytes_downloaded: lease.entry.size_bytes,
-                total_bytes: Some(lease.entry.size_bytes),
-                pinned: lease.entry.pinned,
-            });
-        }
-        if let Some(cache) = &self.cache
-            && let Some((bytes_downloaded, total_bytes)) = cache
-                .partial_download_progress(&key)
-                .map_err(ApiError::from)?
-        {
-            return Ok(DownloadInfo {
-                download_id: id,
-                track_id,
-                state: DownloadState::PartiallyCached,
-                bytes_downloaded,
-                total_bytes: Some(total_bytes),
-                pinned: false,
-            });
-        }
-        Ok(DownloadInfo {
+        cached_download_status(self.cache.as_ref(), id, track_id, source_id)
+    }
+}
+
+pub(crate) fn cached_download_status(
+    cache: Option<&vault_media::CacheManager>,
+    id: Uuid,
+    track_id: Uuid,
+    source_id: Uuid,
+) -> Result<DownloadInfo, ApiError> {
+    let key = media_cache_key(track_id, source_id);
+    if let Some(cache) = cache
+        && let Some(lease) = cache.acquire(&key).map_err(ApiError::from)?
+    {
+        return Ok(DownloadInfo {
             download_id: id,
             track_id,
-            state: DownloadState::RemoteOnly,
-            bytes_downloaded: 0,
-            total_bytes: None,
-            pinned: false,
-        })
+            state: DownloadState::FullyCached,
+            bytes_downloaded: lease.entry.size_bytes,
+            total_bytes: Some(lease.entry.size_bytes),
+            pinned: lease.entry.pinned,
+        });
     }
+    if let Some(cache) = cache
+        && let Some((bytes_downloaded, total_bytes)) = cache
+            .partial_download_progress(&key)
+            .map_err(ApiError::from)?
+    {
+        return Ok(DownloadInfo {
+            download_id: id,
+            track_id,
+            state: DownloadState::PartiallyCached,
+            bytes_downloaded,
+            total_bytes: Some(total_bytes),
+            pinned: false,
+        });
+    }
+    Ok(DownloadInfo {
+        download_id: id,
+        track_id,
+        state: DownloadState::RemoteOnly,
+        bytes_downloaded: 0,
+        total_bytes: None,
+        pinned: false,
+    })
 }
 
 fn prune_downloads(jobs: &mut HashMap<Uuid, DownloadJob>) {
@@ -405,10 +430,14 @@ async fn run<T: Telegram + Clone + 'static>(
     downloads: Arc<Mutex<HashMap<Uuid, DownloadJob>>>,
     mut playback_jobs: mpsc::Receiver<PlaybackJob>,
 ) {
-    let mut last_cursor = String::new();
+    let mut last_cursor = ProjectionObservation::default();
     let mut retry: Option<tokio::time::Instant> = None;
     let mut backoff = Duration::from_secs(2);
     let mut listening = true;
+    let import_storage = crate::imports::open_storage(&engine).await;
+    if let Err(error) = &import_storage {
+        events.emit(&context, EventData::Warning(error.clone()));
+    }
     if let Err(error) = engine.reconcile_interrupted_commands().await {
         events.emit(&context, EventData::Warning(error.into()));
         closed.send_replace(true);
@@ -444,7 +473,7 @@ async fn run<T: Telegram + Clone + 'static>(
                     _ => None,
                 };
                 let result=if job.cancel.is_cancelled(){Err(ApiError::new(ErrorCode::Cancelled))}
-                    else {handle(&mut engine,job.request,&job.cancel,&context,&events,cache.as_ref(),&downloads).await};
+                    else {handle(&mut engine,job.request,&job.cancel,&context,&events,cache.as_ref(),&downloads,&import_storage).await};
                 if let (Some(id), Err(error)) = (download_id, &result) {
                     finish_download_error(id, error, &downloads, &context, &events);
                 }
@@ -514,7 +543,7 @@ fn relevant(update: &Update, chat: vault_domain::ChatId) -> bool {
         _ => true,
     }
 }
-fn media_cache_key(track_id: Uuid, source_id: Uuid) -> String {
+pub(crate) fn media_cache_key(track_id: Uuid, source_id: Uuid) -> String {
     format!("{track_id}:{source_id}")
 }
 fn restore_uuid(vault_id: Uuid, fingerprint: &str, track_id: Uuid, purpose: &[u8]) -> Uuid {
@@ -595,6 +624,7 @@ fn finish_download_error(
             return;
         }
         job.info.state = match error.code {
+            ErrorCode::MediaSourceMissing => DownloadState::Unavailable,
             ErrorCode::Cancelled => DownloadState::Cancelled,
             ErrorCode::Network | ErrorCode::Timeout | ErrorCode::RateLimited => {
                 DownloadState::FailedRetryable
@@ -620,18 +650,46 @@ async fn refresh<T: Telegram>(
     context: &Context,
     events: &EventBus,
     status: &watch::Sender<Status>,
-    last_cursor: &mut String,
+    observed: &mut ProjectionObservation,
 ) {
     match engine.status().await {
         Ok(vault) => {
-            if *last_cursor != vault.cursor {
-                *last_cursor = vault.cursor.clone();
+            if observed.cursor != vault.cursor {
+                observed.cursor = vault.cursor.clone();
                 events.emit(
                     context,
                     EventData::Library {
-                        cursor: last_cursor.clone(),
+                        cursor: observed.cursor.clone(),
                     },
                 );
+                match engine.reader().playlist_revisions().await {
+                    Ok(revisions) => {
+                        for id in revisions
+                            .keys()
+                            .chain(observed.playlists.keys())
+                            .copied()
+                            .collect::<std::collections::BTreeSet<_>>()
+                        {
+                            if revisions.get(&id) != observed.playlists.get(&id) {
+                                events.emit(context, EventData::Playlist { playlist_id: id });
+                            }
+                        }
+                        observed.playlists = revisions;
+                    }
+                    Err(error) => events.emit(context, EventData::Warning(error.into())),
+                }
+            }
+            match engine.reader().command_revisions().await {
+                Ok(commands) => {
+                    for command in commands {
+                        let id = command.intent.op_id;
+                        if observed.commands.get(&id) != Some(&command) {
+                            observed.commands.insert(id, command.clone());
+                            events.emit(context, EventData::Command(Box::new(command)));
+                        }
+                    }
+                }
+                Err(error) => events.emit(context, EventData::Warning(error.into())),
             }
             let next = Status {
                 context: context.clone(),
@@ -649,6 +707,13 @@ async fn refresh<T: Telegram>(
         }
     }
 }
+#[derive(Default)]
+struct ProjectionObservation {
+    cursor: String,
+    playlists: std::collections::BTreeMap<Uuid, String>,
+    commands: std::collections::BTreeMap<Uuid, vault_db::Command>,
+}
+#[allow(clippy::too_many_arguments)]
 async fn handle<T: Telegram + Clone + 'static>(
     engine: &mut SyncEngine<T>,
     request: VaultRequest,
@@ -657,8 +722,42 @@ async fn handle<T: Telegram + Clone + 'static>(
     events: &EventBus,
     cache: Option<&vault_media::CacheManager>,
     downloads: &Arc<Mutex<HashMap<Uuid, DownloadJob>>>,
+    import_storage: &Result<crate::imports::Storage, ApiError>,
 ) -> Result<VaultResponse, ApiError> {
     Ok(match request {
+        VaultRequest::PreviewIncomingAudio {
+            chat_id,
+            message_id,
+        } => VaultResponse::AudioInfo(
+            engine
+                .transport()
+                .audio_info(chat_id, message_id, cancel)
+                .await?,
+        ),
+        VaultRequest::RelinkSource {
+            track_id,
+            source_id,
+            message_id,
+            op_id,
+        } => crate::sources::relink(engine, track_id, source_id, message_id, op_id, cancel).await?,
+        VaultRequest::Diagnose => VaultResponse::Diagnostics(engine.diagnostics().await?),
+        VaultRequest::CheckSources { track_id } => {
+            VaultResponse::Sources(engine.check_sources(track_id, cancel).await?)
+        }
+        VaultRequest::ResumeImport { op_id } => {
+            crate::imports::resume(
+                engine,
+                import_storage.as_ref().map_err(Clone::clone)?,
+                op_id,
+                cancel,
+                context,
+                events,
+            )
+            .await?
+        }
+        VaultRequest::InspectOrphanMedia => {
+            VaultResponse::OrphanMedia(crate::imports::orphans(engine, cancel).await?)
+        }
         VaultRequest::Sync => {
             events.emit(context, EventData::Sync { running: true });
             let r = engine.sync(cancel).await;
@@ -708,6 +807,26 @@ async fn handle<T: Telegram + Clone + 'static>(
             VaultResponse::Snapshot(result?)
         }
         VaultRequest::PlanGc => VaultResponse::Gc(Some(engine.plan_gc(cancel).await?)),
+        VaultRequest::AbandonGc { plan_id } => {
+            VaultResponse::Gc(Some(engine.abandon_gc(plan_id).await?))
+        }
+        VaultRequest::AssignGcCoordinator {
+            op_id,
+            target,
+            expected_previous,
+            force_confirmed,
+        } => {
+            let target = match target {
+                CoordinatorTarget::ThisDevice => Some(engine.device_id().to_owned()),
+                CoordinatorTarget::Device(id) => Some(id),
+                CoordinatorTarget::Disabled => None,
+            };
+            let command = engine
+                .assign_gc_coordinator(op_id, target, expected_previous, force_confirmed, cancel)
+                .await?;
+            events.emit(context, EventData::Command(Box::new(command.clone())));
+            VaultResponse::Command(Box::new(command))
+        }
         VaultRequest::InspectGc { plan_id } => VaultResponse::Gc(engine.inspect_gc(plan_id).await?),
         VaultRequest::ExecuteGc {
             plan_id,
@@ -740,8 +859,9 @@ async fn handle<T: Telegram + Clone + 'static>(
             if path.len() > 4096 || track_id.is_nil() || source_id.is_nil() || op_id.is_nil() {
                 return Err(ApiError::new(ErrorCode::InvalidInput));
             }
-            import_local_file(
+            crate::imports::start(
                 engine,
+                import_storage.as_ref().map_err(Clone::clone)?,
                 std::path::PathBuf::from(path),
                 track_id,
                 source_id,
@@ -763,6 +883,21 @@ async fn handle<T: Telegram + Clone + 'static>(
         } => {
             if track_id.is_nil() || source_id.is_nil() || op_id.is_nil() {
                 return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            if crate::imports::pending(engine, op_id).await? {
+                return crate::imports::start(
+                    engine,
+                    import_storage.as_ref().map_err(Clone::clone)?,
+                    std::path::PathBuf::new(),
+                    track_id,
+                    source_id,
+                    op_id,
+                    allow_duplicate,
+                    cancel,
+                    context,
+                    events,
+                )
+                .await;
             }
             let remote = engine
                 .transport()
@@ -812,8 +947,9 @@ async fn handle<T: Telegram + Clone + 'static>(
                 .await
                 .map_err(|_| ApiError::new(ErrorCode::Internal))?
                 .map_err(|_| ApiError::new(ErrorCode::Storage))?;
-            import_local_file(
+            crate::imports::start(
                 engine,
+                import_storage.as_ref().map_err(Clone::clone)?,
                 audio_path,
                 track_id,
                 source_id,
@@ -980,6 +1116,18 @@ async fn handle<T: Telegram + Clone + 'static>(
             let cache = cache.ok_or_else(|| ApiError::new(ErrorCode::Storage))?;
             VaultResponse::CacheStats(cache.stats().map_err(ApiError::from)?)
         }
+        VaultRequest::SetCacheQuota { bytes } => {
+            if bytes == 0 {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            let cache = cache
+                .ok_or_else(|| ApiError::new(ErrorCode::Storage))?
+                .clone();
+            let stats = tokio::task::spawn_blocking(move || cache.set_quota(bytes))
+                .await
+                .map_err(|_| ApiError::new(ErrorCode::Internal))??;
+            VaultResponse::CacheStats(stats)
+        }
         VaultRequest::ClearLocalCache => {
             let cache = cache
                 .ok_or_else(|| ApiError::new(ErrorCode::Storage))?
@@ -991,6 +1139,7 @@ async fn handle<T: Telegram + Clone + 'static>(
             VaultResponse::CacheCleared { bytes_removed }
         }
         VaultRequest::ImportBackup { path } => {
+            engine.require_online(cancel).await?;
             if path.len() > 4096 {
                 return Err(ApiError::new(ErrorCode::InvalidInput));
             }
@@ -1045,10 +1194,10 @@ async fn handle<T: Telegram + Clone + 'static>(
                 {
                     return Err(ApiError::new(ErrorCode::Conflict));
                 }
-                if !backup.state.tracks.is_empty()
-                    && backup.manifest.kind != vault_snapshot::backup::BackupKind::Full
+                if backup.manifest.kind == vault_snapshot::backup::BackupKind::Metadata
+                    && backup.manifest.owner_id != engine.binding().owner_id
                 {
-                    return Err(ApiError::new(ErrorCode::InvalidInput));
+                    return Err(ApiError::new(ErrorCode::Conflict));
                 }
                 let target_vault = engine.binding().vault_id;
                 let target_chat = engine.binding().chat_id;
@@ -1064,58 +1213,64 @@ async fn handle<T: Telegram + Clone + 'static>(
                 let existing =
                     collect_restore_media(engine.transport(), target_chat, target_vault, cancel)
                         .await?;
+                let temporary = tempfile::tempdir()?;
+                let download_cache = vault_media::CacheManager::open(
+                    temporary.path(),
+                    vault_media::MAX_IMPORT_BYTES,
+                )?;
+                let mut artworks = std::collections::BTreeMap::new();
                 for (old_track_id, track) in &backup.state.tracks {
-                    let entry = backup
-                        .manifest
-                        .entries
-                        .get(&format!("media/{old_track_id}"))
-                        .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+                    let downloaded;
+                    let (media_path, entry) = if let Some(path) = backup.media_path(*old_track_id) {
+                        (
+                            path.to_owned(),
+                            backup
+                                .manifest
+                                .entries
+                                .get(&format!("media/{old_track_id}"))
+                                .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?
+                                .clone(),
+                        )
+                    } else {
+                        let (lease, checksum) = crate::backups::download_source(
+                            engine.transport(),
+                            track,
+                            engine.binding().owner_id,
+                            &download_cache,
+                            cancel,
+                        )
+                        .await?;
+                        downloaded = lease;
+                        (downloaded.path.clone(), checksum)
+                    };
                     let import_id =
                         restore_uuid(target_vault, &fingerprint, *old_track_id, b"media");
-                    let message = if let Some(message) = existing.get(&import_id) {
-                        let marker_sha = message.record()?.and_then(|record| match record {
-                            vault_protocol::Record::Media(marker) => marker.sha256,
-                            _ => None,
-                        });
-                        if marker_sha.as_deref() != Some(&entry.sha256)
-                            || message.file.as_ref().is_none_or(|file| {
-                                u64::try_from(file.size).ok() != Some(entry.bytes)
-                            })
-                        {
-                            return Err(ApiError::new(ErrorCode::Integrity));
-                        }
-                        message.clone()
-                    } else {
-                        let media_path = backup
-                            .media_path(*old_track_id)
-                            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
-                        let marker = vault_protocol::Record::Media(vault_protocol::MediaMarker {
-                            vault_id: target_vault,
-                            import_id,
-                            sha256: Some(entry.sha256.clone()),
-                        });
-                        let message = engine
-                            .upload_document(
-                                media_path.to_owned(),
-                                vault_protocol::encode_text(&marker)
-                                    .map_err(|_| ApiError::new(ErrorCode::Integrity))?,
-                                cancel,
-                            )
-                            .await?;
-                        if message
-                            .file
-                            .as_ref()
-                            .is_none_or(|file| u64::try_from(file.size).ok() != Some(entry.bytes))
-                        {
-                            return Err(ApiError::new(ErrorCode::Integrity));
-                        }
-                        message
-                    };
-                    let old_source = track
-                        .sources
-                        .values()
-                        .next()
-                        .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+                    let message = crate::backups::upload_restore(
+                        engine,
+                        &existing,
+                        import_id,
+                        media_path.clone(),
+                        &entry,
+                        cancel,
+                    )
+                    .await?;
+                    if let Some(artwork) = crate::backups::restore_artwork(
+                        engine,
+                        &backup,
+                        track,
+                        &media_path,
+                        &download_cache,
+                        &existing,
+                        restore_uuid(target_vault, &fingerprint, *old_track_id, b"artwork"),
+                        cancel,
+                    )
+                    .await?
+                    {
+                        artworks.insert(
+                            restore_uuid(target_vault, &fingerprint, *old_track_id, b"source"),
+                            artwork,
+                        );
+                    }
                     sources.insert(
                         *old_track_id,
                         vault_domain::Source {
@@ -1139,21 +1294,30 @@ async fn handle<T: Telegram + Clone + 'static>(
                             total: backup.state.tracks.len(),
                         },
                     );
-                    if old_source
-                        .sha256
-                        .as_deref()
-                        .is_some_and(|sha| sha != entry.sha256)
-                    {
+                    if !track.sources.values().any(|source| {
+                        source
+                            .sha256
+                            .as_deref()
+                            .is_none_or(|sha| sha == entry.sha256)
+                    }) {
                         return Err(ApiError::new(ErrorCode::Integrity));
                     }
                 }
-                let plan = vault_snapshot::backup::plan_new_vault(
+                let mut plan = vault_snapshot::backup::plan_new_vault(
                     &backup,
                     target_vault,
                     target_chat,
                     &sources,
                 )
                 .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
+                for operation in &mut plan.operations {
+                    if let vault_domain::Action::TrackRegister { metadata, source } =
+                        &mut operation.action
+                        && let Some(artwork) = metadata.artwork.as_mut()
+                    {
+                        artwork.source = artworks.get(&source.source_id).cloned();
+                    }
+                }
                 let session = RestoreSession {
                     fingerprint,
                     plan: plan.clone(),
@@ -1210,73 +1374,4 @@ async fn handle<T: Telegram + Clone + 'static>(
             return Err(ApiError::new(ErrorCode::Internal));
         }
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn import_local_file<T: Telegram + Clone + 'static>(
-    engine: &mut SyncEngine<T>,
-    path: std::path::PathBuf,
-    track_id: Uuid,
-    source_id: Uuid,
-    op_id: Uuid,
-    allow_duplicate: bool,
-    cancel: &CancellationToken,
-    context: &Context,
-    events: &EventBus,
-) -> Result<VaultResponse, ApiError> {
-    let (asset, staged) = tokio::task::spawn_blocking(move || {
-        let asset = vault_media::inspect(&path)?;
-        let staged = vault_media::stage(&asset, &std::env::temp_dir())?;
-        Ok::<_, vault_media::MediaError>((asset, staged))
-    })
-    .await
-    .map_err(|_| ApiError::new(ErrorCode::Internal))?
-    .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
-    let state = engine.state().await?;
-    let duplicate_track_ids = state
-        .tracks
-        .iter()
-        .filter(|(_, track)| {
-            track
-                .sources
-                .values()
-                .any(|source| source.sha256.as_deref() == Some(&asset.sha256))
-        })
-        .map(|(id, _)| *id)
-        .collect::<Vec<_>>();
-    if !duplicate_track_ids.is_empty() && !allow_duplicate {
-        return Ok(VaultResponse::ImportReview {
-            metadata: Box::new(asset.metadata),
-            sha256: asset.sha256,
-            size_bytes: asset.size_bytes,
-            duplicate_track_ids,
-        });
-    }
-    let marker = vault_protocol::Record::Media(vault_protocol::MediaMarker {
-        vault_id: engine.binding().vault_id,
-        import_id: op_id,
-        sha256: Some(asset.sha256.clone()),
-    });
-    let caption =
-        vault_protocol::encode_text(&marker).map_err(|_| ApiError::new(ErrorCode::Integrity))?;
-    let media = engine
-        .upload_document(staged.path().to_owned(), caption, cancel)
-        .await?;
-    if media.file.is_none() {
-        return Err(ApiError::new(ErrorCode::Integrity));
-    }
-    let source = vault_domain::Source {
-        source_id,
-        chat_id: engine.binding().chat_id,
-        message_id: media.id,
-        sha256: Some(asset.sha256),
-        size_bytes: Some(asset.size_bytes),
-    };
-    let action = vault_domain::Action::TrackRegister {
-        metadata: asset.metadata,
-        source,
-    };
-    let command = engine.execute(op_id, track_id, action, cancel).await?;
-    events.emit(context, EventData::Command(Box::new(command.clone())));
-    Ok(VaultResponse::Command(Box::new(command)))
 }

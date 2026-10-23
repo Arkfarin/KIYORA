@@ -5,6 +5,14 @@ use tauri::{Runtime, plugin::TauriPlugin};
 mod android;
 #[cfg(target_os = "android")]
 pub use android::AndroidSecrets;
+#[cfg(target_os = "android")]
+mod media;
+#[cfg(target_os = "android")]
+pub use media::AndroidMedia;
+#[cfg(target_os = "android")]
+mod documents;
+#[cfg(target_os = "android")]
+pub use documents::AndroidDocuments;
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     tauri::plugin::Builder::new("kiyora-native")
@@ -24,7 +32,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
                     "io.github.arkfarin.kiyora.nativebridge",
                     "KiyoraNativePlugin",
                 )?;
-                _app.manage(AndroidSecrets::new(handle));
+                _app.manage(AndroidSecrets::new(handle.clone()));
+                _app.manage(AndroidDocuments::new(handle.clone()));
+                _app.manage(AndroidMedia::new(handle));
             }
             Ok(())
         })

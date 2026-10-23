@@ -14,19 +14,19 @@ use vault_domain::{Action, ChatId, MessageId, Source, State, UserId};
 use vault_protocol::{canonical_json, strict_json};
 
 const README: &str = "kiyora portable backup v1\nThis archive contains shared music library metadata and optionally media. No TDLib sessions, local paths, passwords or encryption keys are included. SHA-256 detects corruption; it is not an owner signature. Metadata-only backups do not preserve lost audio. Restore is explicit and never silently overwrites an existing vault.\n";
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BackupKind {
     Metadata,
     Full,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Checksum {
     pub bytes: u64,
     pub sha256: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub format: String,
@@ -34,9 +34,12 @@ pub struct Manifest {
     pub state_schema: u32,
     pub kind: BackupKind,
     pub vault_id: Uuid,
+    #[schemars(with = "String")]
     pub owner_id: UserId,
     pub generation: u64,
+    #[schemars(with = "Option<String>")]
     pub cursor: Option<MessageId>,
+    #[schemars(with = "Option<String>")]
     pub barrier_message_id: Option<MessageId>,
     pub track_count: usize,
     pub playlist_count: usize,
@@ -61,11 +64,15 @@ pub struct VerifiedBackup {
     pub manifest: Manifest,
     pub state: State,
     media: BTreeMap<Uuid, PathBuf>,
+    artwork: BTreeMap<Uuid, PathBuf>,
     _staging: tempfile::TempDir,
 }
 impl VerifiedBackup {
     pub fn media_path(&self, track: Uuid) -> Option<&Path> {
         self.media.get(&track).map(PathBuf::as_path)
+    }
+    pub fn artwork_path(&self, track: Uuid) -> Option<&Path> {
+        self.artwork.get(&track).map(PathBuf::as_path)
     }
 }
 
@@ -122,9 +129,31 @@ pub fn export(
     media: &BTreeMap<Uuid, PathBuf>,
     limits: Limits,
 ) -> Result<Manifest, SnapshotError> {
+    export_with_artwork(
+        destination,
+        state,
+        owner,
+        barrier,
+        kind,
+        media,
+        &BTreeMap::new(),
+        limits,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn export_with_artwork(
+    destination: &Path,
+    state: &State,
+    owner: UserId,
+    barrier: Option<MessageId>,
+    kind: BackupKind,
+    media: &BTreeMap<Uuid, PathBuf>,
+    artwork: &BTreeMap<Uuid, PathBuf>,
+    limits: Limits,
+) -> Result<Manifest, SnapshotError> {
     state.validate().map_err(|_| SnapshotError::Corrupt)?;
     if destination.exists()
-        || (kind == BackupKind::Metadata && !media.is_empty())
+        || (kind == BackupKind::Metadata && (!media.is_empty() || !artwork.is_empty()))
         || (kind == BackupKind::Full
             && (media.len() != state.tracks.len()
                 || media.keys().any(|id| !state.tracks.contains_key(id))))
@@ -133,7 +162,8 @@ pub fn export(
     }
     if media
         .len()
-        .checked_add(4)
+        .checked_add(artwork.len())
+        .and_then(|n| n.checked_add(4))
         .is_none_or(|n| n > limits.entries)
     {
         return Err(SnapshotError::Limit);
@@ -194,6 +224,28 @@ pub fn export(
         }
         entries.insert(name, checksum);
     }
+    for (track, path) in artwork {
+        let art = state
+            .tracks
+            .get(track)
+            .and_then(|track| track.metadata.artwork.as_ref())
+            .ok_or(SnapshotError::Corrupt)?;
+        let file = File::open(path)?;
+        let size = file.metadata()?.len();
+        if size == 0 || size > 4 * 1024 * 1024 {
+            return Err(SnapshotError::Limit);
+        }
+        total = total.checked_add(size).ok_or(SnapshotError::Limit)?;
+        if total > limits.total_bytes {
+            return Err(SnapshotError::Limit);
+        }
+        let name = format!("artwork/{track}");
+        let sum = append(&mut builder, &name, size, file)?;
+        if sum.sha256 != art.sha256 {
+            return Err(SnapshotError::Corrupt);
+        }
+        entries.insert(name, sum);
+    }
     let manifest = Manifest {
         format: "kiyora.tmv-backup".into(),
         protocol: 1,
@@ -247,16 +299,19 @@ fn checksums_text(entries: &BTreeMap<String, Checksum>, manifest: &Checksum) -> 
         .map(|(name, sum)| format!("{}  {name}\n", sum.sha256))
         .collect()
 }
-fn validate_name(name: &str) -> Result<Option<Uuid>, SnapshotError> {
+fn validate_name(name: &str) -> Result<Option<(bool, Uuid)>, SnapshotError> {
     match name {
         "manifest.json" | "state.json.zst" | "checksums.sha256" | "README.txt" => Ok(None),
         _ => {
-            let suffix = name.strip_prefix("media/").ok_or(SnapshotError::Corrupt)?;
+            let is_artwork = name.starts_with("artwork/");
+            let suffix = name
+                .strip_prefix(if is_artwork { "artwork/" } else { "media/" })
+                .ok_or(SnapshotError::Corrupt)?;
             let uuid: Uuid = suffix.parse().map_err(|_| SnapshotError::Corrupt)?;
             if uuid.is_nil() || suffix != uuid.to_string() {
                 return Err(SnapshotError::Corrupt);
             }
-            Ok(Some(uuid))
+            Ok(Some((is_artwork, uuid)))
         }
     }
 }
@@ -270,6 +325,7 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
     let mut entries = BTreeMap::new();
     let mut metadata = BTreeMap::new();
     let mut media = BTreeMap::new();
+    let mut artwork = BTreeMap::new();
     let mut total = 0u64;
     for (index, entry) in archive.entries()?.raw(true).enumerate() {
         if index >= limits.entries {
@@ -301,12 +357,19 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
             hasher: Sha256::new(),
             bytes: 0,
         };
-        if let Some(track) = track {
+        if let Some((is_artwork, track)) = track {
+            if is_artwork && size > 4 * 1024 * 1024 {
+                return Err(SnapshotError::Limit);
+            }
             let destination = staging.path().join(index.to_string());
             let mut output = File::create(&destination)?;
             std::io::copy(&mut hashing, &mut output)?;
             output.sync_all()?;
-            media.insert(track, destination);
+            if is_artwork {
+                artwork.insert(track, destination);
+            } else {
+                media.insert(track, destination);
+            }
         } else {
             let mut bytes = Vec::new();
             hashing.read_to_end(&mut bytes)?;
@@ -375,7 +438,9 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
         return Err(SnapshotError::Corrupt);
     }
     match manifest.kind {
-        BackupKind::Metadata if !media.is_empty() => return Err(SnapshotError::Corrupt),
+        BackupKind::Metadata if !media.is_empty() || !artwork.is_empty() => {
+            return Err(SnapshotError::Corrupt);
+        }
         BackupKind::Full => {
             if media.len() != state.tracks.len() {
                 return Err(SnapshotError::Corrupt);
@@ -395,10 +460,24 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
         }
         _ => {}
     }
+    for track in artwork.keys() {
+        let art = state
+            .tracks
+            .get(track)
+            .and_then(|track| track.metadata.artwork.as_ref())
+            .ok_or(SnapshotError::Corrupt)?;
+        let sum = entries
+            .get(&format!("artwork/{track}"))
+            .ok_or(SnapshotError::Corrupt)?;
+        if sum.sha256 != art.sha256 {
+            return Err(SnapshotError::Corrupt);
+        }
+    }
     Ok(VerifiedBackup {
         manifest,
         state,
         media,
+        artwork,
         _staging: staging,
     })
 }

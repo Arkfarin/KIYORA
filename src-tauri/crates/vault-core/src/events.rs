@@ -9,6 +9,12 @@ use vault_telegram::AuthStatus;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "name", content = "payload")]
 pub enum EventData {
+    #[serde(rename = "vault.operation.progress")]
+    Operation(vault_sync::OperationProgress),
+    #[serde(rename = "playback.queue.changed")]
+    Queue(crate::QueueInfo),
+    #[serde(rename = "job.progress")]
+    Job(crate::JobInfo),
     #[serde(rename = "runtime.mode.changed")]
     Runtime(Status),
     #[serde(rename = "auth.state.changed")]
@@ -21,6 +27,8 @@ pub enum EventData {
     Playlist { playlist_id: Uuid },
     #[serde(rename = "command.result")]
     Command(Box<Command>),
+    #[serde(rename = "import.progress")]
+    Import(Box<crate::ImportInfo>),
     #[serde(rename = "share.result")]
     Share {
         #[schemars(with = "String")]
@@ -75,6 +83,7 @@ impl EventBus {
         self.sender.subscribe()
     }
     pub fn emit(&self, context: &Context, data: EventData) {
+        crate::telemetry::event(context, &data);
         // Serialize allocation and publication together, so concurrent producers
         // cannot publish sequence 2 before sequence 1.
         if let Ok(mut sequence) = self.sequence.lock()

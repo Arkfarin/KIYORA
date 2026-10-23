@@ -1,10 +1,25 @@
 //! Application services shared by the native shell and CLI.
 mod api;
 mod backend;
+mod backups;
+mod documents;
+pub use documents::ImportResolver;
 mod events;
+mod imports;
+mod ipc;
+mod jobs;
+mod recovery;
 mod service;
+mod stdio;
+mod telemetry;
+pub use stdio::serve_stdio;
+pub use telemetry::initialize_diagnostics;
+mod sources;
 pub use api::*;
 pub use backend::*;
 pub use events::*;
+pub use imports::{ImportInfo, ImportStage, OrphanMedia};
+pub use ipc::*;
+pub use jobs::{BulkItemResult, ImportFile, JobInfo, JobRequest, JobResult, JobState};
 pub use service::*;
 pub use vault_security::Profile;

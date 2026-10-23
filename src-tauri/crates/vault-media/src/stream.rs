@@ -192,6 +192,7 @@ async fn fetch_range<T: Telegram>(
         };
         match range {
             Ok(range) => {
+                let _lease = range.storage_lease;
                 if range.offset != offset as i64
                     || range.file_offset < 0
                     || range.file_offset > range.offset

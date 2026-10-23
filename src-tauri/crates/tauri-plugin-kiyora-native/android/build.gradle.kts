@@ -9,7 +9,8 @@ android {
     namespace = "io.github.arkfarin.kiyora.nativebridge"
     compileSdk = 36
     defaultConfig {
-        minSdk = 24
+        minSdk = 26
+        targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }

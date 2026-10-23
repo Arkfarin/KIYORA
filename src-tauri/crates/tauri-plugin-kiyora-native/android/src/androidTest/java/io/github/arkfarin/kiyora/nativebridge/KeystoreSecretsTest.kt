@@ -15,7 +15,7 @@ import org.junit.runner.RunWith
 class KeystoreSecretsTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
     private val prefix = "kiyora.instrumentation.${UUID.randomUUID()}."
-    private val directory = File(context.noBackupFilesDir, prefix)
+    private val directory = File(context.noBackupFilesDir.canonicalFile, prefix)
     private val name = "${UUID.randomUUID()}:tdlib-key"
     private val other = "${UUID.randomUUID()}:tdlib-key"
     private fun store() = KeystoreSecrets(context, directory, prefix)
@@ -26,6 +26,8 @@ class KeystoreSecretsTest {
         val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         keys.aliases().toList().filter { it.startsWith(prefix) }.forEach { keys.deleteEntry(it) }
         directory.deleteRecursively()
+        File(context.noBackupFilesDir.canonicalFile, "kiyora-secrets-v1").listFiles()
+            ?.filter { it.name == name.replace(':', '_') }?.forEach { it.delete() }
     }
 
     @Test
@@ -86,5 +88,20 @@ class KeystoreSecretsTest {
         check(file.renameTo(File("${file.path}.bak")))
         file.writeBytes(byteArrayOf(0))
         assertArrayEquals(value, store().get(name))
+    }
+
+    @Test
+    fun frameworkDirectoryAliasWorksButRecordSymlinksAreRejected() {
+        val defaultStore = KeystoreSecrets(context, aliasPrefix = prefix)
+        val value = ByteArray(32) { 9 }
+        defaultStore.set(name, value)
+        assertArrayEquals(value, defaultStore.get(name))
+
+        check(directory.mkdirs())
+        val target = File(directory, "outside-record").apply { writeBytes(byteArrayOf(42)) }
+        android.system.Os.symlink(target.path, record(name).path)
+        assertThrows(Exception::class.java) { store().get(name) }
+        assertThrows(Exception::class.java) { store().set(name, value) }
+        assertArrayEquals(byteArrayOf(42), target.readBytes())
     }
 }

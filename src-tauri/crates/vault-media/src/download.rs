@@ -107,6 +107,7 @@ pub async fn download_to_cache<T: Telegram>(
                 MediaError::Telegram(last_error.unwrap_or(vault_telegram::TelegramError::Timeout))
             })?
         };
+        let _lease = range.storage_lease;
         if range.file_offset < 0
             || range.file_offset > offset
             || range.offset != offset

@@ -29,6 +29,9 @@ acknowledging success. An existing record must decrypt before replacement. Missi
 Keystore keys, invalidated keys, corrupt ciphertext, unsupported versions, oversized
 records and filesystem failures return a structured secure-storage error. Rust
 also checks read-back persistence before allowing TDLib to create its database.
+The framework-owned base directory is canonicalized before appending our private
+directory names, allowing Android's `/data/user/0` alias. Our own directories,
+records and AtomicFile sibling paths still reject symlinks.
 
 ## Bridge boundary
 
@@ -49,12 +52,15 @@ to disappear immediately and are not described as zero-copy secure memory.
 ## Evidence and remaining limits
 
 On 2026-10-22 the Kotlin library, instrumentation APK and Android Lint passed;
-the Rust plugin passed `cargo check --target aarch64-linux-android`. Five tests
+the Rust plugin passed `cargo check --target aarch64-linux-android`. Six tests
 passed against real AndroidKeyStore in an Android 15/API 35 x86_64 AOSP emulator:
 round-trip/reopen/random nonces, swapped/corrupted ciphertext without overwrite,
-missing-key refusal, input/size bounds and AtomicFile interrupted-write recovery.
+missing-key refusal, input/size bounds, AtomicFile interrupted-write recovery,
+and framework directory aliases with record symlink rejection. The test APK now
+targets SDK 36 so platform compatibility rules are exercised.
 
 This does not prove hardware-backed storage, physical-device behavior, complete
-Tauri application startup, Android TDLib packaging/login, or foreground playback.
-Those remain separate acceptance gates. The Android CLI without the Tauri native
+Tauri application startup or Android TDLib packaging/login. Native playback has
+separate instrumentation evidence in [android.md](../../docs/android.md), not
+hardware audio acceptance. The Android CLI without the Tauri native
 provider continues to fail closed rather than use an insecure secret store.

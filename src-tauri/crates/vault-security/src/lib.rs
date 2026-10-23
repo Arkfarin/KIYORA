@@ -28,11 +28,12 @@ pub enum SecurityError {
     Random,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub profile_id: Uuid,
     pub label: String,
+    #[schemars(with = "Option<String>")]
     pub owner_id: Option<UserId>,
 }
 

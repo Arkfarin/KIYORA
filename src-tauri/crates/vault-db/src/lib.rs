@@ -1,6 +1,8 @@
 //! Atomic SQLite projection and local queries for kiyora.
 
 mod projection;
+mod queries;
+pub use queries::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +23,8 @@ pub enum DbError {
     Protocol(#[from] vault_protocol::ProtocolError),
     #[error("unsupported database schema")]
     Schema,
+    #[error("database integrity check failed")]
+    Corrupt,
     #[error("profile or vault binding mismatch")]
     Binding,
     #[error("server message changed after it was observed")]
@@ -31,6 +35,18 @@ pub enum DbError {
     CommandCollision,
     #[error("invalid command lifecycle transition")]
     CommandTransition,
+}
+impl DbError {
+    pub fn is_corruption(&self) -> bool {
+        match self {
+            Self::Corrupt | Self::Json(_) => true,
+            Self::Sql(rusqlite::Error::SqliteFailure(error, _)) => matches!(
+                error.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            ),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +63,13 @@ pub struct Database {
 }
 
 impl Database {
+    pub fn has_pending_gc(&self) -> Result<bool, DbError> {
+        Ok(self.connection.query_row("SELECT EXISTS(SELECT 1 FROM gc_plans WHERE vault_id=?1 AND status NOT IN ('\"complete\"','\"abandoned\"'))", [self.binding.vault_id.to_string()], |r| r.get(0))?)
+    }
+    pub fn abandon_gc_plans(&mut self) -> Result<(), DbError> {
+        self.connection.execute("UPDATE gc_plans SET status='\"abandoned\"' WHERE vault_id=?1 AND status<>'\"complete\"'", [self.binding.vault_id.to_string()])?;
+        Ok(())
+    }
     pub fn save_gc_plan(
         &mut self,
         plan_id: Uuid,
@@ -128,6 +151,42 @@ impl Database {
     }
     pub fn binding(&self) -> Binding {
         self.binding
+    }
+    /// Validate disk structure and the portable projection before exposing a
+    /// reopened or reconstructed database. Never rewrites damaged rows.
+    pub fn validate(&self) -> Result<(), DbError> {
+        let check: String = self
+            .connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if check != "ok"
+            || self
+                .connection
+                .prepare("PRAGMA foreign_key_check")?
+                .exists([])?
+        {
+            return Err(DbError::Corrupt);
+        }
+        self.state()?.validate().map_err(|_| DbError::Corrupt)?;
+        Ok(())
+    }
+    /// Produces a self-contained SQLite file for the recovery installer.
+    pub fn checkpoint(&self) -> Result<(), DbError> {
+        let (busy, log, checkpointed): (i64, i64, i64) =
+            self.connection
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?;
+        if busy != 0 || log != checkpointed {
+            return Err(DbError::Corrupt);
+        }
+        Ok(())
+    }
+    /// Local database location; never included in the portable projection.
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        self.connection
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(Into::into)
     }
     pub fn state(&self) -> Result<State, DbError> {
         let tx = self.connection.unchecked_transaction()?;
@@ -391,6 +450,39 @@ impl Database {
             server_message_id: None,
             outcome: None,
         })
+    }
+    /// Recreate a lost local command only from its verified portable receipt and
+    /// the exact original server intent. No new Telegram send is necessary.
+    pub fn recover_command(&mut self, event: &Event) -> Result<Command, DbError> {
+        if event.vault_id != self.binding.vault_id {
+            return Err(DbError::Binding);
+        }
+        if let Some(existing) = self.command(event.op_id)? {
+            return if existing.intent == *event {
+                Ok(existing)
+            } else {
+                Err(DbError::CommandCollision)
+            };
+        }
+        let (message_id,digest,outcome):(i64,String,String)=self.connection.query_row(
+            "SELECT message_id,event_sha256,outcome FROM applied_events WHERE vault_id=?1 AND op_id=?2",
+            params![event.vault_id.to_string(),event.op_id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+        if digest != vault_domain::event_digest(event)? {
+            return Err(DbError::CommandCollision);
+        }
+        let outcome: Outcome = serde_json::from_str(&outcome)?;
+        let status = if matches!(outcome, Outcome::Rejected(_)) {
+            CommandStatus::RejectedByReducer
+        } else {
+            CommandStatus::Applied
+        };
+        let intent = String::from_utf8(vault_protocol::encode(&Record::Event(Box::new(
+            event.clone(),
+        )))?)
+        .map_err(|_| DbError::Schema)?;
+        self.connection.execute("INSERT INTO inflight_commands(vault_id,op_id,intent,status,server_msg_id,result_json) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![event.vault_id.to_string(),event.op_id.to_string(),intent,status.as_str(),message_id,serde_json::to_string(&outcome)?])?;
+        self.command(event.op_id)?.ok_or(DbError::Corrupt)
     }
     pub fn command(&self, op_id: Uuid) -> Result<Option<Command>, DbError> {
         let row:Option<(String,String,Option<i64>,Option<String>)>=self.connection.query_row("SELECT intent,status,server_msg_id,result_json FROM inflight_commands WHERE vault_id=?1 AND op_id=?2",params![self.binding.vault_id.to_string(),op_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;

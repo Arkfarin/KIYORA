@@ -530,6 +530,7 @@ async fn gc_stops_if_role_changes_or_either_snapshot_disappears() {
     );
     assert_eq!(server.messages().unwrap().len(), count);
     a.sync(&cancel).await.unwrap();
+    a.abandon_gc(plan.plan.plan_id).await.unwrap();
     execute(
         &mut a,
         binding().vault_id,
@@ -547,4 +548,328 @@ async fn gc_stops_if_role_changes_or_either_snapshot_disappears() {
             .is_err()
     );
     assert!(a.plan_gc(&cancel).await.is_err());
+}
+
+#[tokio::test]
+async fn coordinator_transfer_requires_handoff_or_confirmed_takeover_and_discards_old_plans() {
+    let (server, mut desktop) = setup().await;
+    let cancel = CancellationToken::new();
+    let op = Uuid::new_v4();
+    let assigned = desktop
+        .assign_gc_coordinator(op, Some("desktop".into()), None, false, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(assigned.status, CommandStatus::Applied);
+    assert_eq!(
+        desktop
+            .assign_gc_coordinator(op, Some("desktop".into()), None, false, &cancel)
+            .await
+            .unwrap()
+            .intent
+            .op_id,
+        op
+    );
+    desktop.request_snapshot(&cancel).await.unwrap();
+    let plan = desktop.plan_gc(&cancel).await.unwrap();
+    let mut phone = engine(&server, "phone");
+    phone.sync(&cancel).await.unwrap();
+    let before = server.messages().unwrap();
+    assert!(
+        desktop
+            .assign_gc_coordinator(
+                Uuid::new_v4(),
+                Some("phone".into()),
+                Some("desktop".into()),
+                false,
+                &cancel
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        phone
+            .assign_gc_coordinator(
+                Uuid::new_v4(),
+                Some("phone".into()),
+                Some("desktop".into()),
+                false,
+                &cancel
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        phone
+            .execute(
+                Uuid::new_v4(),
+                binding().vault_id,
+                Action::VaultSettingsUpdate {
+                    settings: SharedSettings {
+                        gc_device_id: Some("phone".into()),
+                        display_name: "".into()
+                    }
+                },
+                &cancel
+            )
+            .await
+            .is_err(),
+        "generic settings must not bypass takeover confirmation"
+    );
+    assert_eq!(server.messages().unwrap(), before);
+    desktop.abandon_gc(plan.plan.plan_id).await.unwrap();
+    desktop
+        .assign_gc_coordinator(
+            Uuid::new_v4(),
+            Some("phone".into()),
+            Some("desktop".into()),
+            false,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(
+        desktop
+            .execute_gc(plan.plan.plan_id, &plan.plan.hash().unwrap(), &cancel)
+            .await
+            .is_err()
+    );
+    phone.sync(&cancel).await.unwrap();
+    phone.request_snapshot(&cancel).await.unwrap();
+    let old_phone_plan = phone.plan_gc(&cancel).await.unwrap();
+    desktop
+        .assign_gc_coordinator(
+            Uuid::new_v4(),
+            Some("desktop".into()),
+            Some("phone".into()),
+            true,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    phone
+        .assign_gc_coordinator(
+            Uuid::new_v4(),
+            Some("phone".into()),
+            Some("desktop".into()),
+            true,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        phone
+            .inspect_gc(old_phone_plan.plan.plan_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        vault_snapshot::gc::GcStatus::Abandoned
+    );
+    let before = server.messages().unwrap();
+    assert!(
+        phone
+            .execute_gc(
+                old_phone_plan.plan.plan_id,
+                &old_phone_plan.plan.hash().unwrap(),
+                &cancel
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(server.messages().unwrap(), before);
+    assert!(
+        phone
+            .assign_gc_coordinator(Uuid::new_v4(), None, Some("desktop".into()), true, &cancel)
+            .await
+            .is_err(),
+        "stale role expectation must not change the new head"
+    );
+}
+
+#[tokio::test]
+async fn both_missing_copies_reconstruct_only_when_committed_hash_proves_full_history() {
+    let (server, mut writer) = setup().await;
+    let cancel = CancellationToken::new();
+    writer
+        .assign_gc_coordinator(Uuid::new_v4(), Some("desktop".into()), None, false, &cancel)
+        .await
+        .unwrap();
+    let playlist = Uuid::new_v4();
+    let created = execute(
+        &mut writer,
+        playlist,
+        Action::PlaylistCreate {
+            title: "Retained history".into(),
+        },
+    )
+    .await;
+    let snapshot = writer.request_snapshot(&cancel).await.unwrap();
+    execute(
+        &mut writer,
+        playlist,
+        Action::PlaylistRename {
+            title: "After barrier".into(),
+        },
+    )
+    .await;
+    for id in [
+        snapshot.commit.snapshot_a_message_id,
+        snapshot.commit.snapshot_b_message_id,
+    ] {
+        server.manual_delete(id).unwrap();
+    }
+    let mut fresh = engine(&server, "recovered");
+    fresh.sync(&cancel).await.unwrap();
+    assert_eq!(fresh.state().await.unwrap(), writer.state().await.unwrap());
+    let verified = fresh.verify(&cancel).await.unwrap();
+    assert!(!verified.primary_healthy && !verified.backup_healthy);
+    assert_eq!(verified.commit_id, snapshot.commit_id);
+    // An apparently replayable older generation is insufficient when even one
+    // covered event was deleted. Hash proof must fail, preserving the projection.
+    server
+        .manual_delete(created.server_message_id.unwrap())
+        .unwrap();
+    let before = fresh.state().await.unwrap();
+    assert!(fresh.sync(&cancel).await.is_err());
+    assert_eq!(fresh.mode(), RuntimeMode::DegradedReadonly);
+    assert_eq!(fresh.state().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn backup_seed_recovers_pruned_missing_snapshots_and_rejects_wrong_state() {
+    let (server, mut writer) = setup().await;
+    let cancel = CancellationToken::new();
+    writer
+        .assign_gc_coordinator(Uuid::new_v4(), Some("desktop".into()), None, false, &cancel)
+        .await
+        .unwrap();
+    let playlist = Uuid::new_v4();
+    let created = execute(
+        &mut writer,
+        playlist,
+        Action::PlaylistCreate {
+            title: "Preserved".into(),
+        },
+    )
+    .await;
+    let snapshot = writer.request_snapshot(&cancel).await.unwrap();
+    let archive_state = writer.state().await.unwrap();
+    execute(
+        &mut writer,
+        playlist,
+        Action::PlaylistRename {
+            title: "Tail survives".into(),
+        },
+    )
+    .await;
+    for id in [
+        snapshot.commit.snapshot_a_message_id,
+        snapshot.commit.snapshot_b_message_id,
+        created.server_message_id.unwrap(),
+    ] {
+        server.manual_delete(id).unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("restored.sqlite");
+    let mut fresh = SyncEngine::new(
+        server.client().unwrap(),
+        Database::open(&path, binding()).unwrap(),
+        "recovered".into(),
+    );
+    assert!(fresh.sync(&cancel).await.is_err());
+    assert!(
+        fresh
+            .seed_from_backup(archive_state.clone(), UserId::new(7).unwrap(), &cancel)
+            .await
+            .is_err()
+    );
+    let mut wrong = archive_state.clone();
+    wrong.playlists.get_mut(&playlist).unwrap().title = "Forged".into();
+    assert!(
+        fresh
+            .seed_from_backup(wrong, binding().owner_id, &cancel)
+            .await
+            .is_err()
+    );
+    let mut wrong = archive_state.clone();
+    wrong.generation -= 1;
+    assert!(
+        fresh
+            .seed_from_backup(wrong, binding().owner_id, &cancel)
+            .await
+            .is_err()
+    );
+    fresh
+        .seed_from_backup(archive_state, binding().owner_id, &cancel)
+        .await
+        .unwrap();
+    fresh.sync(&cancel).await.unwrap();
+    assert_eq!(fresh.state().await.unwrap(), writer.state().await.unwrap());
+    drop(fresh);
+    let mut reopened = SyncEngine::new(
+        server.client().unwrap(),
+        Database::open(&path, binding()).unwrap(),
+        "desktop".into(),
+    );
+    reopened.sync(&cancel).await.unwrap();
+    assert_eq!(
+        reopened.state().await.unwrap().playlists[&playlist].title,
+        "Tail survives"
+    );
+    // Publish healthy A/B after verified recovery; other clients need no archive.
+    reopened.request_snapshot(&cancel).await.unwrap();
+    let mut cold = engine(&server, "cold");
+    cold.sync(&cancel).await.unwrap();
+    assert_eq!(cold.state().await.unwrap(), reopened.state().await.unwrap());
+}
+
+#[tokio::test]
+async fn retry_after_local_database_loss_never_resends_an_applied_operation() {
+    let (server, mut writer) = setup().await;
+    let cancel = CancellationToken::new();
+    writer
+        .assign_gc_coordinator(Uuid::new_v4(), Some("desktop".into()), None, false, &cancel)
+        .await
+        .unwrap();
+    let id = Uuid::new_v4();
+    let op = Uuid::new_v4();
+    let action = Action::PlaylistCreate {
+        title: "Exactly once".into(),
+    };
+    let original = writer
+        .execute(op, id, action.clone(), &cancel)
+        .await
+        .unwrap();
+    writer.request_snapshot(&cancel).await.unwrap();
+    let head = server.messages().unwrap().len();
+    let mut fresh = engine(&server, "fresh");
+    fresh.sync(&cancel).await.unwrap();
+    let replay = fresh
+        .execute(op, id, action.clone(), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(replay, original);
+    assert_eq!(server.messages().unwrap().len(), head);
+    assert!(
+        fresh
+            .execute(
+                op,
+                id,
+                Action::PlaylistCreate {
+                    title: "Different intent".into()
+                },
+                &cancel
+            )
+            .await
+            .is_err()
+    );
+    server
+        .manual_delete(original.server_message_id.unwrap())
+        .unwrap();
+    let head = server.messages().unwrap().len();
+    let mut pruned = engine(&server, "pruned");
+    pruned.sync(&cancel).await.unwrap();
+    assert!(pruned.execute(op, id, action, &cancel).await.is_err());
+    assert_eq!(server.messages().unwrap().len(), head);
+    assert_eq!(pruned.mode(), RuntimeMode::OnlineReady);
 }

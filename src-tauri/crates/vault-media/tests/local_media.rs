@@ -141,6 +141,32 @@ fn download_reservations_cannot_exceed_cache_quota() {
 }
 
 #[test]
+fn resizing_quota_protects_pins_leases_and_download_reservations() {
+    let dir = tempdir().unwrap();
+    let cache = CacheManager::open(dir.path().join("cache"), 100).unwrap();
+    let path = dir.path().join("audio");
+    std::fs::write(&path, [1u8; 40]).unwrap();
+    let sha = hex::encode(Sha256::digest([1u8; 40]));
+    let a = cache.insert("a".into(), &path, &sha, true).unwrap();
+    let b = cache.insert("b".into(), &path, &sha, false).unwrap();
+    assert!(matches!(cache.set_quota(60), Err(MediaError::CacheFull)));
+    assert_eq!(cache.stats().unwrap().quota_bytes, 100);
+    drop(b);
+    assert_eq!(cache.set_quota(60).unwrap().used_bytes, 40);
+    assert!(cache.acquire("b").unwrap().is_none());
+    let partial = cache
+        .prepare_partial_download("download", 1, 20, None)
+        .unwrap();
+    assert!(matches!(cache.set_quota(40), Err(MediaError::CacheFull)));
+    assert_eq!(cache.stats().unwrap().quota_bytes, 60);
+    drop(partial);
+    assert_eq!(cache.set_quota(40).unwrap().quota_bytes, 40);
+    drop(a);
+    assert!(matches!(cache.set_quota(39), Err(MediaError::CacheFull)));
+    assert!(cache.set_quota(0).is_err());
+}
+
+#[test]
 fn partial_bytes_survive_reopen_and_count_toward_cache_quota() {
     let dir = tempdir().unwrap();
     let root = dir.path().join("cache");

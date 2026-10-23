@@ -1,6 +1,8 @@
 //! Full bounded snapshots, independent server read-back and A/B cold recovery.
 pub mod backup;
 pub mod gc;
+mod reconstruction;
+pub use reconstruction::recover_with_history;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -200,6 +202,7 @@ pub async fn read_copy<T: Telegram>(
     }
     let commit = commit.clone();
     tokio::task::spawn_blocking(move || {
+        let _lease = range.storage_lease;
         let file = std::fs::File::open(range.path)?;
         let mut bytes = Vec::new();
         file.take(MAX_COMPRESSED + 1).read_to_end(&mut bytes)?;

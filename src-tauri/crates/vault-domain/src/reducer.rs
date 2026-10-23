@@ -462,8 +462,12 @@ impl State {
             {
                 return Err(invalid("playlist"));
             }
-            self.playlist_order(*id)?;
         }
+        // Validate the forest once. Walking every entry's complete ancestor
+        // chain is quadratic for long playlists, and scanning all entries per
+        // playlist makes snapshot restore scale with playlist count as well.
+        let mut children: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
+        let mut roots = Vec::new();
         for (id, entry) in &self.entries {
             if id.is_nil()
                 || *id != entry.entry_id
@@ -473,12 +477,30 @@ impl State {
             {
                 return Err(invalid("entry"));
             }
-            if self
-                .require_anchor(entry.playlist_id, *id, entry.after_entry_id)
-                .is_err()
-            {
-                return Err(invalid("anchor"));
+            if let Some(anchor) = entry.after_entry_id {
+                if self
+                    .entries
+                    .get(&anchor)
+                    .is_none_or(|parent| parent.playlist_id != entry.playlist_id)
+                {
+                    return Err(invalid("anchor"));
+                }
+                children.entry(anchor).or_default().push(*id);
+            } else {
+                roots.push(*id);
             }
+        }
+        let mut reachable = 0;
+        while let Some(id) = roots.pop() {
+            reachable += 1;
+            if let Some(next) = children.get(&id) {
+                roots.extend(next);
+            }
+        }
+        // Each entry has exactly one parent. Any cycle therefore has no path
+        // from a root, including a cycle with additional descendants.
+        if reachable != self.entries.len() {
+            return Err(invalid("cyclic entry order"));
         }
         for (name, set) in &self.favorites {
             if !valid_text(name, 128, true)

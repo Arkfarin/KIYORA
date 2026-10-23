@@ -167,6 +167,21 @@ impl CacheManager {
     pub fn used_bytes(&self) -> Result<u64, MediaError> {
         Ok(self.stats()?.used_bytes)
     }
+    /// Shrinking evicts only unused, unpinned complete files. A quota that
+    /// cannot accommodate pinned files and download reservations is rejected.
+    pub fn set_quota(&self, bytes: u64) -> Result<CacheStats, MediaError> {
+        if bytes == 0 {
+            return Err(MediaError::CacheFull);
+        }
+        let mut state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let previous = std::mem::replace(&mut state.quota, bytes);
+        if let Err(error) = reserve_capacity(&mut state, 0, "") {
+            state.quota = previous;
+            return Err(error);
+        }
+        drop(state);
+        self.stats()
+    }
     pub fn stats(&self) -> Result<CacheStats, MediaError> {
         let state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
         let entries = state.index.entries.values();

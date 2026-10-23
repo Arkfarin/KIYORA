@@ -1,23 +1,6 @@
 use schemars::JsonSchema;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
-use vault_core::{ApiError, BackendEvent, PlaybackAction, VaultRequest, VaultResponse};
-
-#[derive(JsonSchema, Serialize)]
-#[serde(tag = "scope", content = "request", rename_all = "snake_case")]
-#[allow(dead_code)]
-enum BackendRequest {
-    Vault(VaultRequest),
-    Playback(PlaybackAction),
-}
-
-#[derive(JsonSchema, Serialize)]
-#[serde(tag = "scope", content = "response", rename_all = "snake_case")]
-#[allow(dead_code)]
-enum BackendResponse {
-    Vault(VaultResponse),
-    Error(ApiError),
-}
+use vault_core::{BackendEvent, BackendRequest, BackendResponse};
 
 fn write_schema<T: JsonSchema>(
     directory: &Path,

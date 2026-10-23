@@ -3,10 +3,12 @@ mod auth;
 mod client;
 mod discovery;
 mod native;
+mod storage;
 mod transport;
 pub use auth::*;
 pub use client::*;
 pub use discovery::*;
+pub use storage::*;
 pub use transport::*;
 
 pub const TDLIB_VERSION: &str = "1.8.69";

@@ -29,10 +29,14 @@ pub enum SyncError {
     Snapshot(#[from] SnapshotError),
     #[error("shared mutations require ONLINE_READY")]
     Readonly,
+    #[error("GC coordinator changed or a cleanup plan is still pending")]
+    CoordinatorConflict,
     #[error("vault initialization is incomplete")]
     InitializationRequired,
     #[error("vault history failed integrity or compatibility checks")]
     Integrity,
+    #[error("registered media source is unavailable")]
+    MediaSourceMissing,
     #[error("history is still changing; another catch-up is required")]
     ReconcileRequired,
     #[error("operation result is unknown; reconcile before retry")]
@@ -53,6 +57,7 @@ pub struct RuntimeStatus {
 /// One mutable owner serializes jobs. CLI and Tauri both call this application
 /// boundary; callers cannot manufacture a ready flag or directly promote mode.
 pub struct SyncEngine<T: Telegram> {
+    progress: broadcast::Sender<crate::OperationProgress>,
     pub(crate) transport: T,
     pub(crate) db: Arc<Mutex<Database>>,
     pub(crate) binding: Binding,
@@ -72,7 +77,9 @@ impl<T: Telegram> SyncEngine<T> {
     ) -> Self {
         let binding = projection.binding;
         let updates = transport.subscribe();
+        let (progress, _) = broadcast::channel(256);
         Self {
+            progress,
             transport,
             db: projection.db,
             binding,
@@ -87,6 +94,23 @@ impl<T: Telegram> SyncEngine<T> {
             db: self.db.clone(),
             binding: self.binding,
         }
+    }
+    pub fn subscribe_progress(&self) -> broadcast::Receiver<crate::OperationProgress> {
+        self.progress.subscribe()
+    }
+    pub(crate) fn report(
+        &self,
+        operation: crate::Operation,
+        phase: crate::Phase,
+        completed: usize,
+        total: Option<usize>,
+    ) {
+        let _ = self.progress.send(crate::OperationProgress {
+            operation,
+            phase,
+            completed,
+            total,
+        });
     }
     pub fn transport(&self) -> &T {
         &self.transport
@@ -107,16 +131,7 @@ impl<T: Telegram> SyncEngine<T> {
     pub async fn verify(&mut self, cancel: &CancellationToken) -> Result<Recovery, SyncError> {
         self.sync(cancel).await?;
         let message = self.latest_commit(cancel).await?;
-        let result = vault_snapshot::recover(
-            &self.transport,
-            self.binding.chat_id,
-            &message,
-            self.binding.owner_id,
-            true,
-            cancel,
-        )
-        .await
-        .map_err(SyncError::from);
+        let result = self.recover_latest(&message, true, cancel).await;
         if let Err(error) = &result {
             self.fail(error);
         }
@@ -136,6 +151,9 @@ impl<T: Telegram> SyncEngine<T> {
     }
     pub async fn state(&self) -> Result<State, SyncError> {
         self.database(|db| db.state()).await
+    }
+    pub async fn database_path(&self) -> Result<Option<std::path::PathBuf>, SyncError> {
+        self.database(|db| Ok(db.path())).await
     }
     pub async fn command(&self, op: Uuid) -> Result<Option<Command>, SyncError> {
         self.database(move |db| db.command(op)).await
@@ -268,21 +286,46 @@ impl<T: Telegram> SyncEngine<T> {
         }
         Err(SyncError::Integrity)
     }
+    /// The backwards scan that locates the newest commit already contains most
+    /// of its tail. Keep those pages, then finish only the gap to its barrier.
+    async fn latest_commit_and_tail(&self, cancel: &CancellationToken) -> Result<(RemoteMessage, Vec<RemoteMessage>), SyncError> {
+        let mut before = None;
+        let mut found = None;
+        let mut after = 0;
+        let mut buffered = std::collections::BTreeMap::new();
+        for _ in 0..10_000 {
+            let mut page = self.transport.history(self.binding.chat_id, before, 100, cancel).await?;
+            if page.is_empty() {
+                return found.map(|commit| (commit, buffered.into_values().filter(|message: &RemoteMessage| message.id.get() > after).collect())).ok_or(SyncError::InitializationRequired);
+            }
+            page.sort_by_key(|message| std::cmp::Reverse(message.id));
+            let next = page.last().map(|message| message.id).ok_or(SyncError::Integrity)?;
+            for message in page {
+                if message.chat_id != self.binding.chat_id || before.is_some_and(|last| message.id >= last) {return Err(SyncError::Integrity);}
+                if found.is_none() && let Some(record) = message.record()? {
+                    if record.vault_id() != self.binding.vault_id {return Err(SyncError::Integrity);}
+                    if let Record::Commit(commit) = record {
+                        after = commit.barrier_message_id.get();
+                        found = Some(message.clone());
+                    }
+                }
+                if let Some(old) = buffered.insert(message.id, message.clone()) && old != message {return Err(SyncError::Integrity);}
+            }
+            if next.get() <= after && let Some(commit) = found {
+                return Ok((commit, buffered.into_values().filter(|message| message.id.get() > after).collect()));
+            }
+            before = Some(next);
+        }
+        Err(SyncError::Integrity)
+    }
     async fn sync_inner(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
+        self.report(crate::Operation::Sync, crate::Phase::Verify, 0, None);
         self.invalidate_from_updates();
         self.transport
             .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
             .await?;
-        let commit_message = self.latest_commit(cancel).await?;
-        let recovery = vault_snapshot::recover(
-            &self.transport,
-            self.binding.chat_id,
-            &commit_message,
-            self.binding.owner_id,
-            false,
-            cancel,
-        )
-        .await?;
+        let (commit_message, tail) = self.latest_commit_and_tail(cancel).await?;
+        let recovery = self.recover_latest(&commit_message, false, cancel).await?;
         if self.verified.as_ref().is_some_and(|old| {
             recovery.commit_id < old.commit_id
                 || recovery.commit.generation < old.commit.generation
@@ -294,16 +337,9 @@ impl<T: Telegram> SyncEngine<T> {
         // Independent local receipts reveal deletion/editing that Telegram alone
         // cannot prove. Audit before replacing a usable local projection.
         let local = self.state().await?;
-        let tail = scan_history(
-            &self.transport,
-            self.binding.chat_id,
-            recovery.commit.barrier_message_id.get(),
-            None,
-            1_000_000,
-            cancel,
-        )
-        .await?;
         audit_receipts(&local, &recovery, &tail)?;
+        let tail_bytes: u64 = tail.iter().map(|message| message.text.len() as u64).sum();
+        let observed = serde_json::json!({"commit_id": commit_message.id, "created_at_unix":commit_message.sent_at_unix, "uncovered_log_bytes":tail_bytes});
         if self.verified.as_ref().map(|r| r.commit_id) != Some(recovery.commit_id)
             || cursor < recovery.commit.barrier_message_id.get()
         {
@@ -319,22 +355,30 @@ impl<T: Telegram> SyncEngine<T> {
             .await?;
         }
         self.verified = Some(recovery);
+        let mut audited_tail = Some(tail);
         for _ in 0..16 {
             let cursor = self.database(|db| db.cursor()).await?;
-            let messages = scan_history(
-                &self.transport,
-                self.binding.chat_id,
-                cursor,
-                None,
-                1_000_000,
-                cancel,
-            )
-            .await?;
+            let messages = if let Some(tail) = audited_tail.take() {
+                tail.into_iter()
+                    .filter(|message| message.id.get() > cursor)
+                    .collect()
+            } else {
+                scan_history(
+                    &self.transport,
+                    self.binding.chat_id,
+                    cursor,
+                    None,
+                    1_000_000,
+                    cancel,
+                )
+                .await?
+            };
             let last = messages.last().map(|m| m.id.get()).unwrap_or(cursor);
             self.apply_messages(&messages, cancel).await?;
             // Drain updates before the independent head read. A subsequent update
             // remains queued and will invalidate the next mutation/status request.
             let changed = self.invalidate_from_updates();
+            self.report(crate::Operation::Sync, crate::Phase::ReconcileHead, 0, None);
             let head = self
                 .transport
                 .history(self.binding.chat_id, None, 1, cancel)
@@ -346,6 +390,9 @@ impl<T: Telegram> SyncEngine<T> {
                 self.transport
                     .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
                     .await?;
+                self.set_local_setting("snapshot.diagnostics.v1".into(), observed.to_string())
+                    .await?;
+                self.report(crate::Operation::Sync, crate::Phase::Complete, 1, Some(1));
                 return Ok(());
             }
             let latest = self.latest_commit(cancel).await?;
@@ -364,7 +411,8 @@ impl<T: Telegram> SyncEngine<T> {
         messages: &[RemoteMessage],
         cancel: &CancellationToken,
     ) -> Result<(), SyncError> {
-        for page in messages.chunks(100) {
+        const REPLAY_BATCH: usize = 1000;
+        for (index, page) in messages.chunks(REPLAY_BATCH).enumerate() {
             if cancel.is_cancelled() {
                 return Err(TelegramError::Cancelled.into());
             }
@@ -388,6 +436,12 @@ impl<T: Telegram> SyncEngine<T> {
             if !records.is_empty() {
                 self.database(move |db| db.apply_records(&records)).await?;
             }
+            self.report(
+                crate::Operation::Sync,
+                crate::Phase::Replay,
+                (index * REPLAY_BATCH + page.len()).min(messages.len()),
+                Some(messages.len()),
+            );
         }
         Ok(())
     }
@@ -485,10 +539,7 @@ impl<T: Telegram> SyncEngine<T> {
             .await?;
         self.sync(cancel).await
     }
-    pub(crate) async fn require_online(
-        &mut self,
-        cancel: &CancellationToken,
-    ) -> Result<(), SyncError> {
+    pub async fn require_online(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
         self.invalidate_from_updates();
         // A known disconnected/read-only client never queues an offline intent.
         if !matches!(self.mode, RuntimeMode::OnlineReady | RuntimeMode::Syncing) {
@@ -508,6 +559,30 @@ impl<T: Telegram> SyncEngine<T> {
         cancel: &CancellationToken,
     ) -> Result<Command, SyncError> {
         self.require_online(cancel).await?;
+        if self.command(op_id).await?.is_none()
+            && let Action::VaultSettingsUpdate { settings } = &action
+        {
+            let current = self.reader().shared_settings().await?;
+            if current.gc_device_id != settings.gc_device_id {
+                self.check_coordinator_change(&current.gc_device_id, false)
+                    .await?;
+            }
+        }
+        self.submit_action(op_id, entity_id, action, cancel).await
+    }
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    /// Caller has reconciled the online head and validated any privileged role
+    /// transition. The durable command remains the sole retry identity.
+    pub(crate) async fn submit_action(
+        &mut self,
+        op_id: Uuid,
+        entity_id: Uuid,
+        action: Action,
+        cancel: &CancellationToken,
+    ) -> Result<Command, SyncError> {
         if let Some(existing) = self.command(op_id).await? {
             if existing.intent.entity_id != entity_id || existing.intent.action != action {
                 return Err(DbError::CommandCollision.into());
@@ -523,6 +598,24 @@ impl<T: Telegram> SyncEngine<T> {
             entity_id,
             action,
         };
+        if let Some(receipt) = state.applied.get(&op_id) {
+            let original = self
+                .transport
+                .message(self.binding.chat_id, receipt.message_id, cancel)
+                .await?
+                .and_then(|message| message.record().transpose())
+                .transpose()?;
+            let Some(Record::Event(original)) = original else {
+                return Err(DbError::CommandCollision.into());
+            };
+            if original.op_id != op_id
+                || original.entity_id != entity_id
+                || original.action != event.action
+            {
+                return Err(DbError::CommandCollision.into());
+            }
+            return self.database(move |db| db.recover_command(&original)).await;
+        }
         let text = encode_text(&Record::Event(Box::new(event.clone())))
             .map_err(|_| SyncError::Integrity)?;
         let saved = event.clone();
@@ -596,12 +689,7 @@ impl<T: Telegram> SyncEngine<T> {
             .and_then(|track| track.sources.get(&source_id))
             .filter(|source| source.chat_id == self.binding.chat_id)
             .ok_or(SyncError::Integrity)?;
-        let message = self
-            .transport
-            .message(source.chat_id, source.message_id, cancel)
-            .await?
-            .ok_or(SyncError::Integrity)?;
-        let file = message.file.ok_or(SyncError::Integrity)?;
+        let file = self.probe_source(track_id, source, cancel).await?;
         let size = u64::try_from(file.size).map_err(|_| SyncError::Integrity)?;
         if source.size_bytes.is_some_and(|expected| expected != size) {
             return Err(SyncError::Integrity);
@@ -656,6 +744,7 @@ impl<T: Telegram> SyncEngine<T> {
         result
     }
     async fn snapshot_inner(&mut self, cancel: &CancellationToken) -> Result<Recovery, SyncError> {
+        self.report(crate::Operation::Snapshot, crate::Phase::Barrier, 0, None);
         let previous = self
             .verified
             .clone()
@@ -719,20 +808,34 @@ impl<T: Telegram> SyncEngine<T> {
             return Err(SyncError::Readonly);
         }
         let owner = self.binding.owner_id;
+        self.report(crate::Operation::Snapshot, crate::Phase::Encode, 0, None);
         let barrier_id = barrier.id;
         let encoded = tokio::task::spawn_blocking(move || {
             vault_snapshot::build(state, owner, snapshot_id, generation, barrier_id)
         })
         .await
         .map_err(|_| SyncError::Worker)??;
-        Ok(vault_snapshot::publish(
+        self.report(
+            crate::Operation::Snapshot,
+            crate::Phase::PublishCopies,
+            0,
+            Some(2),
+        );
+        let result = vault_snapshot::publish(
             &self.transport,
             self.binding.chat_id,
             encoded,
             Some(previous.commit_id),
             cancel,
         )
-        .await?)
+        .await?;
+        self.report(
+            crate::Operation::Snapshot,
+            crate::Phase::Complete,
+            2,
+            Some(2),
+        );
+        Ok(result)
     }
 }
 
