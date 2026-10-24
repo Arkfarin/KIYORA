@@ -61,6 +61,29 @@ GC-роль назначается `assign_gc_coordinator`: `target` = `this_dev
 Telegram запроса от старого координатора. Перед удалением нужен новый проверенный
 план с подтверждением его digest; проверки роли и снимков повторяются по батчам.
 
+`share_track` требует стабильный `op_id` для одного намерения пользователя.
+Повторные нажатия и восстановление запроса должны использовать тот же UUID.
+Ответ `shared` содержит `state`: `sent`, `not_sent` или `unknown`; только `sent`
+содержит подтверждённый `message_id`. `get_share_status {op_id}` читает сохранённый
+результат без отправки. Один `op_id` никогда не отправляется повторно, даже после
+перезапуска. `unknown` не означает неудачу: Telegram мог принять файл, а ответ
+потеряться. Проверять чат получателя нужно до нового явно выбранного отправления
+с новым UUID. После `not_sent` новый запрос также требует нового UUID.
+CLI: `library share <track> <source> <chat> [--op-id <uuid>]`; идентификатор выводится
+до отправки. Журнал локален для vault/профиля, а не является распределённой
+дедупликацией между независимыми устройствами или после удаления локальной БД.
+
+Входящий `messageAudio` копируется на сервере с новым MEDIA-marker: аудиобайты
+не скачиваются, title/performer/duration берутся из TDLib.
+Миниатюра обложки при наличии скачивается отдельно (до 4 MiB), публикуется с
+проверкой SHA-256 и включается в метаданные. Для аудиофайла-документа
+сначала проверяются формат, теги и SHA-256 локально, затем серверная копия и её
+digest проверяются перед регистрацией. Разрешение `can_be_copied` обязательно;
+запрещённый контент не переотправляется через upload. `sha256` в `imports` и
+`import_review` допускает `null`, если байты не читались. Старые строковые digest
+и журналы продолжают читаться. Локальные импорты отправляются как Telegram audio
+с ограниченными display-полями; полные метаданные сохраняются в TrackRegister.
+
 Импорт сохраняет локальный журнал до отправки. `imports` возвращает безопасные
 сведения без файловых путей, `resume_import` продолжает по `op_id`.
 При `upload_unknown` выполняется поиск MEDIA-marker; если результат остаётся
@@ -89,3 +112,20 @@ kiyora-cli vault resume <chat-id>
 Генерация схем: `cargo run -p vault-core --example generate-api-schema` из
 `src-tauri`. Тест `vault-core/tests/ipc.rs` проверяет JSON-dispatch, отказ неизвестной
 версии до изменения состояния, строгие поля, строковые IDs и совпадение схем.
+# Event loss and state refresh
+
+Listen for both `kiyora://backend` and `kiyora://resync-required` before requesting
+initial state. The latter carries `{ after_sequence: string | null,
+missed_events: string }`. It signals a broadcast overrun; it does not claim that
+the missed commands failed. Event sequences are decimal strings; compare them as
+`BigInt`, discard duplicates and check the profile/session context.
+
+The version 1 `state_snapshot` backend command accepts `{ session_id }` and returns
+the current local projection, its SQLite cursor, context and `event_sequence`.
+It works offline. Buffer events while reading it, replace the projection, discard
+buffered events at or below `event_sequence`, then apply later invalidations.
+The watermark is taken **before** the database read: later notifications may
+overlap state already in the snapshot and must be handled idempotently. Refresh
+runtime, playback, jobs and download state through their existing queries after
+an overrun. A stale session returns `CONFLICT`; obtain the current context before
+retrying. No frontend visual changes are required by this additive API.

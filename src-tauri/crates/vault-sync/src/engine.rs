@@ -44,6 +44,15 @@ pub enum SyncError {
     #[error("database worker failed")]
     Worker,
 }
+impl SyncError {
+    pub fn definitely_not_sent(&self) -> bool {
+        match self {
+            Self::Readonly => true,
+            Self::Telegram(error) => error.definitely_not_sent(),
+            _ => false,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RuntimeStatus {
     pub mode: RuntimeMode,
@@ -65,6 +74,10 @@ pub struct SyncEngine<T: Telegram> {
     updates: broadcast::Receiver<Update>,
     pub(crate) mode: RuntimeMode,
     verified: Option<Recovery>,
+    // In-memory proof from a completed reconciliation, never restored from a
+    // local checkpoint. Edits, deletions, disconnects and update loss revoke it.
+    confirmed_head: Option<RemoteMessage>,
+    full_reconcile_required: bool,
 }
 impl<T: Telegram> SyncEngine<T> {
     pub fn new(transport: T, db: Database, device_id: String) -> Self {
@@ -87,6 +100,8 @@ impl<T: Telegram> SyncEngine<T> {
             updates,
             mode: RuntimeMode::Syncing,
             verified: None,
+            confirmed_head: None,
+            full_reconcile_required: true,
         }
     }
     pub fn reader(&self) -> crate::ProjectionReader {
@@ -190,31 +205,47 @@ impl<T: Telegram> SyncEngine<T> {
         })
     }
     fn invalidate_from_updates(&mut self) -> bool {
+        self.invalidate_with_expected_deletions(&std::collections::BTreeSet::new())
+    }
+    fn invalidate_with_expected_deletions(
+        &mut self,
+        expected: &std::collections::BTreeSet<MessageId>,
+    ) -> bool {
         let mut changed = false;
         loop {
             match self.updates.try_recv() {
                 Ok(Update::AuthRequired) => {
+                    self.full_reconcile_required = true;
                     self.mode = RuntimeMode::AuthRequired;
                     changed = true;
                 }
                 Ok(Update::Disconnected) => {
+                    self.full_reconcile_required = true;
                     self.mode = RuntimeMode::Reconnecting;
                     changed = true;
                 }
                 Ok(Update::New(message)) if message.chat_id == self.binding.chat_id => {
                     changed = true;
                 }
+                Ok(Update::Deleted {
+                    chat_id,
+                    message_ids,
+                }) if chat_id == self.binding.chat_id
+                    && message_ids.iter().all(|id| expected.contains(id)) => {}
                 Ok(Update::Changed { chat_id, .. } | Update::Deleted { chat_id, .. })
                     if chat_id == self.binding.chat_id =>
                 {
+                    self.full_reconcile_required = true;
                     changed = true;
                 }
                 Ok(_) => {}
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    self.full_reconcile_required = true;
                     changed = true;
                     self.mode = RuntimeMode::Syncing;
                 }
                 Err(broadcast::error::TryRecvError::Closed) => {
+                    self.full_reconcile_required = true;
                     self.mode = RuntimeMode::AuthRequired;
                     changed = true;
                     break;
@@ -228,6 +259,7 @@ impl<T: Telegram> SyncEngine<T> {
         changed
     }
     pub(crate) fn fail(&mut self, error: &SyncError) {
+        self.full_reconcile_required = true;
         self.mode = match error {
             SyncError::Telegram(TelegramError::AuthRequired | TelegramError::Closed) => {
                 RuntimeMode::AuthRequired
@@ -245,13 +277,128 @@ impl<T: Telegram> SyncEngine<T> {
         }
     }
     pub async fn sync(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
+        self.full_reconcile_required = true;
         self.mode = RuntimeMode::Syncing;
         let result = self.sync_inner(cancel).await;
         match &result {
-            Ok(()) => self.mode = RuntimeMode::OnlineReady,
+            Ok(()) => {
+                self.mode = RuntimeMode::OnlineReady;
+                self.full_reconcile_required = false;
+            }
             Err(error) => self.fail(error),
         }
         result
+    }
+    /// Replay only the suffix after an independently reconciled server anchor.
+    /// A cold client or any loss of continuity goes through the full audit.
+    /// There is no time-based freshness assumption and no persisted ready flag.
+    pub async fn catch_up(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
+        self.catch_up_with_expected_deletions(cancel, &std::collections::BTreeSet::new())
+            .await
+    }
+    pub(crate) async fn catch_up_with_expected_deletions(
+        &mut self,
+        cancel: &CancellationToken,
+        expected: &std::collections::BTreeSet<MessageId>,
+    ) -> Result<(), SyncError> {
+        self.invalidate_with_expected_deletions(expected);
+        if self.full_reconcile_required || self.confirmed_head.is_none() || self.verified.is_none()
+        {
+            return self.sync(cancel).await;
+        }
+        self.mode = RuntimeMode::Syncing;
+        match self.catch_up_inner(cancel, expected).await {
+            Ok(()) => {
+                self.mode = RuntimeMode::OnlineReady;
+                Ok(())
+            }
+            Err(SyncError::ReconcileRequired) => self.sync(cancel).await,
+            Err(error) => {
+                self.fail(&error);
+                Err(error)
+            }
+        }
+    }
+    async fn catch_up_inner(
+        &mut self,
+        cancel: &CancellationToken,
+        expected: &std::collections::BTreeSet<MessageId>,
+    ) -> Result<(), SyncError> {
+        let mut added_bytes = 0u64;
+        let mut anchor = self
+            .confirmed_head
+            .clone()
+            .ok_or(SyncError::ReconcileRequired)?;
+        self.transport
+            .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
+            .await?;
+        for _ in 0..16 {
+            // Include the anchor itself. A missing/edited head, including a
+            // silently dropped delete update, cannot authorize a write.
+            let messages = scan_history(
+                &self.transport,
+                self.binding.chat_id,
+                anchor.id.get() - 1,
+                None,
+                1_000_000,
+                cancel,
+            )
+            .await?;
+            if messages.first() != Some(&anchor) {
+                return Err(SyncError::ReconcileRequired);
+            }
+            // Detect a generation change before applying any part of this page.
+            for message in messages.iter().skip(1) {
+                if let Some(record) = message.record()? {
+                    if record.vault_id() != self.binding.vault_id {
+                        return Err(SyncError::Integrity);
+                    }
+                    if matches!(record, Record::Commit(_)) {
+                        return Err(SyncError::ReconcileRequired);
+                    }
+                }
+            }
+            self.apply_messages(&messages[1..], cancel).await?;
+            added_bytes = messages.iter().skip(1).fold(added_bytes, |total, message| {
+                total.saturating_add(message.text.len() as u64)
+            });
+            let last = messages.last().ok_or(SyncError::Integrity)?.clone();
+            let changed = self.invalidate_with_expected_deletions(expected);
+            if self.full_reconcile_required {
+                return Err(SyncError::ReconcileRequired);
+            }
+            let head = self
+                .transport
+                .history(self.binding.chat_id, None, 1, cancel)
+                .await?;
+            if head.first() == Some(&last) && !changed {
+                self.transport
+                    .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
+                    .await?;
+                self.confirmed_head = Some(last);
+                if added_bytes > 0 {
+                    let raw = self
+                        .local_setting("snapshot.diagnostics.v1".into())
+                        .await?
+                        .ok_or(SyncError::Integrity)?;
+                    let mut observation: serde_json::Value =
+                        serde_json::from_str(&raw).map_err(|_| SyncError::Integrity)?;
+                    let previous = observation["uncovered_log_bytes"]
+                        .as_u64()
+                        .ok_or(SyncError::Integrity)?;
+                    observation["uncovered_log_bytes"] =
+                        previous.saturating_add(added_bytes).into();
+                    self.set_local_setting(
+                        "snapshot.diagnostics.v1".into(),
+                        observation.to_string(),
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+            anchor = last;
+        }
+        Err(SyncError::ReconcileRequired)
     }
     pub(crate) async fn latest_commit(
         &self,
@@ -288,31 +435,70 @@ impl<T: Telegram> SyncEngine<T> {
     }
     /// The backwards scan that locates the newest commit already contains most
     /// of its tail. Keep those pages, then finish only the gap to its barrier.
-    async fn latest_commit_and_tail(&self, cancel: &CancellationToken) -> Result<(RemoteMessage, Vec<RemoteMessage>), SyncError> {
+    async fn latest_commit_and_tail(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<(RemoteMessage, Vec<RemoteMessage>), SyncError> {
         let mut before = None;
         let mut found = None;
         let mut after = 0;
         let mut buffered = std::collections::BTreeMap::new();
         for _ in 0..10_000 {
-            let mut page = self.transport.history(self.binding.chat_id, before, 100, cancel).await?;
+            let mut page = self
+                .transport
+                .history(self.binding.chat_id, before, 100, cancel)
+                .await?;
             if page.is_empty() {
-                return found.map(|commit| (commit, buffered.into_values().filter(|message: &RemoteMessage| message.id.get() > after).collect())).ok_or(SyncError::InitializationRequired);
+                return found
+                    .map(|commit| {
+                        (
+                            commit,
+                            buffered
+                                .into_values()
+                                .filter(|message: &RemoteMessage| message.id.get() > after)
+                                .collect(),
+                        )
+                    })
+                    .ok_or(SyncError::InitializationRequired);
             }
             page.sort_by_key(|message| std::cmp::Reverse(message.id));
-            let next = page.last().map(|message| message.id).ok_or(SyncError::Integrity)?;
+            let next = page
+                .last()
+                .map(|message| message.id)
+                .ok_or(SyncError::Integrity)?;
             for message in page {
-                if message.chat_id != self.binding.chat_id || before.is_some_and(|last| message.id >= last) {return Err(SyncError::Integrity);}
-                if found.is_none() && let Some(record) = message.record()? {
-                    if record.vault_id() != self.binding.vault_id {return Err(SyncError::Integrity);}
+                if message.chat_id != self.binding.chat_id
+                    || before.is_some_and(|last| message.id >= last)
+                {
+                    return Err(SyncError::Integrity);
+                }
+                if found.is_none()
+                    && let Some(record) = message.record()?
+                {
+                    if record.vault_id() != self.binding.vault_id {
+                        return Err(SyncError::Integrity);
+                    }
                     if let Record::Commit(commit) = record {
                         after = commit.barrier_message_id.get();
                         found = Some(message.clone());
                     }
                 }
-                if let Some(old) = buffered.insert(message.id, message.clone()) && old != message {return Err(SyncError::Integrity);}
+                if let Some(old) = buffered.insert(message.id, message.clone())
+                    && old != message
+                {
+                    return Err(SyncError::Integrity);
+                }
             }
-            if next.get() <= after && let Some(commit) = found {
-                return Ok((commit, buffered.into_values().filter(|message| message.id.get() > after).collect()));
+            if next.get() <= after
+                && let Some(commit) = found
+            {
+                return Ok((
+                    commit,
+                    buffered
+                        .into_values()
+                        .filter(|message| message.id.get() > after)
+                        .collect(),
+                ));
             }
             before = Some(next);
         }
@@ -379,19 +565,20 @@ impl<T: Telegram> SyncEngine<T> {
             // remains queued and will invalidate the next mutation/status request.
             let changed = self.invalidate_from_updates();
             self.report(crate::Operation::Sync, crate::Phase::ReconcileHead, 0, None);
-            let head = self
+            let head_message = self
                 .transport
                 .history(self.binding.chat_id, None, 1, cancel)
                 .await?
                 .first()
-                .map(|m| m.id.get())
-                .unwrap_or(0);
+                .cloned();
+            let head = head_message.as_ref().map(|m| m.id.get()).unwrap_or(0);
             if head <= last && !changed {
                 self.transport
                     .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
                     .await?;
                 self.set_local_setting("snapshot.diagnostics.v1".into(), observed.to_string())
                     .await?;
+                self.confirmed_head = head_message;
                 self.report(crate::Operation::Sync, crate::Phase::Complete, 1, Some(1));
                 return Ok(());
             }
@@ -545,7 +732,7 @@ impl<T: Telegram> SyncEngine<T> {
         if !matches!(self.mode, RuntimeMode::OnlineReady | RuntimeMode::Syncing) {
             return Err(SyncError::Readonly);
         }
-        self.sync(cancel).await?;
+        self.catch_up(cancel).await?;
         if self.mode != RuntimeMode::OnlineReady {
             return Err(SyncError::Readonly);
         }
@@ -639,12 +826,7 @@ impl<T: Telegram> SyncEngine<T> {
                 .await?;
             }
             Err(error) => {
-                let status = if matches!(
-                    error,
-                    TelegramError::Request { .. }
-                        | TelegramError::InvalidInput
-                        | TelegramError::RateLimited { .. }
-                ) {
+                let status = if error.definitely_not_sent() {
                     CommandStatus::TelegramError
                 } else {
                     CommandStatus::UnknownOnTimeout
@@ -656,7 +838,7 @@ impl<T: Telegram> SyncEngine<T> {
             }
         }
         // Reconciliation may fail after a server ACK; keep the durable intent.
-        if self.sync(cancel).await.is_err() {
+        if self.catch_up(cancel).await.is_err() {
             return self.command(op_id).await?.ok_or(SyncError::Integrity);
         }
         self.command(op_id).await?.ok_or(SyncError::Integrity)
@@ -672,6 +854,46 @@ impl<T: Telegram> SyncEngine<T> {
         self.require_online(cancel).await?;
         self.transport
             .send_document(self.binding.chat_id, path, caption, cancel)
+            .await
+            .map_err(Into::into)
+    }
+    pub async fn upload_audio(
+        &mut self,
+        path: std::path::PathBuf,
+        metadata: &vault_domain::Metadata,
+        caption: String,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, SyncError> {
+        self.require_online(cancel).await?;
+        let audio = vault_telegram::AudioUpload {
+            path,
+            // Telegram display limits do not truncate the durable metadata.
+            title: metadata.title.chars().take(64).collect(),
+            performer: metadata.performer.chars().take(64).collect(),
+            duration_seconds: u32::try_from(metadata.duration_ms / 1000)
+                .map_err(|_| SyncError::Telegram(TelegramError::InvalidInput))?,
+        };
+        self.transport
+            .send_audio(self.binding.chat_id, audio, caption, cancel)
+            .await
+            .map_err(Into::into)
+    }
+    pub async fn copy_media(
+        &mut self,
+        source_chat: vault_domain::ChatId,
+        message_id: MessageId,
+        caption: String,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, SyncError> {
+        self.require_online(cancel).await?;
+        self.transport
+            .copy_media(
+                source_chat,
+                message_id,
+                self.binding.chat_id,
+                caption,
+                cancel,
+            )
             .await
             .map_err(Into::into)
     }

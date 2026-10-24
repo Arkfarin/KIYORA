@@ -5,6 +5,7 @@ pub(super) async fn publish<T: Telegram>(
     engine: &mut SyncEngine<T>,
     storage: &Storage,
     journal: &mut Journal,
+    prepared_cover: Option<std::path::PathBuf>,
     cancel: &CancellationToken,
 ) -> Result<(), ApiError> {
     let Some(artwork) = journal
@@ -48,54 +49,58 @@ pub(super) async fn publish<T: Telegram>(
         let root = storage.root();
         let saved = journal.clone();
         let token = cancel.clone();
-        let path = blocking(move || {
-            let audio = Storage::verified(&root, &saved, &token)?;
-            let cover = audio
-                .parent()
-                .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?
-                .join(".artwork");
-            let expected = saved
-                .info
-                .metadata
-                .artwork
-                .as_ref()
-                .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
-            if cover.exists() {
-                let meta = std::fs::symlink_metadata(&cover)?;
-                if meta.file_type().is_symlink()
-                    || !meta.is_file()
-                    || meta.len() > vault_media::MAX_ARTWORK_BYTES as u64
-                {
+        let path = if let Some(cover) = prepared_cover {
+            cover
+        } else {
+            blocking(move || {
+                let audio = Storage::verified(&root, &saved, &token)?;
+                let cover = audio
+                    .parent()
+                    .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?
+                    .join(".artwork");
+                let expected = saved
+                    .info
+                    .metadata
+                    .artwork
+                    .as_ref()
+                    .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+                if cover.exists() {
+                    let meta = std::fs::symlink_metadata(&cover)?;
+                    if meta.file_type().is_symlink()
+                        || !meta.is_file()
+                        || meta.len() > vault_media::MAX_ARTWORK_BYTES as u64
+                    {
+                        return Err(ApiError::new(ErrorCode::Integrity));
+                    }
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(&cover)?
+                        .take(vault_media::MAX_ARTWORK_BYTES as u64 + 1)
+                        .read_to_end(&mut bytes)?;
+                    if vault_snapshot::digest(&bytes) != expected.sha256 {
+                        return Err(ApiError::new(ErrorCode::Integrity));
+                    }
+                    return Ok(cover);
+                }
+                let asset = vault_media::inspect_with_cancel(&audio, &token)?
+                    .artwork
+                    .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+                if asset.sha256 != expected.sha256 || asset.mime_type != expected.mime_type {
                     return Err(ApiError::new(ErrorCode::Integrity));
                 }
-                let mut bytes = Vec::new();
-                std::fs::File::open(&cover)?
-                    .take(vault_media::MAX_ARTWORK_BYTES as u64 + 1)
-                    .read_to_end(&mut bytes)?;
-                if vault_snapshot::digest(&bytes) != expected.sha256 {
-                    return Err(ApiError::new(ErrorCode::Integrity));
-                }
-                return Ok(cover);
-            }
-            let asset = vault_media::inspect_with_cancel(&audio, &token)?
-                .artwork
-                .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
-            if asset.sha256 != expected.sha256 || asset.mime_type != expected.mime_type {
-                return Err(ApiError::new(ErrorCode::Integrity));
-            }
-            let parent = audio
-                .parent()
-                .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
-            let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-            temp.write_all(&asset.bytes)?;
-            temp.as_file().sync_all()?;
-            temp.persist_noclobber(&cover)
-                .map_err(|_| ApiError::new(ErrorCode::Storage))?;
-            #[cfg(unix)]
-            std::fs::File::open(parent)?.sync_all()?;
-            Ok(cover)
-        })
-        .await?;
+                let parent = audio
+                    .parent()
+                    .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+                let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+                temp.write_all(&asset.bytes)?;
+                temp.as_file().sync_all()?;
+                temp.persist_noclobber(&cover)
+                    .map_err(|_| ApiError::new(ErrorCode::Storage))?;
+                #[cfg(unix)]
+                std::fs::File::open(parent)?.sync_all()?;
+                Ok(cover)
+            })
+            .await?
+        };
         journal.artwork_upload_unknown = true;
         save(engine, journal).await?;
         match engine
@@ -109,15 +114,7 @@ pub(super) async fn publish<T: Telegram>(
         {
             Ok(message) => message,
             Err(error) => {
-                if matches!(
-                    error,
-                    SyncError::Readonly
-                        | SyncError::Telegram(
-                            TelegramError::InvalidInput
-                                | TelegramError::RateLimited { .. }
-                                | TelegramError::Request { .. }
-                        )
-                ) {
+                if error.definitely_not_sent() {
                     journal.artwork_upload_unknown = false;
                     save(engine, journal).await?;
                 }

@@ -49,6 +49,38 @@ fn imports_probe_real_audio_metadata_and_hash_full_source() {
 }
 
 #[test]
+fn import_formats_match_available_decoders_and_missing_tags_use_the_filename() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/test-vectors/audio");
+    for name in [
+        "tone.mp3",
+        "tone.flac",
+        "tone.m4a",
+        "tone.ogg",
+        "tone.opus",
+        "tone.aac",
+        "tone.aiff",
+        "tone-alac.m4a",
+    ] {
+        let result = inspect(&root.join(name));
+        assert!(result.is_ok(), "{name}: {result:?}");
+        let asset = result.unwrap();
+        assert_eq!(
+            asset.metadata.title,
+            Path::new(name).file_stem().unwrap().to_str().unwrap()
+        );
+        assert!(
+            (200..=400).contains(&asset.metadata.duration_ms),
+            "{name}: {}",
+            asset.metadata.duration_ms
+        );
+        assert_eq!(
+            asset.sha256,
+            hex::encode(Sha256::digest(std::fs::read(root.join(name)).unwrap()))
+        );
+    }
+}
+
+#[test]
 fn rejects_symlink_unsupported_and_empty_audio_paths() {
     let dir = tempdir().unwrap();
     let wav_path = dir.path().join("good.wav");

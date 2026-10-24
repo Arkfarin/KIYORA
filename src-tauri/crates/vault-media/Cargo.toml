@@ -15,7 +15,11 @@ thiserror.workspace = true
 sha2.workspace = true
 hex.workspace = true
 lofty = "0.24"
-rodio = { version = "0.21.1", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
+rodio = { version = "0.21.1", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav", "symphonia-aiff", "symphonia-alac"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["ogg"] }
+opus = "0.4.0"
+# Bundle the reviewed libopus source on every target; no user-installed DLL/.so.
+opusic-sys = { version = "=0.7.3", features = ["bundled"] }
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

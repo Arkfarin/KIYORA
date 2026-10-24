@@ -31,12 +31,11 @@ graceful close. It does **not** prove account login, history, uploads or streami
 Authenticated tests must use a separately supplied test account/channel. Existing
 personal Telegram sessions are never imported automatically.
 
-Windows: use the same source commit, Visual Studio C++ tools, CMake and matching
-OpenSSL/zlib/gperf dependencies, build the `tdjson` target and package tdjson.dll
-plus runtime dependencies. Android arm64: generate TDLib sources on the host,
-then build with the Android NDK CMake toolchain (`arm64-v8a`), matching Android
-OpenSSL/zlib artifacts and the app's minimum SDK; package libtdjson.so under
-`jniLibs/arm64-v8a`. Actual cross builds and device playback remain unverified.
+Use [the native packaging scripts](packaging.md) for Linux Debian, Windows MSI
+and Android ARM64 APK builds. They prepare pinned TDLib and native dependencies,
+include licenses and verify the actual installer payload. A standalone Rust
+build is not a distributable installer. Current execution evidence and remaining
+platform checks are recorded in [backend readiness](../../docs/BACKEND_READINESS.md).
 
 Exactly one receive worker owns `td_receive` in a process. Profile switching must
 await `authorizationStateClosed` before opening the next client. Request and update

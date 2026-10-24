@@ -2,13 +2,18 @@
 use crate::TelegramError;
 use libloading::Library;
 use std::{
+    collections::HashMap,
     ffi::{CStr, CString, c_char, c_int},
-    path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    path::{Path, PathBuf},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use zeroize::Zeroize;
 
 static RECEIVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static LIBRARIES: OnceLock<Mutex<HashMap<PathBuf, Native>>> = OnceLock::new();
 
 pub(crate) struct ReceiverPermit;
 impl ReceiverPermit {
@@ -25,6 +30,7 @@ impl Drop for ReceiverPermit {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Native {
     // TDLib's background threads may outlive authorizationStateClosed briefly.
     // Keep the shared library loaded for the process lifetime (never dlclose).
@@ -36,9 +42,40 @@ pub(crate) struct Native {
 }
 impl Native {
     pub fn load(path: &Path) -> Result<Self, TelegramError> {
+        // Resolve aliases when a disk path exists. Android may load a basename
+        // directly from the APK namespace, so canonicalization is not required.
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        let mut libraries = LIBRARIES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| TelegramError::NativeLibrary)?;
+        if let Some(native) = libraries.get(&key) {
+            return Ok(native.clone());
+        }
         // SAFETY: user/config selects an installed trusted TDLib library. Loading a
         // native library necessarily trusts its initialization code and C ABI.
-        let library = unsafe { Library::new(path) }.map_err(|_| TelegramError::NativeLibrary)?;
+        #[cfg(not(target_os = "windows"))]
+        let library = unsafe { Library::new(&key) }.map_err(|_| TelegramError::NativeLibrary)?;
+        #[cfg(target_os = "windows")]
+        let library: Library = {
+            use libloading::os::windows::{
+                LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+                Library as WindowsLibrary,
+            };
+            if !key.is_absolute() {
+                return Err(TelegramError::NativeLibrary);
+            }
+            // SAFETY: same trusted ABI as above. Dependencies are searched beside
+            // this DLL and in safe system/application dirs, never the current dir.
+            unsafe {
+                WindowsLibrary::load_with_flags(
+                    &key,
+                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+                )
+            }
+            .map_err(|_| TelegramError::NativeLibrary)?
+            .into()
+        };
         // SAFETY: symbol signatures exactly match the pinned td_json_client.h C ABI.
         // Function pointers are copied and the library remains loaded permanently.
         let (create, send, receive, execute) = unsafe {
@@ -57,13 +94,15 @@ impl Native {
                     .map_err(|_| TelegramError::NativeLibrary)?,
             )
         };
-        Ok(Self {
+        let native = Self {
             _library: Box::leak(Box::new(library)),
             create,
             send,
             receive,
             execute,
-        })
+        };
+        libraries.insert(key, native.clone());
+        Ok(native)
     }
     pub fn initialize(&self) -> Result<i32, TelegramError> {
         let request = c"{\"@type\":\"setLogStream\",\"log_stream\":{\"@type\":\"logStreamEmpty\"}}";
@@ -115,5 +154,38 @@ impl Native {
         serde_json::from_slice(bytes)
             .map(Some)
             .map_err(|_| TelegramError::InvalidResponse)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reopening_a_library_reuses_one_process_lifetime_handle() {
+        let directory = tempfile::tempdir().unwrap();
+        let library = directory.path().join("native.so");
+        assert!(
+            std::process::Command::new("cc")
+                .args(["-shared", "-fPIC", "-o"])
+                .arg(&library)
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/native_fixture.c"
+                ))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let first = Native::load(&library).unwrap();
+        let alias = directory.path().join("alias.so");
+        std::os::unix::fs::symlink(&library, &alias).unwrap();
+        for path in [&library, &alias] {
+            let next = Native::load(path).unwrap();
+            assert!(
+                std::ptr::eq(first._library, next._library),
+                "session switches must not leak another loader reference"
+            );
+        }
     }
 }

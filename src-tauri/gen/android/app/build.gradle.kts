@@ -25,6 +25,7 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
         getByName("debug") {
@@ -56,6 +57,29 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    sourceSets.getByName("main") {
+        jniLibs.srcDir(file("../../../target/native/android-jni"))
+        assets.srcDir(file("../../../target/native/android-assets"))
+    }
+    packaging.jniLibs {
+        // The Rust adapter opens the package manager's nativeLibraryDir path.
+        // Explicit extraction keeps that path valid on every supported Android.
+        useLegacyPackaging = true
+        keepDebugSymbols.add("**/libtdjson.so")
+    }
+}
+
+val nativeAbis = providers.gradleProperty("abiList").orElse("arm64-v8a").get().split(',')
+tasks.named("preBuild") {
+    val libraries = nativeAbis.map { abi -> abi to file("../../../target/native/android-jni/$abi/libtdjson.so") }
+    inputs.files(libraries.map { it.second })
+    doFirst {
+        for ((abi, library) in libraries) {
+            check(library.isFile) {
+                "Run scripts/prepare-android-native.sh with NDK_HOME and KIYORA_ANDROID_ABI=$abi before building the app APK"
+            }
+        }
+    }
 }
 
 kotlin {
@@ -75,7 +99,8 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.4")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }
 

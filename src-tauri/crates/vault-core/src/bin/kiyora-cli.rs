@@ -4,6 +4,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use vault_core::ShareState;
 use vault_core::{
     ApiError, Backend, CoordinatorTarget, ErrorCode, LocalQuery, LocalResponse, Mutation,
     PlaybackAction, Status, VaultRequest, VaultResponse,
@@ -143,7 +144,7 @@ async fn run() -> Result<(), ApiError> {
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list [--json]|create <label>|switch <uuid>\n  auth login|status [--json]|logout\n  status [--json]\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id>\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|cache stats|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list [--json]|create <label>|switch <uuid>\n  auth login|status [--json]|logout\n  status [--json]\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id> [--op-id <uuid>]\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|cache stats|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
     );
     println!("  media import-incoming <chat-id> <message-id>");
     println!(
@@ -525,6 +526,12 @@ async fn library(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
         }
         Some("import") => import(backend, &status, args).await?,
         Some("share") => {
+            let op_id = args
+                .iter()
+                .position(|value| value == "--op-id")
+                .map(|index| parse_uuid(args.get(index + 1)))
+                .transpose()?
+                .unwrap_or_else(Uuid::new_v4);
             let track_id = parse_uuid(args.get(1))?;
             let source_id = parse_uuid(args.get(2))?;
             let recipient_chat_id = args
@@ -532,10 +539,14 @@ async fn library(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                 .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?
                 .parse::<ChatId>()
                 .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
+            eprintln!(
+                "share operation={op_id}; reuse --op-id {op_id} to inspect/retry this operation"
+            );
             let result = backend
                 .service_request(
                     status.context.session_id,
                     VaultRequest::ShareTrack {
+                        op_id,
                         track_id,
                         source_id,
                         recipient_chat_id,
@@ -544,6 +555,13 @@ async fn library(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
                 )
                 .await?;
             println!("{result:?}");
+            if let VaultResponse::Shared(info) = result
+                && info.state != ShareState::Sent
+            {
+                return Err(info
+                    .error
+                    .unwrap_or_else(|| ApiError::new(ErrorCode::Timeout)));
+            }
         }
         _ => return Err(ApiError::new(ErrorCode::InvalidInput)),
     }
@@ -577,7 +595,7 @@ async fn import(backend: &Backend, status: &Status, args: &[String]) -> Result<(
         } => println!(
             "duplicate {} sha256={} matching={}; use --allow-duplicate to import a separate track",
             metadata.title,
-            sha256,
+            sha256.as_deref().unwrap_or("unknown"),
             duplicate_track_ids
                 .iter()
                 .map(Uuid::to_string)

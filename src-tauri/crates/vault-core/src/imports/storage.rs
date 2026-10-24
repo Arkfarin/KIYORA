@@ -90,7 +90,9 @@ impl Storage {
             Err(error) => return Err(error.into()),
         }
         let asset = vault_media::inspect_with_cancel(&journal.path, cancel)?;
-        if asset.sha256 != journal.info.sha256 || asset.size_bytes != journal.info.size_bytes {
+        if Some(&asset.sha256) != journal.info.sha256.as_ref()
+            || asset.size_bytes != journal.info.size_bytes
+        {
             return Err(integrity());
         }
         let used = directory_bytes(root, 2)?;
@@ -232,7 +234,7 @@ fn verify(path: &Path, info: &ImportInfo, cancel: &CancellationToken) -> Result<
             integrity()
         }
     })?;
-    if asset.sha256 != info.sha256 || asset.size_bytes != info.size_bytes {
+    if Some(&asset.sha256) != info.sha256.as_ref() || asset.size_bytes != info.size_bytes {
         return Err(integrity());
     }
     Ok(())
@@ -291,6 +293,7 @@ mod tests {
         fs::write(original, wav()).unwrap();
         let asset = vault_media::inspect(original).unwrap();
         Journal {
+            incoming: None,
             artwork_upload_unknown: false,
             path: original.to_owned(),
             staged_name: Some(asset.filename),
@@ -299,7 +302,7 @@ mod tests {
                 track_id: Uuid::new_v4(),
                 source_id: Uuid::new_v4(),
                 metadata: asset.metadata,
-                sha256: asset.sha256,
+                sha256: Some(asset.sha256),
                 size_bytes: asset.size_bytes,
                 stage: ImportStage::Staging,
                 media_message_id: None,

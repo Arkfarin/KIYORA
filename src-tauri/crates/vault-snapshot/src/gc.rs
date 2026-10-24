@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use vault_domain::{MessageId, State};
 use vault_protocol::{CopyLabel, Record, canonical_json, encode};
-use vault_telegram::RemoteMessage;
+use vault_telegram::{MessageContent, RemoteMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -69,21 +69,36 @@ pub fn plan(
     }
     let current = &recovery.commit;
     let mut records = BTreeMap::new();
+    let mut controls = BTreeSet::new();
     for message in messages {
-        if let Some(record) = message.record()?
-            && (record.vault_id() != state.vault_id || records.insert(message.id, record).is_some())
-        {
-            return Err(SnapshotError::Conflict);
+        if let Some(record) = message.record()? {
+            if disposable_content(message, &record) {
+                controls.insert(message.id);
+            }
+            if record.vault_id() != state.vault_id || records.insert(message.id, record).is_some() {
+                return Err(SnapshotError::Conflict);
+            }
         }
     }
     if records.get(&recovery.commit_id) != Some(&Record::Commit(current.clone())) {
         return Err(SnapshotError::Conflict);
     }
-    let protected = BTreeSet::from([
+    let mut protected = BTreeSet::from([
         recovery.commit_id,
         current.snapshot_a_message_id,
         current.snapshot_b_message_id,
     ]);
+    for track in state.tracks.values() {
+        for source in track.sources.values().chain(
+            track
+                .metadata
+                .artwork
+                .as_ref()
+                .and_then(|a| a.source.as_ref()),
+        ) {
+            protected.insert(source.message_id);
+        }
+    }
     let mut candidates = BTreeMap::new();
     let mut references: BTreeMap<MessageId, BTreeSet<MessageId>> = BTreeMap::new();
     for (id, record) in &records {
@@ -94,7 +109,7 @@ pub fn plan(
         }
     }
     for (id, record) in &records {
-        if *id > current.barrier_message_id || protected.contains(id) {
+        if *id > current.barrier_message_id || protected.contains(id) || !controls.contains(id) {
             continue;
         }
         let reason = match record {
@@ -130,9 +145,9 @@ pub fn plan(
         let ids = [*id, old.snapshot_a_message_id, old.snapshot_b_message_id];
         if old.generation >= current.generation
             || old.barrier_message_id >= current.barrier_message_id
-            || ids
-                .iter()
-                .any(|x| *x > current.barrier_message_id || protected.contains(x))
+            || ids.iter().any(|x| {
+                *x > current.barrier_message_id || protected.contains(x) || !controls.contains(x)
+            })
         {
             continue;
         }
@@ -201,12 +216,25 @@ pub fn matches(candidate: &Candidate, message: &RemoteMessage) -> Result<bool, S
     let Some(record) = message.record()? else {
         return Ok(false);
     };
-    if !matches!(
-        record,
-        Record::Event(_) | Record::Barrier(_) | Record::Snapshot(_) | Record::Commit(_)
-    ) {
+    if !disposable_content(message, &record) {
         return Ok(false);
     }
     Ok(candidate.kind == record.kind()
         && candidate.record_sha256 == digest(&encode(&record).map_err(|_| SnapshotError::Corrupt)?))
+}
+
+fn disposable_content(message: &RemoteMessage, record: &Record) -> bool {
+    match record {
+        Record::Event(_) | Record::Barrier(_) | Record::Commit(_) => {
+            message.content == MessageContent::Text && message.file.is_none()
+        }
+        Record::Snapshot(_) => {
+            message.content == MessageContent::Document
+                && message
+                    .file
+                    .as_ref()
+                    .is_some_and(|file| !file.mime_type.starts_with("audio/"))
+        }
+        _ => false,
+    }
 }

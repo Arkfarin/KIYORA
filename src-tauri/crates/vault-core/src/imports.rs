@@ -8,10 +8,12 @@ use uuid::Uuid;
 use vault_db::CommandStatus;
 use vault_domain::{Action, Metadata, Source};
 use vault_protocol::{MediaMarker, Record};
-use vault_sync::{ProjectionReader, SyncEngine, SyncError};
-use vault_telegram::{RemoteMessage, Telegram, TelegramError};
+use vault_sync::{ProjectionReader, SyncEngine};
+use vault_telegram::{RemoteMessage, Telegram};
 mod artwork;
+mod incoming;
 mod storage;
+pub(crate) use incoming::try_start as try_incoming;
 pub(crate) use storage::Storage;
 
 const PREFIX: &str = "import.v1:";
@@ -43,7 +45,7 @@ pub struct ImportInfo {
     pub track_id: Uuid,
     pub source_id: Uuid,
     pub metadata: Metadata,
-    pub sha256: String,
+    pub sha256: Option<String>,
     pub size_bytes: u64,
     pub stage: ImportStage,
     #[schemars(with = "Option<String>")]
@@ -60,6 +62,8 @@ struct Journal {
     staged_name: Option<String>,
     #[serde(default)]
     artwork_upload_unknown: bool,
+    #[serde(default)]
+    incoming: Option<incoming::Origin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -200,6 +204,7 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
     engine: &mut SyncEngine<T>,
     storage: &Storage,
     path: PathBuf,
+    incoming: Option<(vault_domain::ChatId, vault_domain::MessageId)>,
     track_id: Uuid,
     source_id: Uuid,
     op_id: Uuid,
@@ -208,9 +213,19 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
     context: &Context,
     events: &EventBus,
 ) -> Result<VaultResponse, ApiError> {
+    let incoming = incoming.map(|(chat_id, message_id)| incoming::Origin {
+        chat_id,
+        message_id,
+    });
     if let Some(raw) = engine.local_setting(key(op_id)).await? {
         let journal = decode(&raw, op_id)?;
-        if journal.info.track_id != track_id || journal.info.source_id != source_id {
+        if journal.info.track_id != track_id
+            || journal.info.source_id != source_id
+            || journal
+                .incoming
+                .as_ref()
+                .is_some_and(|origin| Some(origin) != incoming.as_ref())
+        {
             return Err(ApiError::new(ErrorCode::Conflict));
         }
         return resume(engine, storage, op_id, cancel, context, events).await;
@@ -281,7 +296,7 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
     {
         return Ok(VaultResponse::ImportReview {
             metadata: Box::new(asset.metadata),
-            sha256: asset.sha256,
+            sha256: Some(asset.sha256),
             size_bytes: asset.size_bytes,
             duplicate_track_ids,
             possible_duplicate_track_ids,
@@ -291,6 +306,7 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
         return Err(ApiError::new(ErrorCode::Conflict));
     }
     let journal = Journal {
+        incoming,
         artwork_upload_unknown: false,
         path,
         staged_name: Some(asset.filename),
@@ -299,7 +315,7 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
             track_id,
             source_id,
             metadata: asset.metadata,
-            sha256: asset.sha256,
+            sha256: Some(asset.sha256),
             size_bytes: asset.size_bytes,
             stage: ImportStage::Staging,
             media_message_id: None,
@@ -368,14 +384,19 @@ pub(crate) async fn resume<T: Telegram + Clone + 'static>(
         journal.info.stage = ImportStage::Uploaded;
         save(engine, &journal).await?;
     }
-    if journal.info.stage == ImportStage::Prepared && journal.staged_name.is_none() {
+    if journal.info.stage == ImportStage::Prepared
+        && journal.staged_name.is_none()
+        && journal.incoming.is_none()
+    {
         // Migrate the old original-path-only journal on its first resume.
         let path = journal.path.clone();
         let token = cancel.clone();
         let asset =
             blocking(move || vault_media::inspect_with_cancel(&path, &token).map_err(Into::into))
                 .await?;
-        if asset.sha256 != journal.info.sha256 || asset.size_bytes != journal.info.size_bytes {
+        if Some(&asset.sha256) != journal.info.sha256.as_ref()
+            || asset.size_bytes != journal.info.size_bytes
+        {
             return Err(ApiError::new(ErrorCode::Integrity));
         }
         journal.staged_name = Some(asset.filename);
@@ -393,17 +414,21 @@ pub(crate) async fn resume<T: Telegram + Clone + 'static>(
         events.emit(context, EventData::Import(Box::new(journal.info.clone())));
     }
     if journal.info.stage == ImportStage::Prepared {
-        let root = storage.root();
-        let saved = journal.clone();
-        let token = cancel.clone();
-        let staged = blocking(move || Storage::verified(&root, &saved, &token)).await?;
+        let staged = if journal.incoming.is_none() || journal.staged_name.is_some() {
+            let root = storage.root();
+            let saved = journal.clone();
+            let token = cancel.clone();
+            Some(blocking(move || Storage::verified(&root, &saved, &token)).await?)
+        } else {
+            None
+        };
         if cancel.is_cancelled() {
             return Err(ApiError::new(ErrorCode::Cancelled));
         }
         let marker = Record::Media(MediaMarker {
             vault_id: engine.binding().vault_id,
             import_id: op_id,
-            sha256: Some(journal.info.sha256.clone()),
+            sha256: journal.info.sha256.clone(),
         });
         let caption = vault_protocol::encode_text(&marker)
             .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
@@ -411,19 +436,20 @@ pub(crate) async fn resume<T: Telegram + Clone + 'static>(
         // is deliberately ambiguous and must not automatically create a duplicate.
         journal.info.stage = ImportStage::UploadUnknown;
         save(engine, &journal).await?;
-        let uploaded = engine.upload_document(staged, caption, cancel).await;
+        let uploaded = if let Some(origin) = &journal.incoming {
+            engine
+                .copy_media(origin.chat_id, origin.message_id, caption, cancel)
+                .await
+        } else {
+            let staged = staged.ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+            engine
+                .upload_audio(staged, &journal.info.metadata, caption, cancel)
+                .await
+        };
         let media = match uploaded {
             Ok(media) => media,
             Err(error) => {
-                if matches!(
-                    error,
-                    SyncError::Readonly
-                        | SyncError::Telegram(
-                            TelegramError::InvalidInput
-                                | TelegramError::RateLimited { .. }
-                                | TelegramError::Request { .. }
-                        )
-                ) {
+                if error.definitely_not_sent() {
                     journal.info.stage = ImportStage::Prepared;
                     save(engine, &journal).await?;
                 }
@@ -437,7 +463,16 @@ pub(crate) async fn resume<T: Telegram + Clone + 'static>(
         save(engine, &journal).await?;
         events.emit(context, EventData::Import(Box::new(journal.info.clone())));
     }
-    artwork::publish(engine, storage, &mut journal, cancel).await?;
+    incoming::verify_copy(engine, &journal, cancel).await?;
+    let cover = incoming::prepare_cover(engine, &mut journal, cancel).await?;
+    artwork::publish(
+        engine,
+        storage,
+        &mut journal,
+        cover.as_ref().map(|file| file.path().to_owned()),
+        cancel,
+    )
+    .await?;
     let source = Source {
         source_id: journal.info.source_id,
         chat_id: engine.binding().chat_id,
@@ -445,7 +480,7 @@ pub(crate) async fn resume<T: Telegram + Clone + 'static>(
             .info
             .media_message_id
             .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?,
-        sha256: Some(journal.info.sha256.clone()),
+        sha256: journal.info.sha256.clone(),
         size_bytes: Some(journal.info.size_bytes),
     };
     let command = engine
@@ -480,7 +515,7 @@ fn validate_command(
         || !matches!(&command.intent.action, Action::TrackRegister { metadata, source }
             if metadata == &journal.info.metadata && source.source_id == journal.info.source_id
             && source.chat_id == binding.chat_id && Some(source.message_id) == journal.info.media_message_id
-            && source.sha256.as_ref() == Some(&journal.info.sha256) && source.size_bytes == Some(journal.info.size_bytes))
+            && source.sha256 == journal.info.sha256 && source.size_bytes == Some(journal.info.size_bytes))
     {
         return Err(ApiError::new(ErrorCode::Conflict));
     }
@@ -496,7 +531,7 @@ fn validate_media(
         != Some(Record::Media(MediaMarker {
             vault_id,
             import_id: info.op_id,
-            sha256: Some(info.sha256.clone()),
+            sha256: info.sha256.clone(),
         }))
         || message
             .file

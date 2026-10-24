@@ -157,6 +157,20 @@ impl Seek for RemoteReader {
             ));
         }
         self.position = next as u64;
+        let chunk = self.position / STREAM_CHUNK_BYTES as u64 * STREAM_CHUNK_BYTES as u64;
+        let within_current = self.position >= self.chunk_start
+            && self.position < self.chunk_start + self.chunk.len() as u64;
+        if self.position == self.source.size
+            || (!within_current
+                && self
+                    .prefetch
+                    .as_ref()
+                    .is_some_and(|pending| pending.offset != chunk))
+        {
+            // Drop cancels immediately, even if playback remains paused after
+            // seeking. Do not request the new range until a decoder reads it.
+            self.prefetch = None;
+        }
         Ok(self.position)
     }
 }
@@ -233,4 +247,64 @@ async fn fetch_range<T: Telegram>(
         }
     }
     Err(last.into())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn distant_seek_cancels_stale_prefetch_before_another_read() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+        let (cancelled, mut cancellations) = tokio::sync::mpsc::unbounded_channel();
+        let source = RemoteStream {
+            size: (STREAM_CHUNK_BYTES * 10) as u64,
+            runtime: tokio::runtime::Handle::current(),
+            lifetime: CancellationToken::new(),
+            fetch: Arc::new(move |offset, limit, cancel| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                let started = started.clone();
+                let cancelled = cancelled.clone();
+                Box::pin(async move {
+                    if offset == 0 {
+                        return Ok(vec![42; limit]);
+                    }
+                    started.send(offset).unwrap();
+                    cancel.cancelled().await;
+                    cancelled.send(offset).unwrap();
+                    Err(TelegramError::Cancelled.into())
+                })
+            }),
+        };
+        let (seek, commands) = std::sync::mpsc::channel();
+        let (done, completed) = tokio::sync::oneshot::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let mut reader = source.reader(CancellationToken::new());
+            let mut first = [0];
+            reader.read_exact(&mut first).unwrap();
+            assert_eq!(first, [42]);
+            commands.recv().unwrap();
+            for index in 0..100 {
+                reader
+                    .seek(SeekFrom::Start((STREAM_CHUNK_BYTES * 8 + index) as u64))
+                    .unwrap();
+            }
+            done.send(()).unwrap();
+            commands.recv().unwrap();
+            drop(reader);
+        });
+        assert_eq!(starts.recv().await, Some(STREAM_CHUNK_BYTES as u64));
+        seek.send(()).unwrap();
+        completed.await.unwrap();
+        let cancellation = tokio::time::timeout(Duration::from_secs(2), cancellations.recv()).await;
+        let count = calls.load(Ordering::Relaxed);
+        seek.send(()).unwrap();
+        worker.await.unwrap();
+        assert_eq!(cancellation.unwrap(), Some(STREAM_CHUNK_BYTES as u64));
+        assert_eq!(count, 2, "seek alone must not start more requests");
+    }
 }

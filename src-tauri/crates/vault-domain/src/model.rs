@@ -231,20 +231,22 @@ pub enum NoOpReason {
     AlreadyDeleted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
+    #[schemars(with = "String")]
     pub message_id: MessageId,
     pub action: String,
     pub event_sha256: String,
     pub outcome: Outcome,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub vault_id: Uuid,
     pub generation: u64,
+    #[schemars(with = "Option<String>")]
     pub last_event_message_id: Option<MessageId>,
     pub tracks: BTreeMap<Uuid, Track>,
     pub playlists: BTreeMap<Uuid, Playlist>,

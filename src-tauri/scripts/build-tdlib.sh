@@ -4,10 +4,7 @@ cd "$(dirname "$0")/.."
 revision=9d92b49bc5d0d2e29fe518239af647a88f8680e6
 native_root="$PWD/target/native"
 mkdir -p "$native_root"
-if [[ ! -f "$native_root/td-$revision/CMakeLists.txt" ]]; then
-  curl --fail --location "https://codeload.github.com/tdlib/td/tar.gz/$revision" -o "$native_root/tdlib.tar.gz"
-  tar -xzf "$native_root/tdlib.tar.gz" -C "$native_root"
-fi
+python3 scripts/fetch-native-sources.py tdlib
 gperf_path="${GPERF_EXECUTABLE:-$(command -v gperf || true)}"
 if [[ -z "$gperf_path" && -x "$native_root/tools/bin/gperf" ]]; then
   gperf_path="$native_root/tools/bin/gperf"

@@ -136,15 +136,7 @@ pub(crate) async fn upload_restore<T: Telegram>(
             Ok(message)
         }
         Err(error) => {
-            if matches!(
-                error,
-                vault_sync::SyncError::Readonly
-                    | vault_sync::SyncError::Telegram(
-                        TelegramError::InvalidInput
-                            | TelegramError::Request { .. }
-                            | TelegramError::RateLimited { .. }
-                    )
-            ) {
+            if error.definitely_not_sent() {
                 engine.clear_local_setting(key).await?;
             }
             Err(error.into())

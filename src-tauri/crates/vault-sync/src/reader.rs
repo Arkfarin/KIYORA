@@ -35,8 +35,17 @@ impl ProjectionReader {
     pub async fn state(&self) -> Result<State, SyncError> {
         self.read(Database::state).await
     }
+    /// The shared writer mutex covers both reads, so the cursor describes this
+    /// projection even while the service is applying remote events.
+    pub async fn snapshot(&self) -> Result<(State, String), SyncError> {
+        self.read(|db| Ok((db.state()?, db.cursor()?.to_string())))
+            .await
+    }
     pub async fn diagnostics(&self) -> Result<vault_db::ProjectionDiagnostics, SyncError> {
         self.read(Database::diagnostics).await
+    }
+    pub async fn has_pending_gc(&self) -> Result<bool, SyncError> {
+        self.read(Database::has_pending_gc).await
     }
     pub async fn playlist_revisions(
         &self,

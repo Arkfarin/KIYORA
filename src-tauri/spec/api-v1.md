@@ -39,11 +39,17 @@ Secrets are moved into zeroizing values and persisted only through the OS secret
 store. `backend_vault_request` supports `sync`, `initialize`, `verify`, `snapshot`,
 GC planning/inspection/confirmed execution, media import with duplicate review,
 ranged offline download, download status/cancel, cache stats/pin/clear, guarded event
-mutation, and `share_track` with one track/source and one explicit recipient chat.
+mutation, and `share_track` with one track/source, one explicit recipient chat and
+a stable `op_id`. Its `shared` result distinguishes `sent`, `not_sent`, `unknown`;
+`get_share_status` reads the durable local result. A repeated operation is never
+sent again, including unknown outcomes. Only `sent` has a permanent message ID.
 It also supports `import_incoming_audio` by explicitly selected source chat and
-message ID. The service fetches and validates the message, downloads the audio
-in bounded ranges, inspects the media, and then uses the same duplicate-review
-and vault registration flow as local imports. It also supports `import_backup`,
+message ID. Copyable Telegram audio is copied server-side with a durable MEDIA
+marker and imported metadata, without downloading audio bytes. Documents are
+downloaded in bounded ranges for inspection, then copied and verified against the
+inspected hash. Protected content is rejected. Unknown copies are reconciled by
+marker, never blindly repeated. `sha256` in import information/review is nullable
+when no local byte digest exists. It also supports `import_backup`,
 which restores a verified metadata or full
 archive into a fresh empty vault by uploading media and creating new track,
 playlist, entry, and source references. The restore plan is persisted locally so

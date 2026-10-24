@@ -162,6 +162,58 @@ async fn long_history_catch_up_batches_a_thousand_events_and_reaches_ready_state
     let state = recovering.state().await.unwrap();
     assert_eq!(state.playlists.len(), 1_000);
     assert_eq!(state.applied.len(), 1_000);
+    let before = server.history_calls().unwrap();
+    recovering.require_online(&cancel).await.unwrap();
+    assert!(
+        server.history_calls().unwrap() - before <= 4,
+        "a verified idle client must not rescan the 1,000-event journal"
+    );
+    assert_eq!(recovering.state().await.unwrap(), state);
+}
+
+#[tokio::test]
+async fn online_guard_discovers_missed_new_events_and_reaudits_deleted_history() {
+    let (server, mut client) = setup().await;
+    let cancel = CancellationToken::new();
+    server
+        .set_faults(Faults {
+            drop_updates: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let playlist = Uuid::new_v4();
+    let event = Event {
+        vault_id: binding().vault_id,
+        op_id: Uuid::new_v4(),
+        device_id: "other".into(),
+        base_generation: 0,
+        entity_id: playlist,
+        action: Action::PlaylistCreate {
+            title: "Missed update".into(),
+        },
+    };
+    let message = server
+        .client()
+        .unwrap()
+        .send_text(
+            binding().chat_id,
+            encode_text(&Record::Event(Box::new(event))).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    client.require_online(&cancel).await.unwrap();
+    assert_eq!(
+        client.state().await.unwrap().playlists[&playlist].title,
+        "Missed update"
+    );
+    let before = client.state().await.unwrap();
+    // Even without a live delete update, loss of the independently confirmed
+    // server anchor must trigger the full receipt audit and block writes.
+    server.manual_delete(message.id).unwrap();
+    assert!(client.require_online(&cancel).await.is_err());
+    assert_eq!(client.mode(), RuntimeMode::DegradedReadonly);
+    assert_eq!(client.state().await.unwrap(), before);
 }
 
 #[tokio::test]
@@ -215,6 +267,53 @@ async fn lost_ack_is_reconciled_without_duplicate_and_offline_never_queues_mutat
     assert!(a.command(offline_op).await.unwrap().is_none());
     assert!(a.state().await.unwrap().playlists.contains_key(&playlist));
     assert_ne!(a.mode(), RuntimeMode::OnlineReady);
+}
+
+#[tokio::test]
+async fn server_error_after_send_keeps_unknown_intent_until_reconciled() {
+    for accepted in [false, true] {
+        let (server, mut engine) = setup().await;
+        let op = Uuid::new_v4();
+        let playlist = Uuid::new_v4();
+        let action = Action::PlaylistCreate {
+            title: "Ambiguous server response".into(),
+        };
+        let cancel = CancellationToken::new();
+        server
+            .set_faults(Faults {
+                send_error_before: (!accepted).then_some(500),
+                send_error_after: accepted.then_some(500),
+                drop_updates: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let result = engine
+            .execute(op, playlist, action.clone(), &cancel)
+            .await
+            .unwrap();
+        assert_eq!(result.status, CommandStatus::UnknownOnTimeout);
+        let count = server.messages().unwrap().len();
+        engine.sync(&cancel).await.unwrap();
+        let result = engine.execute(op, playlist, action, &cancel).await.unwrap();
+        assert_eq!(
+            result.status,
+            if accepted {
+                CommandStatus::Applied
+            } else {
+                CommandStatus::UnknownOnTimeout
+            }
+        );
+        assert_eq!(
+            engine
+                .state()
+                .await
+                .unwrap()
+                .playlists
+                .contains_key(&playlist),
+            accepted
+        );
+        assert_eq!(server.messages().unwrap().len(), count);
+    }
 }
 
 #[tokio::test]
@@ -420,7 +519,7 @@ async fn gc_preserves_media_notes_new_events_and_resumes_after_delete_ack_loss()
         },
     )
     .await;
-    for n in 0..40 {
+    for n in 0..140 {
         execute(
             &mut a,
             playlist,
@@ -444,7 +543,7 @@ async fn gc_preserves_media_notes_new_events_and_resumes_after_delete_ack_loss()
     a.request_snapshot(&cancel).await.unwrap();
     let plan = a.plan_gc(&cancel).await.unwrap();
     let hash = plan.plan.hash().unwrap();
-    assert!(plan.plan.candidates.len() > 32);
+    assert!(plan.plan.candidates.len() > 100);
     assert!(
         plan.plan
             .candidates
@@ -872,4 +971,180 @@ async fn retry_after_local_database_loss_never_resends_an_applied_operation() {
     assert!(pruned.execute(op, id, action, &cancel).await.is_err());
     assert_eq!(server.messages().unwrap().len(), head);
     assert_eq!(pruned.mode(), RuntimeMode::OnlineReady);
+}
+
+#[tokio::test]
+async fn gc_stops_between_batches_when_coordinator_changes_or_a_copy_is_lost() {
+    for lose_copy in [false, true] {
+        let (server, mut writer) = setup().await;
+        let cancel = CancellationToken::new();
+        writer
+            .assign_gc_coordinator(Uuid::new_v4(), Some("desktop".into()), None, false, &cancel)
+            .await
+            .unwrap();
+        let transport = server.client().unwrap();
+        for i in 0..220 {
+            let event = Event {
+                vault_id: binding().vault_id,
+                op_id: Uuid::new_v4(),
+                device_id: "other".into(),
+                base_generation: 0,
+                entity_id: Uuid::new_v4(),
+                action: Action::PlaylistCreate {
+                    title: format!("{i}"),
+                },
+            };
+            transport
+                .send_text(
+                    binding().chat_id,
+                    encode_text(&Record::Event(Box::new(event))).unwrap(),
+                    &cancel,
+                )
+                .await
+                .unwrap();
+        }
+        let snapshot = writer.request_snapshot(&cancel).await.unwrap();
+        let plan = writer.plan_gc(&cancel).await.unwrap();
+        let transfer = Event {
+            vault_id: binding().vault_id,
+            op_id: Uuid::new_v4(),
+            device_id: "phone".into(),
+            base_generation: 1,
+            entity_id: binding().vault_id,
+            action: Action::VaultSettingsUpdate {
+                settings: SharedSettings {
+                    gc_device_id: Some("phone".into()),
+                    display_name: "".into(),
+                },
+            },
+        };
+        server
+            .set_faults(Faults {
+                text_after_delete: (!lose_copy)
+                    .then(|| encode_text(&Record::Event(Box::new(transfer))).unwrap()),
+                remove_after_delete: lose_copy.then_some(snapshot.commit.snapshot_a_message_id),
+                ..Default::default()
+            })
+            .unwrap();
+        let calls = server.delete_calls().unwrap();
+        assert!(
+            writer
+                .execute_gc(plan.plan.plan_id, &plan.plan.hash().unwrap(), &cancel)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            server.delete_calls().unwrap() - calls,
+            1,
+            "must stop before the second destructive batch"
+        );
+        let progress = writer.inspect_gc(plan.plan.plan_id).await.unwrap().unwrap();
+        assert_eq!(progress.status, vault_snapshot::gc::GcStatus::Stopped);
+        assert_eq!(progress.completed.len(), 100);
+        let mut cold = engine(&server, "cold");
+        cold.sync(&cancel).await.unwrap();
+        assert_eq!(cold.state().await.unwrap().playlists.len(), 220);
+    }
+}
+
+#[tokio::test]
+async fn gc_retains_audio_with_control_captions_and_all_live_source_references() {
+    let (server, mut writer) = setup().await;
+    let cancel = CancellationToken::new();
+    writer
+        .assign_gc_coordinator(Uuid::new_v4(), Some("desktop".into()), None, false, &cancel)
+        .await
+        .unwrap();
+    let event = execute(
+        &mut writer,
+        Uuid::new_v4(),
+        Action::PlaylistCreate {
+            title: "Retain".into(),
+        },
+    )
+    .await;
+    let snapshot = writer.request_snapshot(&cancel).await.unwrap();
+    let state = writer.state().await.unwrap();
+    let mut messages = server.messages().unwrap();
+    let normal = vault_snapshot::gc::plan(&messages, &snapshot, &state, "desktop").unwrap();
+    let candidate = normal
+        .candidates
+        .iter()
+        .find(|c| Some(c.message_id) == event.server_message_id)
+        .unwrap();
+    let message = messages
+        .iter_mut()
+        .find(|m| m.id == candidate.message_id)
+        .unwrap();
+    message.content = MessageContent::Audio;
+    message.file = Some(RemoteFile {
+        file_id: 123,
+        size: 42,
+        name: "song.mp3".into(),
+        mime_type: "audio/mpeg".into(),
+    });
+    assert!(!vault_snapshot::gc::matches(candidate, message).unwrap());
+    let plan = vault_snapshot::gc::plan(&messages, &snapshot, &state, "desktop").unwrap();
+    assert!(
+        plan.candidates
+            .iter()
+            .all(|c| c.message_id != candidate.message_id)
+    );
+    let mut linked = state;
+    let track_id = Uuid::new_v4();
+    let source = Source {
+        source_id: Uuid::new_v4(),
+        chat_id: binding().chat_id,
+        message_id: candidate.message_id,
+        sha256: None,
+        size_bytes: None,
+    };
+    linked.tracks.insert(
+        track_id,
+        Track {
+            track_id,
+            metadata: Metadata {
+                title: "Reference".into(),
+                ..Default::default()
+            },
+            sources: [(source.source_id, source)].into(),
+            updated_order: candidate.message_id,
+        },
+    );
+    let plan = vault_snapshot::gc::plan(&server.messages().unwrap(), &snapshot, &linked, "desktop")
+        .unwrap();
+    assert!(
+        plan.candidates
+            .iter()
+            .all(|c| c.message_id != candidate.message_id)
+    );
+}
+
+#[tokio::test]
+async fn update_overrun_and_reconnect_revoke_the_incremental_proof() {
+    let (server, mut client) = setup().await;
+    let cancel = CancellationToken::new();
+    let before = server.download_calls().unwrap();
+    for _ in 0..2100 {
+        server.emit_update(Update::Connected).unwrap();
+    }
+    client.require_online(&cancel).await.unwrap();
+    assert!(
+        server.download_calls().unwrap() > before,
+        "lost continuity must reverify the snapshot"
+    );
+    server.emit_update(Update::Disconnected).unwrap();
+    let op = Uuid::new_v4();
+    assert!(
+        client
+            .execute(op, Uuid::new_v4(), Action::PlaylistDelete {}, &cancel)
+            .await
+            .is_err()
+    );
+    assert!(client.command(op).await.unwrap().is_none());
+    let before = server.download_calls().unwrap();
+    server.emit_update(Update::Connected).unwrap();
+    client.catch_up(&cancel).await.unwrap();
+    assert!(server.download_calls().unwrap() > before);
+    assert_eq!(client.mode(), RuntimeMode::OnlineReady);
 }

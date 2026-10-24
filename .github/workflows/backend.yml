@@ -1,16 +1,16 @@
 name: Backend
 on:
   push:
-    paths: ['src-tauri/**', '.github/workflows/backend.yml']
+    paths: ['src-tauri/**', 'package.json', 'pnpm-lock.yaml', '.github/workflows/backend.yml']
   pull_request:
-    paths: ['src-tauri/**', '.github/workflows/backend.yml']
+    paths: ['src-tauri/**', 'package.json', 'pnpm-lock.yaml', '.github/workflows/backend.yml']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: src-tauri
@@ -21,18 +21,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm install --global pnpm@12.11.2
+      - run: pnpm --dir .. install --frozen-lockfile
       - name: System libraries
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libssl-dev libdbus-1-dev cmake gperf
       - run: bash scripts/check-backend.sh
       - name: Scale acceptance (simulated)
         run: cargo run --locked --release -p vault-sync --example scale-benchmark
-      - name: Pinned native TDLib
-        run: bash scripts/build-tdlib.sh
-      - name: Credential-free native lifecycle
-        run: KIYORA_TDJSON="$PWD/target/native/td-build/libtdjson.so" cargo test --locked -p vault-telegram --test real_tdlib -- --ignored
+      - name: Packaged app with pinned native TDLib
+        run: python3 scripts/package-desktop.py
+      - name: Verify extracted Debian installer
+        run: |
+          packages=(target/release/bundle/deb/*.deb)
+          test "${#packages[@]}" -eq 1
+          python3 scripts/check-installer.py "${packages[0]}"
   windows:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: src-tauri
@@ -41,11 +49,38 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Native build tools
+        run: |
+          choco install nasm strawberryperl --yes --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - run: npm install --global pnpm@12.11.2
+      - run: pnpm --dir .. install --frozen-lockfile
+      - run: cargo fmt --all -- --check
       - run: cargo check --locked --workspace --all-targets
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+      - name: Package app with pinned native TDLib
+        run: python scripts/package-desktop.py
+      - name: Verify extracted MSI installer
+        run: |
+          $packages = @(Get-ChildItem target/release/bundle/msi/*.msi)
+          if ($packages.Count -ne 1) { throw 'Expected exactly one MSI' }
+          python scripts/check-installer.py $packages[0].FullName
   android:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: src-tauri
@@ -56,6 +91,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm install --global pnpm@12.11.2
+      - run: pnpm --dir .. install --frozen-lockfile
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -66,7 +106,17 @@ jobs:
           cache-provider: basic
           gradle-version: '8.14.3'
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+      - name: Native build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake gperf perl make
       - name: Rust arm64, JNI and 16 KiB alignment
         run: NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" bash scripts/check-android-rust.sh
       - name: Plugin APK and Lint
         run: bash scripts/check-android-plugin.sh
+      - name: App APK, TDLib, dependencies and 16 KiB alignment
+        run: NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" bash scripts/package-android.sh
+      - name: Compile installed-app instrumentation
+        run: |
+          gen/android/gradlew --no-daemon --console=plain --project-dir gen/android \
+            :app:assembleUniversalDebugAndroidTest \
+            -PabiList=arm64-v8a -ParchList=arm64 -PtargetList=aarch64 \
+            -x :app:rustBuildArm64Debug

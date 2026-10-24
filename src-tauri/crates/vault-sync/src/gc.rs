@@ -1,8 +1,16 @@
 use crate::*;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use vault_domain::MessageId;
 use vault_snapshot::gc::{GcPlan, GcProgress, GcStatus};
 use vault_telegram::{Telegram, scan_history};
+
+struct GcValidation {
+    protected: Vec<vault_telegram::RemoteMessage>,
+    tail_cursor: MessageId,
+    candidates: BTreeSet<MessageId>,
+}
 
 impl<T: Telegram> SyncEngine<T> {
     pub(crate) async fn check_coordinator_change(
@@ -109,11 +117,19 @@ impl<T: Telegram> SyncEngine<T> {
         Ok(progress)
     }
     async fn persist_gc(&self, progress: &GcProgress) -> Result<(), SyncError> {
-        let plan = serde_json::to_string(&progress.plan).map_err(|_| SyncError::Integrity)?;
         let completed =
             serde_json::to_string(&progress.completed).map_err(|_| SyncError::Integrity)?;
         let status = serde_json::to_string(&progress.status).map_err(|_| SyncError::Integrity)?;
         let id = progress.plan.plan_id;
+        let saved_completed = completed.clone();
+        let saved_status = status.clone();
+        if self
+            .database(move |db| db.update_gc_progress(id, &saved_completed, &saved_status))
+            .await?
+        {
+            return Ok(());
+        }
+        let plan = serde_json::to_string(&progress.plan).map_err(|_| SyncError::Integrity)?;
         self.database(move |db| db.save_gc_plan(id, &plan, &completed, &status))
             .await
     }
@@ -161,7 +177,7 @@ impl<T: Telegram> SyncEngine<T> {
         &mut self,
         plan: &GcPlan,
         cancel: &CancellationToken,
-    ) -> Result<(), SyncError> {
+    ) -> Result<GcValidation, SyncError> {
         self.sync(cancel).await?;
         let state = self.state().await?;
         if state.settings.gc_device_id.as_deref() != Some(&self.device_id) {
@@ -170,6 +186,18 @@ impl<T: Telegram> SyncEngine<T> {
         let head = self.latest_commit(cancel).await?;
         if head.id != plan.commit_id {
             return Err(SyncError::Integrity);
+        }
+        let Some(vault_protocol::Record::Commit(commit)) = head.record()? else {
+            return Err(SyncError::Integrity);
+        };
+        let mut protected = vec![head.clone()];
+        for id in [commit.snapshot_a_message_id, commit.snapshot_b_message_id] {
+            protected.push(
+                self.transport
+                    .message(self.binding.chat_id, id, cancel)
+                    .await?
+                    .ok_or(SyncError::Integrity)?,
+            );
         }
         let verified = vault_snapshot::recover(
             &self.transport,
@@ -211,16 +239,51 @@ impl<T: Telegram> SyncEngine<T> {
             }
         }
         let fresh = vault_snapshot::gc::plan(&all, &verified, &state, &self.device_id)?;
+        let by_id: BTreeMap<_, _> = all.iter().map(|message| (message.id, message)).collect();
+        let fresh_ids: BTreeMap<_, _> = fresh
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.message_id, &candidate.record_sha256))
+            .collect();
+        let candidates: BTreeSet<_> = plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.message_id)
+            .collect();
+        let live_sources: BTreeSet<_> = state
+            .tracks
+            .values()
+            .flat_map(|track| {
+                track.sources.values().chain(
+                    track
+                        .metadata
+                        .artwork
+                        .as_ref()
+                        .and_then(|art| art.source.as_ref()),
+                )
+            })
+            .map(|source| source.message_id)
+            .collect();
+        let mut retained_copy_references = BTreeSet::new();
+        for message in &all {
+            if !candidates.contains(&message.id)
+                && let Some(vault_protocol::Record::Commit(commit)) = message.record()?
+            {
+                retained_copy_references
+                    .extend([commit.snapshot_a_message_id, commit.snapshot_b_message_id]);
+            }
+        }
         for candidate in &plan.candidates {
-            if let Some(message) = all.iter().find(|m| m.id == candidate.message_id) {
+            if live_sources.contains(&candidate.message_id) {
+                return Err(SyncError::Integrity);
+            }
+            if let Some(message) = by_id.get(&candidate.message_id) {
                 if !vault_snapshot::gc::matches(candidate, message)? {
                     return Err(SyncError::Integrity);
                 }
                 if matches!(candidate.kind.as_str(), "EVT" | "BARRIER")
-                    && !fresh.candidates.iter().any(|c| {
-                        c.message_id == candidate.message_id
-                            && c.record_sha256 == candidate.record_sha256
-                    })
+                    && fresh_ids.get(&candidate.message_id).copied()
+                        != Some(&candidate.record_sha256)
                 {
                     return Err(SyncError::Integrity);
                 }
@@ -238,16 +301,110 @@ impl<T: Telegram> SyncEngine<T> {
                     {
                         return Err(SyncError::Integrity);
                     }
-                    for message in &all {
-                        if let Some(vault_protocol::Record::Commit(commit)) = message.record()?
-                            && [commit.snapshot_a_message_id, commit.snapshot_b_message_id]
-                                .contains(&candidate.message_id)
-                            && !plan.candidates.iter().any(|c| c.message_id == message.id)
+                    if retained_copy_references.contains(&candidate.message_id) {
+                        return Err(SyncError::Integrity);
+                    }
+                }
+            }
+        }
+        Ok(GcValidation {
+            protected,
+            tail_cursor: plan.commit_id,
+            candidates,
+        })
+    }
+    /// The verified immutable snapshot bytes and initial dependency proof are
+    /// reused only for this execution. Every batch still checks channel access,
+    /// new history, coordinator tenure, copy/commit identity and exact candidates.
+    async fn validate_gc_batch(
+        &mut self,
+        plan: &GcPlan,
+        validation: &mut GcValidation,
+        cancel: &CancellationToken,
+    ) -> Result<(), SyncError> {
+        self.catch_up_with_expected_deletions(cancel, &validation.candidates)
+            .await?;
+        if self
+            .reader()
+            .shared_settings()
+            .await?
+            .gc_device_id
+            .as_deref()
+            != Some(&self.device_id)
+            || self
+                .verified_snapshot()
+                .is_none_or(|snapshot| snapshot.commit_id != plan.commit_id)
+        {
+            return Err(SyncError::Readonly);
+        }
+        let tail = scan_history(
+            &self.transport,
+            self.binding.chat_id,
+            validation.tail_cursor.get(),
+            None,
+            1_000_000,
+            cancel,
+        )
+        .await?;
+        for message in &tail {
+            if let Some(record) = message.record()? {
+                if record.vault_id() != self.binding.vault_id {
+                    return Err(SyncError::Integrity);
+                }
+                match record {
+                    vault_protocol::Record::Commit(_) => return Err(SyncError::Integrity),
+                    vault_protocol::Record::Event(event) => {
+                        use vault_domain::Action;
+                        let mut references = Vec::new();
+                        match &event.action {
+                            Action::VaultSettingsUpdate { settings }
+                                if settings.gc_device_id.as_deref() != Some(&self.device_id) =>
+                            {
+                                return Err(SyncError::CoordinatorConflict);
+                            }
+                            Action::TrackRegister { source, metadata } => {
+                                references.push(source.message_id);
+                                references.extend(
+                                    metadata
+                                        .artwork
+                                        .as_ref()
+                                        .and_then(|art| art.source.as_ref())
+                                        .map(|source| source.message_id),
+                                );
+                            }
+                            Action::SourceRelink { source } => references.push(source.message_id),
+                            Action::TrackMetadataUpdate { patch } => references.extend(
+                                patch
+                                    .artwork
+                                    .as_ref()
+                                    .and_then(|art| art.source.as_ref())
+                                    .map(|source| source.message_id),
+                            ),
+                            _ => {}
+                        }
+                        if references
+                            .iter()
+                            .any(|id| validation.candidates.contains(id))
                         {
                             return Err(SyncError::Integrity);
                         }
                     }
+                    _ => {}
                 }
+            }
+        }
+        if let Some(last) = tail.last() {
+            validation.tail_cursor = last.id;
+        }
+        for expected in &validation.protected {
+            if self
+                .transport
+                .message(self.binding.chat_id, expected.id, cancel)
+                .await?
+                .as_ref()
+                != Some(expected)
+            {
+                return Err(SyncError::Integrity);
             }
         }
         Ok(())
@@ -259,6 +416,7 @@ impl<T: Telegram> SyncEngine<T> {
     ) -> Result<(), SyncError> {
         progress.status = GcStatus::Running;
         self.persist_gc(progress).await?;
+        let mut validation = self.validate_gc_head(&progress.plan, cancel).await?;
         let pending: Vec<_> = progress
             .plan
             .candidates
@@ -266,8 +424,9 @@ impl<T: Telegram> SyncEngine<T> {
             .filter(|c| !progress.completed.contains(&c.message_id))
             .cloned()
             .collect();
-        for batch in pending.chunks(32) {
-            self.validate_gc_head(&progress.plan, cancel).await?;
+        for batch in pending.chunks(100) {
+            self.validate_gc_batch(&progress.plan, &mut validation, cancel)
+                .await?;
             let mut present = Vec::new();
             for candidate in batch {
                 if let Some(message) = self
@@ -305,7 +464,8 @@ impl<T: Telegram> SyncEngine<T> {
                 Some(progress.plan.candidates.len()),
             );
         }
-        self.validate_gc_head(&progress.plan, cancel).await?;
+        self.validate_gc_batch(&progress.plan, &mut validation, cancel)
+            .await?;
         progress.status = GcStatus::Complete;
         self.persist_gc(progress).await?;
         self.report(

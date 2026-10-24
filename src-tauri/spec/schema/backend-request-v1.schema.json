@@ -411,6 +411,35 @@
             "args": {
               "type": "object",
               "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "state_snapshot"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
                 "path",
                 "session_id"
               ],
@@ -2201,6 +2230,48 @@
         }
       ]
     },
+    "MaintenanceConfig": {
+      "type": "object",
+      "required": [
+        "check_interval_seconds",
+        "enabled",
+        "idle_seconds",
+        "max_age_seconds",
+        "max_events",
+        "max_log_bytes"
+      ],
+      "properties": {
+        "check_interval_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "idle_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_age_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "Metadata": {
       "type": "object",
       "required": [
@@ -2563,6 +2634,49 @@
     },
     "VaultRequest": {
       "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "get_maintenance_config"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "set_maintenance_config"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "$ref": "#/definitions/MaintenanceConfig"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         {
           "type": "object",
           "required": [
@@ -3286,11 +3400,16 @@
             "payload": {
               "type": "object",
               "required": [
+                "op_id",
                 "recipient_chat_id",
                 "source_id",
                 "track_id"
               ],
               "properties": {
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
                 "recipient_chat_id": {
                   "type": "string"
                 },
@@ -3299,6 +3418,35 @@
                   "format": "uuid"
                 },
                 "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "get_share_status"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "op_id"
+              ],
+              "properties": {
+                "op_id": {
                   "type": "string",
                   "format": "uuid"
                 }

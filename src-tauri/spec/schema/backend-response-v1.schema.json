@@ -735,6 +735,25 @@
             "kind": {
               "type": "string",
               "enum": [
+                "state_snapshot"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/ProjectionSnapshot"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
                 "storage"
               ]
             },
@@ -1551,7 +1570,6 @@
       "required": [
         "metadata",
         "op_id",
-        "sha256",
         "size_bytes",
         "source_id",
         "stage",
@@ -1572,7 +1590,10 @@
           "format": "uuid"
         },
         "sha256": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "size_bytes": {
           "type": "integer",
@@ -1967,6 +1988,48 @@
           "additionalProperties": false
         }
       ]
+    },
+    "MaintenanceConfig": {
+      "type": "object",
+      "required": [
+        "check_interval_seconds",
+        "enabled",
+        "idle_seconds",
+        "max_age_seconds",
+        "max_events",
+        "max_log_bytes"
+      ],
+      "properties": {
+        "check_interval_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "idle_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_age_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
     },
     "Manifest": {
       "type": "object",
@@ -2658,6 +2721,30 @@
       },
       "additionalProperties": false
     },
+    "ProjectionSnapshot": {
+      "type": "object",
+      "required": [
+        "context",
+        "cursor",
+        "event_sequence",
+        "state"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/definitions/Context"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "event_sequence": {
+          "description": "Subscribe before requesting. Ignore events <= this sequence; later invalidations may overlap the snapshot and must be applied idempotently.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/State"
+        }
+      }
+    },
     "QueueInfo": {
       "type": "object",
       "required": [
@@ -2715,6 +2802,30 @@
           }
         }
       }
+    },
+    "Receipt": {
+      "type": "object",
+      "required": [
+        "action",
+        "event_sha256",
+        "message_id",
+        "outcome"
+      ],
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "event_sha256": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/definitions/Outcome"
+        }
+      },
+      "additionalProperties": false
     },
     "RejectReason": {
       "type": "string",
@@ -2847,6 +2958,61 @@
         }
       }
     },
+    "ShareInfo": {
+      "type": "object",
+      "required": [
+        "op_id",
+        "recipient_chat_id",
+        "source_id",
+        "state",
+        "track_id"
+      ],
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApiError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "op_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "recipient_chat_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "state": {
+          "$ref": "#/definitions/ShareState"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ShareState": {
+      "type": "string",
+      "enum": [
+        "sent",
+        "not_sent",
+        "unknown"
+      ]
+    },
     "SharedSettings": {
       "type": "object",
       "required": [
@@ -2963,6 +3129,79 @@
           "format": "uuid"
         },
         "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "State": {
+      "type": "object",
+      "required": [
+        "applied",
+        "entries",
+        "favorites",
+        "generation",
+        "playlists",
+        "settings",
+        "tombstones",
+        "tracks",
+        "vault_id"
+      ],
+      "properties": {
+        "applied": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Receipt"
+          }
+        },
+        "entries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/PlaylistEntry"
+          }
+        },
+        "favorites": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "uniqueItems": true
+          }
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "last_event_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "playlists": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Playlist"
+          }
+        },
+        "settings": {
+          "$ref": "#/definitions/SharedSettings"
+        },
+        "tombstones": {
+          "$ref": "#/definitions/Tombstones"
+        },
+        "tracks": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Track"
+          }
+        },
+        "vault_id": {
           "type": "string",
           "format": "uuid"
         }
@@ -3104,6 +3343,41 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Tombstones": {
+      "type": "object",
+      "required": [
+        "entries",
+        "playlists",
+        "tracks"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "uniqueItems": true
+        },
+        "playlists": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "uniqueItems": true
+        },
+        "tracks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "uniqueItems": true
         }
       },
       "additionalProperties": false
@@ -3310,6 +3584,24 @@
             "kind": {
               "type": "string",
               "enum": [
+                "maintenance_config"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/MaintenanceConfig"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
                 "audio_info"
               ]
             },
@@ -3493,7 +3785,6 @@
                 "duplicate_track_ids",
                 "metadata",
                 "possible_duplicate_track_ids",
-                "sha256",
                 "size_bytes"
               ],
               "properties": {
@@ -3515,7 +3806,10 @@
                   }
                 },
                 "sha256": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "size_bytes": {
                   "type": "integer",
@@ -3540,19 +3834,32 @@
               ]
             },
             "result": {
-              "type": "object",
-              "required": [
-                "message_id",
-                "recipient_chat_id"
-              ],
-              "properties": {
-                "message_id": {
-                  "type": "string"
+              "$ref": "#/definitions/ShareInfo"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "share_status"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ShareInfo"
                 },
-                "recipient_chat_id": {
-                  "type": "string"
+                {
+                  "type": "null"
                 }
-              }
+              ]
             }
           }
         },

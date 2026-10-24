@@ -447,6 +447,19 @@ async fn run<T: Telegram + Clone + 'static>(
     report_error(&initial, &context, &events);
     refresh(&mut engine, &context, &events, &status, &mut last_cursor).await;
     schedule_retry(&engine, &mut retry, &mut backoff);
+    let mut maintenance = match crate::maintenance::load(&engine).await {
+        Ok(config) => config,
+        Err(error) => {
+            events.emit(&context, EventData::Warning(error));
+            MaintenanceConfig {
+                enabled: false,
+                ..Default::default()
+            }
+        }
+    };
+    let mut last_activity = tokio::time::Instant::now();
+    let mut next_maintenance =
+        last_activity + Duration::from_secs(maintenance.check_interval_seconds);
     loop {
         let deadline =
             retry.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(86400));
@@ -455,6 +468,7 @@ async fn run<T: Telegram + Clone + 'static>(
             _=cancel.cancelled()=>break,
             job=playback_jobs.recv()=> {
                 let Some(job) = job else { break; };
+                last_activity = tokio::time::Instant::now();
                 let result = tokio::select! {
                     _ = cancel.cancelled() => Err(ApiError::new(ErrorCode::Closed)),
                     result = engine.media_file(job.track_id, job.source_id, &job.cancel) => result.map_err(ApiError::from),
@@ -468,6 +482,11 @@ async fn run<T: Telegram + Clone + 'static>(
             },
             job=jobs.recv()=> {
                 let Some(job)=job else {break};
+                last_activity = tokio::time::Instant::now();
+                let new_maintenance = match &job.request {
+                    VaultRequest::SetMaintenanceConfig { config } => Some(config.clone()),
+                    _ => None,
+                };
                 let download_id = match &job.request {
                     VaultRequest::DownloadForOffline { download_id, .. } => Some(*download_id),
                     _ => None,
@@ -478,6 +497,10 @@ async fn run<T: Telegram + Clone + 'static>(
                     finish_download_error(id, error, &downloads, &context, &events);
                 }
                 if let Err(error)=&result {events.emit(&context,EventData::Warning(error.clone()));}
+                if result.is_ok() && let Some(config) = new_maintenance {
+                    maintenance = config;
+                    next_maintenance = tokio::time::Instant::now() + Duration::from_secs(maintenance.check_interval_seconds);
+                }
                 refresh(&mut engine,&context,&events,&status,&mut last_cursor).await;
                 schedule_retry(&engine,&mut retry,&mut backoff);
                 let _=job.reply.send(result);
@@ -493,17 +516,30 @@ async fn run<T: Telegram + Clone + 'static>(
                     tokio::select!{_=cancel.cancelled()=>break,_=tokio::time::sleep(Duration::from_millis(40))=>{}}
                     while updates.try_recv().is_ok() {}
                     refresh(&mut engine,&context,&events,&status,&mut last_cursor).await;
-                    let result=engine.sync(&cancel).await;
+                    let result=engine.catch_up(&cancel).await;
                     report_error(&result,&context,&events);
                     refresh(&mut engine,&context,&events,&status,&mut last_cursor).await;
                     schedule_retry(&engine,&mut retry,&mut backoff);
                 }
             },
             _=tokio::time::sleep_until(deadline),if retry.is_some()=>{
-                let result=engine.sync(&cancel).await;
+                let result=engine.catch_up(&cancel).await;
                 report_error(&result,&context,&events);
                 refresh(&mut engine,&context,&events,&status,&mut last_cursor).await;
                 schedule_retry(&engine,&mut retry,&mut backoff);
+            },
+            _=tokio::time::sleep_until(next_maintenance),if maintenance.enabled=>{
+                if last_activity.elapsed() >= Duration::from_secs(maintenance.idle_seconds) {
+                    let result = match crate::maintenance::due(&mut engine, &maintenance).await {
+                        Ok(true) => handle(&mut engine, VaultRequest::Snapshot, &cancel, &context, &events, cache.as_ref(), &downloads, &import_storage).await.map(|_| ()),
+                        Ok(false) => Ok(()),
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result { events.emit(&context, EventData::Warning(error)); }
+                    refresh(&mut engine,&context,&events,&status,&mut last_cursor).await;
+                    schedule_retry(&engine,&mut retry,&mut backoff);
+                }
+                next_maintenance = tokio::time::Instant::now() + Duration::from_secs(maintenance.check_interval_seconds);
             }
         }
     }
@@ -725,15 +761,25 @@ async fn handle<T: Telegram + Clone + 'static>(
     import_storage: &Result<crate::imports::Storage, ApiError>,
 ) -> Result<VaultResponse, ApiError> {
     Ok(match request {
+        VaultRequest::GetMaintenanceConfig => {
+            VaultResponse::MaintenanceConfig(crate::maintenance::load(engine).await?)
+        }
+        VaultRequest::SetMaintenanceConfig { config } => {
+            crate::maintenance::save(engine, &config).await?;
+            VaultResponse::MaintenanceConfig(config)
+        }
         VaultRequest::PreviewIncomingAudio {
             chat_id,
             message_id,
-        } => VaultResponse::AudioInfo(
-            engine
-                .transport()
-                .audio_info(chat_id, message_id, cancel)
-                .await?,
-        ),
+        } => {
+            engine.require_online(cancel).await?;
+            VaultResponse::AudioInfo(
+                engine
+                    .transport()
+                    .audio_info(chat_id, message_id, cancel)
+                    .await?,
+            )
+        }
         VaultRequest::RelinkSource {
             track_id,
             source_id,
@@ -863,6 +909,7 @@ async fn handle<T: Telegram + Clone + 'static>(
                 engine,
                 import_storage.as_ref().map_err(Clone::clone)?,
                 std::path::PathBuf::from(path),
+                None,
                 track_id,
                 source_id,
                 op_id,
@@ -884,11 +931,29 @@ async fn handle<T: Telegram + Clone + 'static>(
             if track_id.is_nil() || source_id.is_nil() || op_id.is_nil() {
                 return Err(ApiError::new(ErrorCode::InvalidInput));
             }
+            if let Some(response) = crate::imports::try_incoming(
+                engine,
+                import_storage.as_ref().map_err(Clone::clone)?,
+                source_chat_id,
+                message_id,
+                track_id,
+                source_id,
+                op_id,
+                allow_duplicate,
+                cancel,
+                context,
+                events,
+            )
+            .await?
+            {
+                return Ok(response);
+            }
             if crate::imports::pending(engine, op_id).await? {
                 return crate::imports::start(
                     engine,
                     import_storage.as_ref().map_err(Clone::clone)?,
                     std::path::PathBuf::new(),
+                    Some((source_chat_id, message_id)),
                     track_id,
                     source_id,
                     op_id,
@@ -910,12 +975,13 @@ async fn handle<T: Telegram + Clone + 'static>(
             let file = remote
                 .file
                 .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+            let bytes = u64::try_from(file.size)
+                .ok()
+                .filter(|size| *size > 0 && *size <= vault_media::MAX_IMPORT_BYTES)
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
             let temporary = tempfile::tempdir().map_err(|_| ApiError::new(ErrorCode::Storage))?;
-            let cache = vault_media::CacheManager::open(
-                temporary.path(),
-                u64::try_from(file.size).map_err(|_| ApiError::new(ErrorCode::InvalidInput))?,
-            )
-            .map_err(ApiError::from)?;
+            let cache =
+                vault_media::CacheManager::open(temporary.path(), bytes).map_err(ApiError::from)?;
             let lease = vault_media::download_to_cache(
                 engine.transport(),
                 &file,
@@ -951,6 +1017,7 @@ async fn handle<T: Telegram + Clone + 'static>(
                 engine,
                 import_storage.as_ref().map_err(Clone::clone)?,
                 audio_path,
+                Some((source_chat_id, message_id)),
                 track_id,
                 source_id,
                 op_id,
@@ -962,24 +1029,33 @@ async fn handle<T: Telegram + Clone + 'static>(
             .await?
         }
         VaultRequest::ShareTrack {
+            op_id,
             track_id,
             source_id,
             recipient_chat_id,
         } => {
-            let forwarded = engine
-                .share_track(track_id, source_id, recipient_chat_id, cancel)
-                .await?;
-            events.emit(
-                context,
-                EventData::Share {
-                    recipient_chat_id,
-                    message_id: forwarded.id,
-                },
-            );
-            VaultResponse::Shared {
+            let info = crate::sharing::send(
+                engine,
+                op_id,
+                track_id,
+                source_id,
                 recipient_chat_id,
-                message_id: forwarded.id,
+                cancel,
+            )
+            .await?;
+            if let Some(message_id) = info.message_id {
+                events.emit(
+                    context,
+                    EventData::Share {
+                        recipient_chat_id,
+                        message_id,
+                    },
+                );
             }
+            VaultResponse::Shared(info)
+        }
+        VaultRequest::GetShareStatus { op_id } => {
+            VaultResponse::ShareStatus(crate::sharing::status(engine, op_id).await?)
         }
         VaultRequest::DownloadForOffline {
             download_id,

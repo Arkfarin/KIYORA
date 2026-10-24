@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${NDK_HOME:?Set NDK_HOME to the Android NDK (verified with r28c)}"
+export ANDROID_NDK_HOME="$NDK_HOME"
+export ANDROID_PLATFORM=android-26
 if [[ -z "${KIYORA_NDK_HOST_TAG:-}" ]]; then
   case "$(uname -s)" in
     Linux) KIYORA_NDK_HOST_TAG=linux-x86_64 ;;
@@ -31,6 +33,7 @@ elf = (root / 'kiyora-elf.txt').read_text()
 symbols = (root / 'kiyora-symbols.txt').read_text()
 assert re.search(r'Machine:\s+AArch64', elf), 'wrong native architecture'
 assert 'Shared library: [libaaudio.so]' in elf, 'missing AAudio linkage'
+assert 'Shared library: [libopus.so]' not in elf, 'Opus must be bundled statically'
 segments = [line.split() for line in elf.splitlines() if line.strip().startswith('LOAD ')]
 assert segments and all(int(parts[-1], 16) >= 16384 for parts in segments), '16 KiB LOAD alignment required'
 for symbol in ['Java_io_github_arkfarin_kiyora_Rust_onCreate', 'Java_app_tauri_plugin_PluginManager_sendChannelData']:

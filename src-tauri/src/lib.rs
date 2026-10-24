@@ -15,7 +15,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_kiyora_native::init())
         .setup(|app| {
             #[cfg(not(target_os = "android"))]
-            let backend = std::sync::Arc::new(vault_core::Backend::default_backend()?);
+            let backend = std::sync::Arc::new(vault_core::Backend::default_backend_with_resources(
+                Some(&app.path().resource_dir()?),
+            )?);
             #[cfg(target_os = "android")]
             let backend = {
                 let secrets = app.state::<tauri_plugin_kiyora_native::AndroidSecrets<tauri::Wry>>();
@@ -33,18 +35,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .with_import_resolver(std::sync::Arc::new(documents.inner().clone())),
                 )
             };
-            let mut events = backend.subscribe_events();
+            let mut events = backend.events().subscribe_reliable();
             app.manage(backend);
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 use tauri::Emitter;
                 loop {
                     match events.recv().await {
-                        Ok(event) => {
+                        Some(vault_core::EventDelivery::Event(event)) => {
                             let _ = handle.emit("kiyora://backend", event);
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        Some(vault_core::EventDelivery::ResyncRequired(lost)) => {
+                            let _ = handle.emit("kiyora://resync-required", lost);
+                        }
+                        None => break,
                     }
                 }
             });

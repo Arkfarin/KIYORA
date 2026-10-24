@@ -56,6 +56,17 @@ pub enum TelegramError {
     LocalFile,
 }
 
+impl TelegramError {
+    /// Only explicit rejections prove a write was not accepted. A server 5xx,
+    /// request timeout (408), missing response or cancellation is ambiguous.
+    pub fn definitely_not_sent(&self) -> bool {
+        matches!(self,
+            Self::InvalidInput | Self::Unshareable | Self::AuthRequired
+            | Self::UnsafeChannel | Self::RateLimited { .. }
+            | Self::Request { code: 400..=407 | 409..=499 })
+    }
+}
+
 /// Telegram error descriptions may contain PII. Keep only code and a bounded wait.
 pub fn check_response(value: serde_json::Value) -> Result<serde_json::Value, TelegramError> {
     if value["@type"] != "error" {

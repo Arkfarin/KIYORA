@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used)]
 use serde_json::json;
+#[cfg(target_os = "linux")]
 use std::{process::Command, time::Duration};
+#[cfg(target_os = "linux")]
 use tokio_util::sync::CancellationToken;
 use vault_telegram::*;
 
@@ -90,4 +92,23 @@ fn errors_redact_messages_and_auth_maps_revocation() {
         AuthStatus::from_td(&json!({"@type":"futureAuthState"})),
         AuthStatus::Unsupported
     );
+}
+
+#[test]
+fn server_errors_and_timeouts_do_not_prove_a_write_was_rejected() {
+    for code in [0, 408, 500, 502, 503, 504] {
+        assert!(!TelegramError::Request { code }.definitely_not_sent());
+    }
+    for code in [400, 401, 403, 404, 420, 429] {
+        assert!(TelegramError::Request { code }.definitely_not_sent());
+    }
+    for error in [
+        TelegramError::Timeout,
+        TelegramError::Cancelled,
+        TelegramError::Closed,
+        TelegramError::UpdatesLost,
+        TelegramError::InvalidResponse,
+    ] {
+        assert!(!error.definitely_not_sent());
+    }
 }

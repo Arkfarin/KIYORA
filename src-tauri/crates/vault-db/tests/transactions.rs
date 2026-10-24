@@ -308,6 +308,7 @@ fn future_schema_is_refused_without_changing_version() {
     let path = dir.path().join("future.sqlite");
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection.execute_batch("PRAGMA user_version=2;").unwrap();
+    let original = std::fs::read(&path).unwrap();
     assert!(matches!(
         Database::open(&path, binding()),
         Err(DbError::Schema)
@@ -317,5 +318,12 @@ fn future_schema_is_refused_without_changing_version() {
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
         2
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "delete"
     );
 }

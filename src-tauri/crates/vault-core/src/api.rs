@@ -313,6 +313,10 @@ pub enum PlaybackAction {
     deny_unknown_fields
 )]
 pub enum VaultRequest {
+    GetMaintenanceConfig,
+    SetMaintenanceConfig {
+        config: crate::MaintenanceConfig,
+    },
     PreviewIncomingAudio {
         #[schemars(with = "String")]
         chat_id: ChatId,
@@ -400,10 +404,14 @@ pub enum VaultRequest {
         path: String,
     },
     ShareTrack {
+        op_id: Uuid,
         track_id: Uuid,
         source_id: Uuid,
         #[schemars(with = "String")]
         recipient_chat_id: ChatId,
+    },
+    GetShareStatus {
+        op_id: Uuid,
     },
     Mutate(Box<Mutation>),
 }
@@ -465,6 +473,7 @@ impl From<Recovery> for SnapshotInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "result", rename_all = "snake_case")]
 pub enum VaultResponse {
+    MaintenanceConfig(crate::MaintenanceConfig),
     AudioInfo(Option<vault_telegram::AudioInfo>),
     Diagnostics(vault_sync::VaultDiagnostics),
     Sources(Vec<vault_sync::SourceHealth>),
@@ -476,17 +485,13 @@ pub enum VaultResponse {
     Gc(Option<GcProgress>),
     ImportReview {
         metadata: Box<vault_domain::Metadata>,
-        sha256: String,
+        sha256: Option<String>,
         size_bytes: u64,
         duplicate_track_ids: Vec<Uuid>,
         possible_duplicate_track_ids: Vec<Uuid>,
     },
-    Shared {
-        #[schemars(with = "String")]
-        recipient_chat_id: ChatId,
-        #[schemars(with = "String")]
-        message_id: MessageId,
-    },
+    Shared(crate::ShareInfo),
+    ShareStatus(Option<crate::ShareInfo>),
     Download(DownloadInfo),
     CachePinned,
     CacheStats(vault_media::CacheStats),

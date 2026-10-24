@@ -190,6 +190,90 @@ async fn application_api_assigns_current_coordinator_then_creates_snapshot_and_g
 }
 
 #[tokio::test]
+async fn automatic_snapshot_is_verified_and_keeps_all_history() {
+    let (server, binding) = fixture().await;
+    let events = EventBus::default();
+    let mut subscription = events.subscribe();
+    let service = service(&server, binding, events);
+    ready(&service).await;
+    let cancel = CancellationToken::new();
+    service
+        .request(
+            VaultRequest::AssignGcCoordinator {
+                op_id: Uuid::new_v4(),
+                target: CoordinatorTarget::ThisDevice,
+                expected_previous: None,
+                force_confirmed: false,
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let config = MaintenanceConfig {
+        max_events: 1,
+        idle_seconds: 0,
+        check_interval_seconds: 1,
+        ..Default::default()
+    };
+    service
+        .request(
+            VaultRequest::SetMaintenanceConfig {
+                config: config.clone(),
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(service.request(VaultRequest::GetMaintenanceConfig, &cancel).await.unwrap(), VaultResponse::MaintenanceConfig(actual) if actual == config)
+    );
+    let before = server.messages().unwrap();
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::time::resume();
+    let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let EventData::Snapshot {
+                running: false,
+                result: Some(snapshot),
+            } = subscription.recv().await.unwrap().data
+            {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(snapshot.primary_healthy && snapshot.backup_healthy);
+    let after = server.messages().unwrap();
+    assert!(after.len() > before.len());
+    assert!(
+        before.iter().all(|message| after.contains(message)),
+        "snapshot scheduler must not perform GC"
+    );
+    service.shutdown().await.unwrap();
+    let mut cold = SyncEngine::new(
+        server.client().unwrap(),
+        Database::memory(binding).unwrap(),
+        "new-device".into(),
+    );
+    cold.sync(&cancel).await.unwrap();
+    assert_eq!(
+        cold.reader()
+            .shared_settings()
+            .await
+            .unwrap()
+            .gc_device_id
+            .as_deref(),
+        Some("device")
+    );
+    assert_eq!(
+        cold.verified_snapshot().unwrap().commit_id,
+        snapshot.commit_id
+    );
+}
+
+#[tokio::test]
 async fn live_services_converge_without_manual_sync_and_events_are_contextual() {
     let (server, binding) = fixture().await;
     let bus = EventBus::default();
@@ -348,7 +432,328 @@ async fn incoming_audio_is_downloaded_validated_and_registered_in_vault() {
         track.sources.values().next().unwrap().message_id,
         incoming.id
     );
+    let stored_id = track.sources.values().next().unwrap().message_id;
+    let stored = server
+        .messages()
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == stored_id)
+        .unwrap();
+    assert_eq!(
+        stored.file, incoming.file,
+        "validated documents also use server copy"
+    );
     service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn incoming_telegram_audio_copies_without_downloading_and_recovers_lost_ack() {
+    let (server, binding) = fixture().await;
+    let incoming = server
+        .add_incoming_audio(
+            "incoming.mp3".into(),
+            vec![7; 42],
+            "Remote song".into(),
+            "Remote artist".into(),
+            123_000,
+        )
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("vault.sqlite");
+    let profile_id = Uuid::new_v4();
+    let start = || {
+        VaultService::start(
+            SyncEngine::new(
+                server.client().unwrap(),
+                Database::open(&database, binding).unwrap(),
+                "device".into(),
+            ),
+            Context {
+                profile_id,
+                session_id: Uuid::new_v4(),
+                vault_id: Some(binding.vault_id),
+            },
+            EventBus::default(),
+        )
+    };
+    let service = start();
+    ready(&service).await;
+    let downloads = server.download_calls().unwrap();
+    let op_id = Uuid::new_v4();
+    let track_id = Uuid::new_v4();
+    let source_id = Uuid::new_v4();
+    let request = VaultRequest::ImportIncomingAudio {
+        source_chat_id: incoming.chat_id,
+        message_id: incoming.id,
+        track_id,
+        source_id,
+        op_id,
+        allow_duplicate: false,
+    };
+    server
+        .set_faults(Faults {
+            lost_ack: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        service
+            .request(request.clone(), &cancel)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Timeout
+    );
+    let uploaded: Vec<_> = server
+        .messages()
+        .unwrap()
+        .into_iter()
+        .filter(|message| matches!(message.record().unwrap(), Some(Record::Media(_))))
+        .collect();
+    assert_eq!(uploaded.len(), 1);
+    assert_eq!(
+        uploaded[0].file, incoming.file,
+        "copy reuses the server file"
+    );
+    assert_eq!(downloads, server.download_calls().unwrap());
+    service.shutdown().await.unwrap();
+    drop(service);
+    let service = start();
+    ready(&service).await;
+    let downloads = server.download_calls().unwrap();
+    let response = service.request(request.clone(), &cancel).await.unwrap();
+    assert!(
+        matches!(response, VaultResponse::Command(command) if command.status == CommandStatus::Applied)
+    );
+    let state = service.reader().state().await.unwrap();
+    let track = &state.tracks[&track_id];
+    assert_eq!(track.metadata.title, "Remote song");
+    assert_eq!(track.metadata.performer, "Remote artist");
+    assert_eq!(track.metadata.duration_ms, 123_000);
+    assert_eq!(
+        track.sources[&source_id].sha256, None,
+        "server copy does not invent a hash"
+    );
+    assert_eq!(track.sources[&source_id].message_id, uploaded[0].id);
+    let before = server.messages().unwrap();
+    service.request(request, &cancel).await.unwrap();
+    assert_eq!(before, server.messages().unwrap());
+    assert_eq!(downloads, server.download_calls().unwrap());
+    let recipient = ChatId::new(4242).unwrap();
+    let share_op = Uuid::new_v4();
+    let share = VaultRequest::ShareTrack {
+        op_id: share_op,
+        track_id,
+        source_id,
+        recipient_chat_id: recipient,
+    };
+    server
+        .set_faults(Faults {
+            lost_ack: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let unknown = service.request(share.clone(), &cancel).await.unwrap();
+    assert!(
+        matches!(unknown, VaultResponse::Shared(info) if info.state == ShareState::Unknown && info.message_id.is_none())
+    );
+    assert_eq!(server.shared_messages().unwrap().len(), 1);
+    service.shutdown().await.unwrap();
+    drop(service);
+    let service = start();
+    ready(&service).await;
+    let unknown = service.request(share, &cancel).await.unwrap();
+    assert!(matches!(unknown, VaultResponse::Shared(info) if info.state == ShareState::Unknown));
+    assert_eq!(
+        server.shared_messages().unwrap().len(),
+        1,
+        "unknown share must not be repeated after restart"
+    );
+    assert_eq!(
+        service
+            .request(
+                VaultRequest::ShareTrack {
+                    op_id: share_op,
+                    track_id,
+                    source_id,
+                    recipient_chat_id: ChatId::new(4243).unwrap(),
+                },
+                &cancel
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let sent_op = Uuid::new_v4();
+    let share = VaultRequest::ShareTrack {
+        op_id: sent_op,
+        track_id,
+        source_id,
+        recipient_chat_id: recipient,
+    };
+    for _ in 0..2 {
+        let sent = service.request(share.clone(), &cancel).await.unwrap();
+        assert!(
+            matches!(sent, VaultResponse::Shared(info) if info.state == ShareState::Sent && info.message_id.is_some())
+        );
+    }
+    assert_eq!(
+        server.shared_messages().unwrap().len(),
+        2,
+        "duplicate UI requests share one durable operation"
+    );
+    let rejected = service
+        .request(
+            VaultRequest::ShareTrack {
+                op_id: Uuid::new_v4(),
+                track_id,
+                source_id,
+                recipient_chat_id: binding.chat_id,
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(rejected, VaultResponse::Shared(info) if info.state == ShareState::NotSent));
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn incoming_audio_imports_separate_cover_without_reading_audio_bytes() {
+    let (server, binding) = fixture().await;
+    let incoming = server
+        .add_incoming_audio(
+            "song.mp3".into(),
+            vec![7; 42],
+            "Song".into(),
+            "Artist".into(),
+            1000,
+        )
+        .unwrap();
+    let cover = vec![0xff, 0xd8, 0xff, 0xe0, 0, 0, 0xff, 0xd9];
+    server
+        .set_audio_thumbnail(incoming.id, cover.clone(), "image/jpeg".into())
+        .unwrap();
+    let service = service(&server, binding, EventBus::default());
+    ready(&service).await;
+    let before = server.download_calls().unwrap();
+    let track_id = Uuid::new_v4();
+    let request = VaultRequest::ImportIncomingAudio {
+        source_chat_id: incoming.chat_id,
+        message_id: incoming.id,
+        track_id,
+        source_id: Uuid::new_v4(),
+        op_id: Uuid::new_v4(),
+        allow_duplicate: false,
+    };
+    let cancel = CancellationToken::new();
+    service.request(request.clone(), &cancel).await.unwrap();
+    assert_eq!(
+        server.download_calls().unwrap() - before,
+        2,
+        "thumbnail read and cover verification only"
+    );
+    let state = service.reader().state().await.unwrap();
+    let artwork = state.tracks[&track_id].metadata.artwork.as_ref().unwrap();
+    assert_eq!(artwork.sha256, vault_snapshot::digest(&cover));
+    assert!(artwork.source.is_some());
+    let downloads = server.download_calls().unwrap();
+    let messages = server.messages().unwrap();
+    service.request(request, &cancel).await.unwrap();
+    assert_eq!(downloads, server.download_calls().unwrap());
+    assert_eq!(messages, server.messages().unwrap());
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn incoming_copy_restrictions_offline_and_unknown_sends_never_upload_a_fallback() {
+    for document in [false, true] {
+        let (server, binding) = fixture().await;
+        let incoming = if document {
+            server
+                .add_incoming_document("track.wav".into(), "audio/wav".into(), wav_fixture())
+                .unwrap()
+        } else {
+            server
+                .add_incoming_audio(
+                    "track.mp3".into(),
+                    vec![7; 42],
+                    "Title".into(),
+                    "Artist".into(),
+                    123_000,
+                )
+                .unwrap()
+        };
+        let service = service(&server, binding, EventBus::default());
+        ready(&service).await;
+        let op_id = Uuid::new_v4();
+        let request = VaultRequest::ImportIncomingAudio {
+            source_chat_id: incoming.chat_id,
+            message_id: incoming.id,
+            track_id: Uuid::new_v4(),
+            source_id: Uuid::new_v4(),
+            op_id,
+            allow_duplicate: false,
+        };
+        let cancel = CancellationToken::new();
+        let before = server.messages().unwrap();
+        let downloads = server.download_calls().unwrap();
+        server
+            .set_faults(Faults {
+                prohibit_copy: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            service
+                .request(request.clone(), &cancel)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(downloads, server.download_calls().unwrap());
+        server
+            .set_faults(Faults {
+                offline: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(service.request(request.clone(), &cancel).await.is_err());
+        assert_eq!(downloads, server.download_calls().unwrap());
+        assert_eq!(before, server.messages().unwrap());
+        server.set_faults(Faults::default()).unwrap();
+        service.request(VaultRequest::Sync, &cancel).await.unwrap();
+        server
+            .set_faults(Faults {
+                document_timeout_before_send: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            service
+                .request(request.clone(), &cancel)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Timeout
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                service
+                    .request(request.clone(), &cancel)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Timeout
+            );
+        }
+        assert_eq!(before, server.messages().unwrap());
+        assert!(service.reader().command(op_id).await.unwrap().is_none());
+        service.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -398,6 +803,63 @@ async fn unknown_upload_without_visible_marker_never_blindly_retries() {
     assert_eq!(server.messages().unwrap(), before);
     assert!(service.reader().command(op_id).await.unwrap().is_none());
     service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn upload_server_errors_remain_unknown_until_the_marker_is_found() {
+    for accepted in [false, true] {
+        let (server, binding) = fixture().await;
+        let service = service(&server, binding, EventBus::default());
+        ready(&service).await;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("server-error.wav");
+        std::fs::write(&path, wav_fixture()).unwrap();
+        let op_id = Uuid::new_v4();
+        let before = server.messages().unwrap();
+        server
+            .set_faults(Faults {
+                send_error_before: (!accepted).then_some(500),
+                send_error_after: accepted.then_some(500),
+                ..Default::default()
+            })
+            .unwrap();
+        let cancel = CancellationToken::new();
+        assert_eq!(
+            service
+                .request(
+                    VaultRequest::Import {
+                        path: path.to_string_lossy().into_owned(),
+                        track_id: Uuid::new_v4(),
+                        source_id: Uuid::new_v4(),
+                        op_id,
+                        allow_duplicate: false,
+                    },
+                    &cancel
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Network
+        );
+        for _ in 0..2 {
+            let result = service
+                .request(VaultRequest::ResumeImport { op_id }, &cancel)
+                .await;
+            if accepted {
+                assert!(
+                    matches!(result.unwrap(), VaultResponse::Command(command) if command.status == vault_db::CommandStatus::Applied)
+                );
+            } else {
+                assert_eq!(result.unwrap_err().code, ErrorCode::Timeout);
+            }
+        }
+        if accepted {
+            assert_eq!(server.messages().unwrap().iter().filter(|message| matches!(message.record().unwrap(), Some(Record::Media(marker)) if marker.import_id == op_id)).count(), 1);
+        } else {
+            assert_eq!(server.messages().unwrap(), before);
+        }
+        service.shutdown().await.unwrap();
+    }
 }
 
 enum ImportRestart {
@@ -800,6 +1262,7 @@ async fn import_uploads_verified_media_then_registers_and_requires_duplicate_rev
     let shared = service
         .request(
             VaultRequest::ShareTrack {
+                op_id: Uuid::new_v4(),
                 track_id: track,
                 source_id: source,
                 recipient_chat_id: recipient,
@@ -809,7 +1272,7 @@ async fn import_uploads_verified_media_then_registers_and_requires_duplicate_rev
         .await
         .unwrap();
     assert!(
-        matches!(shared, VaultResponse::Shared { recipient_chat_id, .. } if recipient_chat_id == recipient)
+        matches!(shared, VaultResponse::Shared(info) if info.recipient_chat_id == recipient && info.state == ShareState::Sent)
     );
     assert_eq!(
         server.shared_messages().unwrap(),
@@ -819,6 +1282,7 @@ async fn import_uploads_verified_media_then_registers_and_requires_duplicate_rev
         service
             .request(
                 VaultRequest::ShareTrack {
+                    op_id: Uuid::new_v4(),
                     track_id: Uuid::new_v4(),
                     source_id: source,
                     recipient_chat_id: recipient,

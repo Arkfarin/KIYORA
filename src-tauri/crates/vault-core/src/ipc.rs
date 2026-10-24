@@ -52,6 +52,9 @@ pub struct BackendRequest {
     deny_unknown_fields
 )]
 pub enum BackendCommand {
+    StateSnapshot {
+        session_id: Uuid,
+    },
     RecoverDatabaseFromBackup {
         session_id: Uuid,
         path: String,
@@ -207,6 +210,7 @@ pub struct BackendResponse {
     deny_unknown_fields
 )]
 pub enum BackendReply {
+    StateSnapshot(Box<ProjectionSnapshot>),
     Storage(StorageUsage),
     Artwork(Option<ArtworkData>),
     Queue(QueueInfo),
@@ -249,6 +253,9 @@ impl Backend {
     ) -> Result<BackendReply, ApiError> {
         use BackendCommand::*;
         Ok(match command {
+            StateSnapshot { session_id } => {
+                BackendReply::StateSnapshot(Box::new(self.state_snapshot(session_id).await?))
+            }
             RecoverDatabaseFromBackup { session_id, path } => BackendReply::Repaired(
                 self.recover_database_from_backup(session_id, path.into(), cancel)
                     .await?,

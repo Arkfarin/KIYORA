@@ -1,7 +1,9 @@
 //! Atomic SQLite projection and local queries for kiyora.
 
+mod migrations;
 mod projection;
 mod queries;
+pub use migrations::SCHEMA_VERSION;
 pub use queries::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -80,6 +82,24 @@ impl Database {
         self.connection.execute("INSERT INTO gc_plans VALUES (?1,?2,?3,?4,?5) ON CONFLICT(plan_id) DO UPDATE SET completed_json=excluded.completed_json,status=excluded.status",params![plan_id.to_string(),self.binding.vault_id.to_string(),json,completed,status])?;
         Ok(())
     }
+    /// The reviewed allowlist is immutable. Batch progress must not re-encode
+    /// and bind the entire plan (which can contain 100,000 message digests).
+    pub fn update_gc_progress(
+        &mut self,
+        plan_id: Uuid,
+        completed: &str,
+        status: &str,
+    ) -> Result<bool, DbError> {
+        Ok(self.connection.execute(
+            "UPDATE gc_plans SET completed_json=?1,status=?2 WHERE plan_id=?3 AND vault_id=?4",
+            params![
+                completed,
+                status,
+                plan_id.to_string(),
+                self.binding.vault_id.to_string()
+            ],
+        )? == 1)
+    }
     pub fn gc_plan(&self, plan_id: Uuid) -> Result<Option<(String, String, String)>, DbError> {
         Ok(self
             .connection
@@ -98,18 +118,12 @@ impl Database {
     }
     fn initialize(mut connection: Connection, binding: Binding) -> Result<Self, DbError> {
         connection.busy_timeout(Duration::from_secs(5))?;
+        // Refuse a future schema before changing journal mode or any disk data.
+        migrations::version(&connection)?;
         connection.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
-        let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 1 {
-            return Err(DbError::Schema);
-        }
-        if version == 0 {
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch(include_str!("../migrations/001_projection.sql"))?;
-            tx.commit()?;
-        }
+        migrations::migrate(&mut connection)?;
         let existing: Option<(String, i64, i64)> = connection
             .query_row(
                 "SELECT vault_id,telegram_user_id,chat_id FROM vaults LIMIT 1",

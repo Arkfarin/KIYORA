@@ -26,8 +26,31 @@ pub struct AudioInfo {
     pub file: RemoteFile,
     pub thumbnail: Option<RemoteFile>,
 }
+/// Bounded Telegram display fields. The full metadata remains in TrackRegister.
+#[derive(Debug, Clone)]
+pub struct AudioUpload {
+    pub path: PathBuf,
+    pub title: String,
+    pub performer: String,
+    pub duration_seconds: u32,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageContent {
+    Text,
+    Audio,
+    Document,
+    #[default]
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMessage {
+    /// Preserve the actual TDLib content kind; a caption alone is not evidence
+    /// that a message is a disposable control record. Old serialized hints are
+    /// unclassified until fetched again.
+    #[serde(default)]
+    pub content: MessageContent,
     #[serde(default)]
     pub sent_at_unix: Option<u64>,
     pub chat_id: ChatId,
@@ -125,6 +148,13 @@ pub trait Telegram: Send + Sync {
         caption: String,
         cancel: &CancellationToken,
     ) -> impl Future<Output = Result<RemoteMessage, TelegramError>> + Send;
+    fn send_audio(
+        &self,
+        chat: ChatId,
+        audio: AudioUpload,
+        caption: String,
+        cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<RemoteMessage, TelegramError>> + Send;
     fn download(
         &self,
         file: RemoteFile,
@@ -139,6 +169,23 @@ pub trait Telegram: Send + Sync {
         message_id: MessageId,
         vault_id: uuid::Uuid,
         recipient_chat: ChatId,
+        cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<RemoteMessage, TelegramError>> + Send;
+    /// Check media type and copy permission before downloading incoming content.
+    fn incoming_media(
+        &self,
+        chat: ChatId,
+        id: MessageId,
+        cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<RemoteMessage, TelegramError>> + Send;
+    /// Copy selected incoming media into the verified vault, replacing its caption.
+    /// Implementations must enforce Telegram's copy restriction, even on retries.
+    fn copy_media(
+        &self,
+        source_chat: ChatId,
+        message_id: MessageId,
+        target_chat: ChatId,
+        caption: String,
         cancel: &CancellationToken,
     ) -> impl Future<Output = Result<RemoteMessage, TelegramError>> + Send;
     fn delete_messages(
@@ -463,6 +510,40 @@ impl Telegram for TdTransport {
         }
         self.send_content(chat,json!({"@type":"inputMessageDocument","document":{"@type":"inputDocument","document":{"@type":"inputFileLocal","path":path.to_str().ok_or(TelegramError::InvalidInput)?},"thumbnail":null,"disable_content_type_detection":true},"caption":{"@type":"formattedText","text":caption,"entities":[]}}),cancel).await
     }
+    async fn send_audio(
+        &self,
+        chat: ChatId,
+        audio: AudioUpload,
+        caption: String,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, TelegramError> {
+        if !audio.path.is_absolute()
+            || !audio.path.is_file()
+            || audio.title.chars().count() > 64
+            || audio.performer.chars().count() > 64
+            || caption.encode_utf16().count() > 1024
+        {
+            return Err(TelegramError::InvalidInput);
+        }
+        let duration =
+            i32::try_from(audio.duration_seconds).map_err(|_| TelegramError::InvalidInput)?;
+        self.send_content(
+            chat,
+            json!({
+                "@type": "inputMessageAudio",
+                "audio": {
+                    "@type": "inputAudio",
+                    "audio": {"@type": "inputFileLocal", "path": audio.path.to_str().ok_or(TelegramError::InvalidInput)?},
+                    "album_cover_thumbnail": null,
+                    "duration": duration,
+                    "title": audio.title,
+                    "performer": audio.performer,
+                },
+                "caption": {"@type": "formattedText", "text": caption, "entities": []},
+            }),
+            cancel,
+        ).await
+    }
     async fn download(
         &self,
         file: RemoteFile,
@@ -525,7 +606,7 @@ impl Telegram for TdTransport {
                 cancel,
             )
             .await?;
-        if properties["can_be_forwarded"] != true {
+        if properties["can_be_copied"] != true {
             return Err(TelegramError::Unshareable);
         }
         let recipient = self
@@ -543,10 +624,13 @@ impl Telegram for TdTransport {
         {
             return Err(TelegramError::InvalidInput);
         }
+        // Subscribe before sending: the completion update can precede the
+        // correlated response carrying the temporary message ID.
+        let updates = self.client.subscribe();
         let response = self
             .client
             .request(
-                json!({"@type":"forwardMessages","chat_id":recipient_chat.get(),"from_chat_id":source_chat.get(),"message_ids":[message_id.get()],"options":{"@type":"messageSendOptions","disable_notification":false,"from_background":false,"protect_content":true},"send_copy":true,"remove_caption":true}),
+                json!({"@type":"forwardMessages","chat_id":recipient_chat.get(),"topic_id":null,"from_chat_id":source_chat.get(),"message_ids":[message_id.get()],"options":null,"send_copy":true,"remove_caption":true}),
                 Duration::from_secs(60),
                 cancel,
             )
@@ -555,11 +639,78 @@ impl Telegram for TdTransport {
             .as_array()
             .filter(|messages| messages.len() == 1)
             .ok_or(TelegramError::InvalidResponse)?;
-        let forwarded = parse_message(&messages[0], recipient_chat)?;
+        let forwarded = self
+            .confirm_send(recipient_chat, messages[0].clone(), updates, cancel)
+            .await?;
         if forwarded.file.is_none() {
             return Err(TelegramError::InvalidResponse);
         }
         Ok(forwarded)
+    }
+    async fn incoming_media(
+        &self,
+        source_chat: ChatId,
+        message_id: MessageId,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, TelegramError> {
+        let source = self
+            .message(source_chat, message_id, cancel)
+            .await?
+            .ok_or(TelegramError::Request { code: 404 })?;
+        if !matches!(
+            source.content,
+            MessageContent::Audio | MessageContent::Document
+        ) || source.file.is_none()
+            || source.record()?.is_some()
+        {
+            return Err(TelegramError::Unshareable);
+        }
+        let properties = self.client.read(
+            json!({"@type":"getMessageProperties","chat_id":source_chat.get(),"message_id":message_id.get()}),
+            cancel,
+        ).await?;
+        if properties["can_be_copied"] != true {
+            return Err(TelegramError::Unshareable);
+        }
+        Ok(source)
+    }
+    async fn copy_media(
+        &self,
+        source_chat: ChatId,
+        message_id: MessageId,
+        target_chat: ChatId,
+        caption: String,
+        cancel: &CancellationToken,
+    ) -> Result<RemoteMessage, TelegramError> {
+        if caption.encode_utf16().count() > 1024
+            || !matches!(
+                vault_protocol::classify_text(&caption),
+                Ok(Some(Record::Media(_)))
+            )
+        {
+            return Err(TelegramError::InvalidInput);
+        }
+        self.incoming_media(source_chat, message_id, cancel).await?;
+        self.send_content(
+            target_chat,
+            json!({
+                "@type": "inputMessageForwarded",
+                "from_chat_id": source_chat.get(),
+                "message_id": message_id.get(),
+                "in_game_share": false,
+                "replace_video_start_timestamp": false,
+                "new_video_start_timestamp": 0,
+                "copy_options": {
+                    "@type": "messageCopyOptions",
+                    "send_copy": true,
+                    "replace_caption": true,
+                    "new_caption": {"@type":"formattedText","text":caption,"entities":[]},
+                    "new_show_caption_above_media": false,
+                },
+            }),
+            cancel,
+        )
+        .await
     }
     async fn delete_messages(
         &self,
@@ -704,6 +855,12 @@ pub fn parse_message(value: &Value, chat: ChatId) -> Result<RemoteMessage, Teleg
         && value["sender_id"]["@type"] == "messageSenderChat"
         && integer(&value["sender_id"]["chat_id"]).ok() == Some(chat.get());
     Ok(RemoteMessage {
+        content: match content["@type"].as_str() {
+            Some("messageText") => MessageContent::Text,
+            Some("messageAudio") => MessageContent::Audio,
+            Some("messageDocument") => MessageContent::Document,
+            _ => MessageContent::Other,
+        },
         sent_at_unix: integer(&value["date"])
             .ok()
             .and_then(|n| u64::try_from(n).ok())

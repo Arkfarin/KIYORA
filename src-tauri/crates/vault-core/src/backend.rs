@@ -20,6 +20,16 @@ pub use artwork::ArtworkData;
 pub use queue::{QueueInfo, QueuePage};
 pub use storage::StorageUsage;
 
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectionSnapshot {
+    pub context: Context,
+    /// Subscribe before requesting. Ignore events <= this sequence; later
+    /// invalidations may overlap the snapshot and must be applied idempotently.
+    pub event_sequence: String,
+    pub cursor: String,
+    pub state: vault_domain::State,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProfileConfig {
@@ -127,11 +137,19 @@ impl Backend {
         }
     }
     pub fn default_backend() -> Result<Self, ApiError> {
+        Self::default_backend_with_resources(None)
+    }
+    pub fn default_backend_with_resources(
+        resources: Option<&std::path::Path>,
+    ) -> Result<Self, ApiError> {
         let store = match std::env::var_os("KIYORA_DATA_DIR") {
             Some(path) => ProfileStore::at(path)?,
             None => ProfileStore::default_location()?,
         };
-        Ok(Self::new(store, native_library_path()))
+        Ok(Self::new(
+            store,
+            crate::native_location::resolve(resources)?,
+        ))
     }
     pub fn with_playback_platform(
         mut self,
@@ -327,6 +345,35 @@ impl Backend {
                     ErrorCode::NoVault
                 })
             })
+    }
+    /// Local-only recovery for a late or lagging IPC subscriber. Hold the session
+    /// gate while reading so a profile switch cannot mix contexts or projections.
+    pub async fn state_snapshot(&self, session_id: Uuid) -> Result<ProjectionSnapshot, ApiError> {
+        let guard = self.session.lock().await;
+        let s = guard
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        check_session(s, session_id)?;
+        let reader = s
+            .service
+            .as_ref()
+            .map(VaultService::reader)
+            .or_else(|| s.reader.clone())
+            .ok_or_else(|| {
+                ApiError::new(if s.repair_required {
+                    ErrorCode::DatabaseCorrupt
+                } else {
+                    ErrorCode::NoVault
+                })
+            })?;
+        let event_sequence = self.events.sequence()?;
+        let (state, cursor) = reader.snapshot().await?;
+        Ok(ProjectionSnapshot {
+            context: s.context.clone(),
+            event_sequence,
+            state,
+            cursor,
+        })
     }
     /// The owned session lock survives dropped IPC callers until replacement
     /// ends, preventing another profile operation from racing the installer.
@@ -1714,14 +1761,4 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let m = mp + if mp < 10 { 3 } else { -9 };
     y += i64::from(m <= 2);
     (y, m as u32, d as u32)
-}
-fn native_library_path() -> PathBuf {
-    if let Some(value) = std::env::var_os("KIYORA_TDJSON") {
-        return value.into();
-    }
-    if cfg!(target_os = "windows") {
-        "tdjson.dll".into()
-    } else {
-        "libtdjson.so".into()
-    }
 }

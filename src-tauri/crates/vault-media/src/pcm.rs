@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
+mod opus;
 
 const CHANNELS: u16 = 2;
 const RATE: u32 = 48_000;
@@ -46,7 +47,7 @@ impl Seek for CheckedReader {
 // Vorbis can expose an empty initial decoded packet. Prime one sample before
 // UniformSourceIterator inspects the span, otherwise it treats that packet as EOF.
 struct PrimedDecoder {
-    decoder: rodio::Decoder<CheckedReader>,
+    decoder: Box<dyn Source<Item = f32> + Send>,
     first: Option<f32>,
 }
 impl Iterator for PrimedDecoder {
@@ -302,19 +303,26 @@ fn produce(input: PlaybackInput, shared: Arc<Shared>) {
                         (Box::new(remote.reader(cancel.clone())), remote.size())
                     }
                 };
-                let mut next = rodio::Decoder::builder()
-                    .with_data(CheckedReader {
-                        input: reader,
-                        failed: failed.clone(),
-                    })
-                    .with_byte_len(size)
-                    .with_seekable(true)
-                    .build()
-                    .map_err(|_| "DECODER_ERROR")?;
-                if position_ms != 0 {
-                    next.try_seek(Duration::from_millis(position_ms))
-                        .map_err(|_| "SEEK_ERROR")?;
-                }
+                let mut reader = CheckedReader {
+                    input: reader,
+                    failed: failed.clone(),
+                };
+                let mut next: Box<dyn Source<Item = f32> + Send> =
+                    if opus::is_opus(&mut reader).map_err(|_| "MEDIA_READ_ERROR")? {
+                        Box::new(opus::OpusSource::new(reader, size, position_ms)?)
+                    } else {
+                        let mut next = rodio::Decoder::builder()
+                            .with_data(reader)
+                            .with_byte_len(size)
+                            .with_seekable(true)
+                            .build()
+                            .map_err(|_| "DECODER_ERROR")?;
+                        if position_ms != 0 {
+                            next.try_seek(Duration::from_millis(position_ms))
+                                .map_err(|_| "SEEK_ERROR")?;
+                        }
+                        Box::new(next)
+                    };
                 let first = next.next().ok_or("DECODER_ERROR")?;
                 let next = PrimedDecoder {
                     decoder: next,
@@ -558,8 +566,17 @@ mod tests {
         assert!(source.next().is_none());
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn remote_decoder_accepts_configured_mp3_flac_m4a_and_vorbis_formats() {
-        for name in ["tone.mp3", "tone.flac", "tone.m4a", "tone.ogg"] {
+    async fn remote_decoder_accepts_import_formats_and_seeks() {
+        for name in [
+            "tone.mp3",
+            "tone.flac",
+            "tone.m4a",
+            "tone.ogg",
+            "tone.aac",
+            "tone.aiff",
+            "tone-alac.m4a",
+            "tone.opus",
+        ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../spec/test-vectors/audio")
                 .join(name);

@@ -1457,7 +1457,6 @@
       "required": [
         "metadata",
         "op_id",
-        "sha256",
         "size_bytes",
         "source_id",
         "stage",
@@ -1478,7 +1477,10 @@
           "format": "uuid"
         },
         "sha256": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "size_bytes": {
           "type": "integer",
@@ -1650,6 +1652,48 @@
         "cancelled",
         "interrupted"
       ]
+    },
+    "MaintenanceConfig": {
+      "type": "object",
+      "required": [
+        "check_interval_seconds",
+        "enabled",
+        "idle_seconds",
+        "max_age_seconds",
+        "max_events",
+        "max_log_bytes"
+      ],
+      "properties": {
+        "check_interval_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "idle_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_age_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
     },
     "Manifest": {
       "type": "object",
@@ -2400,6 +2444,61 @@
         }
       }
     },
+    "ShareInfo": {
+      "type": "object",
+      "required": [
+        "op_id",
+        "recipient_chat_id",
+        "source_id",
+        "state",
+        "track_id"
+      ],
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApiError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "op_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "recipient_chat_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "state": {
+          "$ref": "#/definitions/ShareState"
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ShareState": {
+      "type": "string",
+      "enum": [
+        "sent",
+        "not_sent",
+        "unknown"
+      ]
+    },
     "SharedSettings": {
       "type": "object",
       "required": [
@@ -2651,6 +2750,24 @@
             "kind": {
               "type": "string",
               "enum": [
+                "maintenance_config"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/MaintenanceConfig"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
                 "audio_info"
               ]
             },
@@ -2834,7 +2951,6 @@
                 "duplicate_track_ids",
                 "metadata",
                 "possible_duplicate_track_ids",
-                "sha256",
                 "size_bytes"
               ],
               "properties": {
@@ -2856,7 +2972,10 @@
                   }
                 },
                 "sha256": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "size_bytes": {
                   "type": "integer",
@@ -2881,19 +3000,32 @@
               ]
             },
             "result": {
-              "type": "object",
-              "required": [
-                "message_id",
-                "recipient_chat_id"
-              ],
-              "properties": {
-                "message_id": {
-                  "type": "string"
+              "$ref": "#/definitions/ShareInfo"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "share_status"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ShareInfo"
                 },
-                "recipient_chat_id": {
-                  "type": "string"
+                {
+                  "type": "null"
                 }
-              }
+              ]
             }
           }
         },
