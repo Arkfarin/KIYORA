@@ -1072,6 +1072,9 @@ impl Backend {
         input: AuthInput,
         cancel: &CancellationToken,
     ) -> Result<AuthStatus, ApiError> {
+        if cancel.is_cancelled() {
+            return Err(ApiError::new(ErrorCode::Cancelled));
+        }
         let (status, context) = {
             let guard = self.session.lock().await;
             let s = guard

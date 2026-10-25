@@ -98,8 +98,8 @@ async fn switching_profile_changes_session_and_fences_stale_calls() {
 fn typed_ipc_errors_and_profile_context_do_not_expose_native_messages() {
     let raw = vault_telegram::TelegramError::Request { code: 400 };
     let safe = ApiError::from(raw);
-    assert_eq!(safe.code, ErrorCode::Network);
-    assert_eq!(safe.message, "Telegram request failed");
+    assert_eq!(safe.code, ErrorCode::TelegramRejected);
+    assert_eq!(safe.message, "Telegram rejected the request");
     let context = Context {
         profile_id: Uuid::new_v4(),
         session_id: Uuid::new_v4(),

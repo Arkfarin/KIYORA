@@ -2227,6 +2227,21 @@
             }
           },
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "resend_code"
+              ]
+            }
+          },
+          "additionalProperties": false
         }
       ]
     },

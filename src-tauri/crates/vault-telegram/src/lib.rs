@@ -32,6 +32,20 @@ pub enum TelegramError {
     InvalidResponse,
     #[error("TDLib request rejected with code {code}")]
     Request { code: i64 },
+    #[error("Telegram authentication code is invalid")]
+    InvalidCode,
+    #[error("Telegram authentication code has expired")]
+    CodeExpired,
+    #[error("Telegram 2FA password is invalid")]
+    InvalidPassword,
+    #[error("Telegram connection failed")]
+    Network,
+    #[error("authentication input does not match the current state")]
+    AuthStateMismatch,
+    #[error("Telegram does not offer code resending in this state")]
+    ResendUnavailable,
+    #[error("code resending is available in {retry_after_seconds} seconds")]
+    ResendTooEarly { retry_after_seconds: u64 },
     #[error("Telegram rate limit; retry after {retry_after_seconds} seconds")]
     RateLimited { retry_after_seconds: u64 },
     #[error("unsupported TDLib version")]
@@ -63,11 +77,14 @@ impl TelegramError {
         matches!(self,
             Self::InvalidInput | Self::Unshareable | Self::AuthRequired
             | Self::UnsafeChannel | Self::RateLimited { .. }
+            | Self::InvalidCode | Self::CodeExpired | Self::InvalidPassword
+            | Self::AuthStateMismatch | Self::ResendUnavailable | Self::ResendTooEarly { .. }
             | Self::Request { code: 400..=407 | 409..=499 })
     }
 }
 
-/// Telegram error descriptions may contain PII. Keep only code and a bounded wait.
+/// Telegram descriptions may contain PII. Classify exact known identifiers and
+/// discard the message. In particular, TDLib forbids processing code 406 text.
 pub fn check_response(value: serde_json::Value) -> Result<serde_json::Value, TelegramError> {
     if value["@type"] != "error" {
         return Ok(value);
@@ -75,17 +92,34 @@ pub fn check_response(value: serde_json::Value) -> Result<serde_json::Value, Tel
     let code = value["code"]
         .as_i64()
         .ok_or(TelegramError::InvalidResponse)?;
-    if code == 429 {
-        let message = value["message"].as_str().unwrap_or("");
-        let wait = message
-            .split(|c: char| !c.is_ascii_digit())
-            .filter(|s| !s.is_empty())
-            .find_map(|s| s.parse::<u64>().ok())
-            .unwrap_or(60)
-            .clamp(1, 86400);
+    if code == 406 {
+        return Err(TelegramError::Request { code });
+    }
+    let message = value["message"].as_str().unwrap_or("");
+    let wait = [
+        "Too Many Requests: retry after ",
+        "FLOOD_WAIT_",
+        "FLOOD_PREMIUM_WAIT_",
+    ]
+    .iter()
+    .find_map(|prefix| message.strip_prefix(prefix))
+    .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+    .and_then(|s| s.parse::<u64>().ok());
+    if matches!(code, 420 | 429) || wait.is_some() {
         return Err(TelegramError::RateLimited {
-            retry_after_seconds: wait,
+            retry_after_seconds: wait.unwrap_or(60).max(1),
         });
     }
-    Err(TelegramError::Request { code })
+    Err(match message {
+        "PHONE_CODE_INVALID"
+        | "PHONE_CODE_EMPTY"
+        | "EMAIL_CODE_INVALID"
+        | "EMAIL_CODE_EMPTY"
+        | "Code must be non-empty" => TelegramError::InvalidCode,
+        "Authentication code can't be resend" => TelegramError::ResendUnavailable,
+        "PHONE_CODE_EXPIRED" | "EMAIL_CODE_EXPIRED" => TelegramError::CodeExpired,
+        "PASSWORD_HASH_INVALID" => TelegramError::InvalidPassword,
+        "NETWORK_ERROR" | "CONNECTION_FAILED" | "CONNECTION_TIMEOUT" => TelegramError::Network,
+        _ => TelegramError::Request { code },
+    })
 }

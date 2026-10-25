@@ -22,6 +22,7 @@ pub enum LoginInput {
     Qr,
     Email(String),
     EmailCode(String),
+    ResendCode,
 }
 impl From<LoginInput> for AuthInput {
     fn from(input: LoginInput) -> Self {
@@ -32,6 +33,7 @@ impl From<LoginInput> for AuthInput {
             LoginInput::Qr => Self::Qr,
             LoginInput::Email(v) => Self::Email(Zeroizing::new(v)),
             LoginInput::EmailCode(v) => Self::EmailCode(Zeroizing::new(v)),
+            LoginInput::ResendCode => Self::ResendCode,
         }
     }
 }

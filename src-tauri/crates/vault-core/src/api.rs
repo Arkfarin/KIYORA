@@ -10,6 +10,13 @@ use vault_telegram::TelegramError;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     AuthRequired,
+    InvalidCode,
+    CodeExpired,
+    InvalidPassword,
+    AuthStateMismatch,
+    ResendUnavailable,
+    ResendTooEarly,
+    TelegramRejected,
     NoProfile,
     NoVault,
     ProfileBusy,
@@ -46,12 +53,23 @@ pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
 }
 impl ApiError {
     pub fn new(code: ErrorCode) -> Self {
         use ErrorCode::*;
         let message = match code {
             AuthRequired => "Telegram authorization is required",
+            InvalidCode => "incorrect Telegram code; check the latest code and try again",
+            CodeExpired => "Telegram code expired; request a new code when available",
+            InvalidPassword => "incorrect Telegram 2FA password",
+            AuthStateMismatch => "authorization state changed; check status before continuing",
+            ResendUnavailable => {
+                "Telegram does not offer another code delivery method; check auth status"
+            }
+            ResendTooEarly => "wait before requesting another Telegram code",
+            TelegramRejected => "Telegram rejected the request",
             NoProfile => "select a profile first",
             NoVault => "attach a vault first",
             ProfileBusy => "profile is already in use",
@@ -72,7 +90,7 @@ impl ApiError {
             Cancelled => "job cancelled; inspect its command before retrying",
             Timeout => "request timed out; inspect its command before retrying",
             RateLimited => "Telegram rate limit reached",
-            Network => "Telegram request failed",
+            Network => "Telegram connection or service is unavailable",
             Storage => "local storage operation failed",
             DatabaseCorrupt => {
                 "local database is damaged; restore it from a verified Telegram snapshot"
@@ -86,7 +104,8 @@ impl ApiError {
         Self {
             code,
             message: message.into(),
-            retryable: matches!(code, Backpressure | RateLimited | Network),
+            retryable: matches!(code, Backpressure | RateLimited | ResendTooEarly | Network),
+            retry_after_seconds: None,
         }
     }
 }
@@ -119,7 +138,16 @@ impl From<SyncError> for ApiError {
 impl From<TelegramError> for ApiError {
     fn from(error: TelegramError) -> Self {
         use TelegramError::*;
-        Self::new(match error {
+        let retry_after_seconds = match &error {
+            RateLimited {
+                retry_after_seconds,
+            }
+            | ResendTooEarly {
+                retry_after_seconds,
+            } => Some(*retry_after_seconds),
+            _ => None,
+        };
+        let mut result = Self::new(match error {
             NativeLibrary | UnsupportedVersion => ErrorCode::NativeUnavailable,
             AlreadyRunning => ErrorCode::ProfileBusy,
             Closed => ErrorCode::Closed,
@@ -127,15 +155,29 @@ impl From<TelegramError> for ApiError {
             Cancelled => ErrorCode::Cancelled,
             Backpressure => ErrorCode::Backpressure,
             AuthRequired => ErrorCode::AuthRequired,
+            InvalidCode => ErrorCode::InvalidCode,
+            CodeExpired => ErrorCode::CodeExpired,
+            InvalidPassword => ErrorCode::InvalidPassword,
+            AuthStateMismatch => ErrorCode::AuthStateMismatch,
+            ResendUnavailable => ErrorCode::ResendUnavailable,
+            ResendTooEarly { .. } => ErrorCode::ResendTooEarly,
             RateLimited { .. } => ErrorCode::RateLimited,
-            Request { .. } | UpdatesLost => ErrorCode::Network,
+            Request { code: 408 } => ErrorCode::Timeout,
+            Request {
+                code: 500..=599 | -1 | 0,
+            }
+            | Network
+            | UpdatesLost => ErrorCode::Network,
+            Request { .. } => ErrorCode::TelegramRejected,
             InvalidInput => ErrorCode::InvalidInput,
             LocalFile => ErrorCode::Storage,
             Unshareable => ErrorCode::Conflict,
             UnsafeChannel => ErrorCode::UnsafeVault,
             Protocol => ErrorCode::ProtocolUnsupported,
             InvalidResponse | InvalidVault | IncompleteHistory => ErrorCode::Integrity,
-        })
+        });
+        result.retry_after_seconds = retry_after_seconds;
+        result
     }
 }
 impl From<vault_security::SecurityError> for ApiError {

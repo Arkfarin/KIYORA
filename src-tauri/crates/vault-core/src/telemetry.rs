@@ -10,7 +10,7 @@ pub fn initialize_diagnostics() {
         .with_ansi(false)
         .with_writer(std::io::stderr)
         .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-            metadata.target() == "kiyora::backend"
+            matches!(metadata.target(), "kiyora::backend" | "kiyora::auth")
         }));
     let _ = tracing_subscriber::registry().with(layer).try_init();
 }
@@ -40,6 +40,7 @@ pub(crate) fn event(context: &crate::Context, data: &crate::EventData) {
     // QR links, even if their surrounding operation fails.
     tracing::info!(target: "kiyora::backend", event = name, profile = %context.profile_id, session = %context.session_id);
     match data {
+        Auth(status) => tracing::info!(target: "kiyora::backend", state = status.name()),
         Warning(error) => {
             tracing::warn!(target: "kiyora::backend", code = ?error.code, retryable = error.retryable)
         }

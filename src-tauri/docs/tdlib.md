@@ -43,6 +43,55 @@ queues are bounded; lag forces reconciliation. Only an explicit allowlist of rea
 is retried, including FLOOD_WAIT delays. Mutation timeouts retain unknown outcomes.
 Native logs are disabled, and raw TDLib errors/updates never go directly to UI logs.
 
+### Authorization and diagnostics
+
+`kiyora-cli auth login` resumes the authorization state in the selected profile's
+TDLib database. A normal CLI exit, an error, or EOF closes the native client;
+it does not log out or delete the profile/session. Run the same command again to
+continue. TDLib can expire an unfinished login and ask for the phone again.
+
+When a code is required, the CLI identifies its delivery method (for example,
+a message in another active Telegram session, SMS, a call, or Fragment), expected
+length when known, and the next method and delay offered by Telegram. Enter
+`/resend` at the code prompt or run `kiyora-cli auth resend`. Each explicit resend
+re-reads `getAuthorizationState`, then calls `resendAuthenticationCode` with
+`resendCodeReasonUserRequest` only if `next_type` is present and `timeout` is zero.
+Email code resends use the same documented method. Kiyora never forces SMS or
+automatically retries an auth mutation. FloodWait delays block further auth
+attempts in the running client; Telegram remains authoritative across restarts.
+
+`auth status --json` includes `code_info.delivery`, `expected_length`,
+`timeout_seconds` and `next_delivery` in `CODE_REQUIRED`. The timeout is a snapshot
+of TDLib's remaining delay; resending always checks it again. Unknown lengths and
+missing metadata are represented by null. Numbers, code hints, Firebase receipts
+and delivery URLs are excluded from this metadata.
+
+Errors distinguish `INVALID_CODE`, `CODE_EXPIRED`, `INVALID_PASSWORD`,
+`TELEGRAM_REJECTED`, `NETWORK`, `TIMEOUT`, `RATE_LIMITED`, `RESEND_TOO_EARLY` and
+`RESEND_UNAVAILABLE`. Delay errors include `retry_after_seconds`. Incorrect input
+can be corrected in the interactive login; network failures and FloodWait exit
+with guidance to resume later. Codes, phone/email input and passwords are hidden
+when entered from a terminal. Avoid putting credentials in command arguments.
+
+Set `KIYORA_DIAGNOSTICS=1` to enable JSON diagnostics on stderr. The `kiyora::auth`
+target records allowlisted state/operation names, delivery metadata, connection
+state, elapsed milliseconds, safe error categories, numeric rejection codes and
+retry delays. It never records request/response bodies, phone numbers, codes,
+passwords, API hash, encryption keys, QR tokens or TDLib database contents.
+
+Offline regression tests use a tdjson ABI double and temporary profile/session
+directories, covering all auth states, resend restrictions, concurrent attempts,
+invalid/expired codes, FloodWait, diagnostic redaction and interrupted login:
+
+```sh
+cargo test --locked -p vault-telegram --test auth --lib
+cargo test --locked -p vault-core --test auth_recovery --bin kiyora-cli
+```
+
+The ABI fixture tests execute on Linux; portable state/error tests run on every
+target. These tests do not exercise an actual Telegram account or prove live
+code delivery on Linux, Windows or Android.
+
 Linux keys use Secret Service with encrypted D-Bus transport; Windows uses Credential
 Manager and macOS Keychain. No usable secure store means an explicit error, never a
 plaintext key file. The Android Tauri shell injects the native Keystore provider

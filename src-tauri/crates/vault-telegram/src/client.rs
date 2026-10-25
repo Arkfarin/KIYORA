@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -22,12 +23,14 @@ struct Request {
 struct Pending {
     deadline: Option<Instant>,
     reply: Reply,
+    authorization: bool,
 }
 
 /// Cloneable request handle; the sole receive worker closes after the last handle
 /// is dropped. Raw updates are internal backend data, never emitted directly to UI.
 #[derive(Clone)]
 pub struct TdClient {
+    pub(crate) auth_attempts: Arc<tokio::sync::Mutex<crate::auth::AuthAttempts>>,
     requests: mpsc::Sender<Request>,
     updates: broadcast::Sender<Value>,
     auth: watch::Receiver<Value>,
@@ -79,6 +82,7 @@ impl TdClient {
             .map_err(|_| TelegramError::NativeLibrary)?;
         started_rx.await.map_err(|_| TelegramError::Closed)??;
         Ok(Self {
+            auth_attempts: Arc::default(),
             requests,
             updates,
             auth,
@@ -288,6 +292,8 @@ impl Worker {
                                 Pending {
                                     deadline: request.deadline,
                                     reply: request.reply,
+                                    authorization: request.value["@type"]
+                                        == "getAuthorizationState",
                                 },
                             );
                         }
@@ -304,13 +310,20 @@ impl Worker {
                     }
                     if let Some(correlation) = value["@extra"].as_str() {
                         if let Some(pending) = self.pending.remove(correlation) {
+                            if pending.authorization
+                                && value["@type"]
+                                    .as_str()
+                                    .is_some_and(|s| s.starts_with("authorizationState"))
+                            {
+                                self.update_authorization(value.clone());
+                            }
                             let _ = pending.reply.send(check_response(value));
                         }
                     } else {
                         if value["@type"] == "updateAuthorizationState" {
                             let state = value["authorization_state"].clone();
                             let is_closed = state["@type"] == "authorizationStateClosed";
-                            self.auth.send_replace(state);
+                            self.update_authorization(state);
                             if is_closed {
                                 break;
                             }
@@ -348,5 +361,16 @@ impl Worker {
             let _ = p.reply.send(Err(TelegramError::Closed));
         }
         // Dropping the permit happens only after authorizationStateClosed.
+    }
+    fn update_authorization(&self, mut state: Value) {
+        // Correlation metadata is transport data, not authorization state.
+        if let Some(object) = state.as_object_mut() {
+            object.remove("@extra");
+            object.remove("@client_id");
+        }
+        if *self.auth.borrow() != state {
+            crate::AuthStatus::from_td(&state).trace();
+            self.auth.send_replace(state);
+        }
     }
 }

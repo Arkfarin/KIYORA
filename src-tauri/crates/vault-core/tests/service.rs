@@ -992,7 +992,7 @@ async fn prepared_import_survives_restart(incoming_audio: bool, restart: ImportR
     let token = CancellationToken::new();
     assert_eq!(
         first.request(request, &token).await.unwrap_err().code,
-        ErrorCode::Network
+        ErrorCode::TelegramRejected
     );
     assert!(
         !server

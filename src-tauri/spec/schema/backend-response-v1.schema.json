@@ -410,6 +410,14 @@
         "message": {
           "type": "string"
         },
+        "retry_after_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "retryable": {
           "type": "boolean"
         }
@@ -519,6 +527,46 @@
         }
       }
     },
+    "AuthCodeInfo": {
+      "type": "object",
+      "required": [
+        "delivery"
+      ],
+      "properties": {
+        "delivery": {
+          "$ref": "#/definitions/CodeDelivery"
+        },
+        "expected_length": {
+          "description": "None for unknown length, word/phrase codes, or malformed metadata.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "next_delivery": {
+          "description": "None means Telegram does not offer another delivery method.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CodeDelivery"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout_seconds": {
+          "description": "Remaining delay at the time TDLib produced this state; None if unknown.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
     "AuthStatus": {
       "oneOf": [
         {
@@ -552,9 +600,13 @@
         {
           "type": "object",
           "required": [
+            "code_info",
             "state"
           ],
           "properties": {
+            "code_info": {
+              "$ref": "#/definitions/AuthCodeInfo"
+            },
             "state": {
               "type": "string",
               "enum": [
@@ -615,6 +667,14 @@
             "state"
           ],
           "properties": {
+            "expected_length": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0.0
+            },
             "state": {
               "type": "string",
               "enum": [
@@ -1261,6 +1321,23 @@
       },
       "additionalProperties": false
     },
+    "CodeDelivery": {
+      "description": "Safe delivery metadata. Phone numbers, code hints, receipts and token URLs deliberately stay in TDLib and are not part of application diagnostics.",
+      "type": "string",
+      "enum": [
+        "TELEGRAM_MESSAGE",
+        "SMS",
+        "SMS_WORD",
+        "SMS_PHRASE",
+        "CALL",
+        "FLASH_CALL",
+        "MISSED_CALL",
+        "FRAGMENT",
+        "FIREBASE_ANDROID",
+        "FIREBASE_IOS",
+        "UNKNOWN"
+      ]
+    },
     "Command": {
       "type": "object",
       "required": [
@@ -1409,6 +1486,13 @@
       "type": "string",
       "enum": [
         "AUTH_REQUIRED",
+        "INVALID_CODE",
+        "CODE_EXPIRED",
+        "INVALID_PASSWORD",
+        "AUTH_STATE_MISMATCH",
+        "RESEND_UNAVAILABLE",
+        "RESEND_TOO_EARLY",
+        "TELEGRAM_REJECTED",
         "NO_PROFILE",
         "NO_VAULT",
         "PROFILE_BUSY",
