@@ -570,8 +570,14 @@ impl CacheManager {
             .entries
             .get_mut(key)
             .ok_or(MediaError::CacheIndex)?;
-        entry.pinned = pinned;
-        persist(&state)
+        let previous = std::mem::replace(&mut entry.pinned, pinned);
+        if let Err(error) = persist(&state) {
+            if let Some(entry) = state.index.entries.get_mut(key) {
+                entry.pinned = previous;
+            }
+            return Err(error);
+        }
+        Ok(())
     }
     pub fn clear_unpinned(&self) -> Result<u64, MediaError> {
         let mut state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;

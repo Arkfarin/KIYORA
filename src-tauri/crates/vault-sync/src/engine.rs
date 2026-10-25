@@ -375,6 +375,14 @@ impl<T: Telegram> SyncEngine<T> {
                 self.transport
                     .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
                     .await?;
+                let changed = self.invalidate_with_expected_deletions(expected);
+                if self.full_reconcile_required {
+                    return Err(SyncError::ReconcileRequired);
+                }
+                if changed {
+                    anchor = last;
+                    continue;
+                }
                 self.confirmed_head = Some(last);
                 if added_bytes > 0 {
                     let raw = self
@@ -507,6 +515,9 @@ impl<T: Telegram> SyncEngine<T> {
     async fn sync_inner(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
         self.report(crate::Operation::Sync, crate::Phase::Verify, 0, None);
         self.invalidate_from_updates();
+        // This attempt re-audits the state invalidated before it started. Any
+        // subsequent loss of continuity invalidates this attempt as well.
+        self.full_reconcile_required = false;
         self.transport
             .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
             .await?;
@@ -524,6 +535,7 @@ impl<T: Telegram> SyncEngine<T> {
         // cannot prove. Audit before replacing a usable local projection.
         let local = self.state().await?;
         audit_receipts(&local, &recovery, &tail)?;
+        self.check_reconcile_continuity()?;
         let tail_bytes: u64 = tail.iter().map(|message| message.text.len() as u64).sum();
         let observed = serde_json::json!({"commit_id": commit_message.id, "created_at_unix":commit_message.sent_at_unix, "uncovered_log_bytes":tail_bytes});
         if self.verified.as_ref().map(|r| r.commit_id) != Some(recovery.commit_id)
@@ -563,7 +575,7 @@ impl<T: Telegram> SyncEngine<T> {
             self.apply_messages(&messages, cancel).await?;
             // Drain updates before the independent head read. A subsequent update
             // remains queued and will invalidate the next mutation/status request.
-            let changed = self.invalidate_from_updates();
+            let changed = self.check_reconcile_continuity()?;
             self.report(crate::Operation::Sync, crate::Phase::ReconcileHead, 0, None);
             let head_message = self
                 .transport
@@ -572,10 +584,16 @@ impl<T: Telegram> SyncEngine<T> {
                 .first()
                 .cloned();
             let head = head_message.as_ref().map(|m| m.id.get()).unwrap_or(0);
-            if head <= last && !changed {
+            if head < last {
+                return Err(SyncError::ReconcileRequired);
+            }
+            if head == last && !changed {
                 self.transport
                     .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
                     .await?;
+                if self.check_reconcile_continuity()? {
+                    continue;
+                }
                 self.set_local_setting("snapshot.diagnostics.v1".into(), observed.to_string())
                     .await?;
                 self.confirmed_head = head_message;
@@ -592,6 +610,19 @@ impl<T: Telegram> SyncEngine<T> {
             }
         }
         Err(SyncError::ReconcileRequired)
+    }
+    /// A delete/edit, auth transition or overrun requires a new receipt/snapshot
+    /// audit. Fetching only newer messages cannot repair a stale history page.
+    fn check_reconcile_continuity(&mut self) -> Result<bool, SyncError> {
+        let changed = self.invalidate_from_updates();
+        if self.full_reconcile_required {
+            return Err(match self.mode {
+                RuntimeMode::AuthRequired => TelegramError::AuthRequired.into(),
+                RuntimeMode::Reconnecting => TelegramError::Timeout.into(),
+                _ => SyncError::ReconcileRequired,
+            });
+        }
+        Ok(changed)
     }
     async fn apply_messages(
         &self,

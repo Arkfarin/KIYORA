@@ -112,6 +112,107 @@ fn typed_ipc_errors_and_profile_context_do_not_expose_native_messages() {
 }
 
 #[tokio::test]
+async fn profile_switches_serialize_through_secret_restoration() {
+    use std::sync::{Arc, Mutex, mpsc};
+    struct HeldSecrets {
+        entered: tokio::sync::Notify,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl vault_security::SecretStore for HeldSecrets {
+        fn get(
+            &self,
+            _: &str,
+        ) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, vault_security::SecurityError> {
+            self.entered.notify_one();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(None)
+        }
+        fn set(&self, _: &str, _: &[u8]) -> Result<(), vault_security::SecurityError> {
+            unreachable!("this test restores a profile with no saved API hash")
+        }
+    }
+    let temp = tempdir().unwrap();
+    let (release, receive) = mpsc::channel();
+    let secrets = Arc::new(HeldSecrets {
+        entered: tokio::sync::Notify::new(),
+        release: Mutex::new(receive),
+    });
+    let backend = Backend::with_secrets(
+        ProfileStore::at(temp.path()).unwrap(),
+        "missing-tdjson.so",
+        secrets.clone(),
+    );
+    let first = backend.create_profile("First".into()).unwrap();
+    let second = backend.create_profile("Second".into()).unwrap();
+    backend.switch_profile(first.profile_id).await.unwrap();
+    backend.shutdown().await.unwrap();
+    let path = temp
+        .path()
+        .join("profiles")
+        .join(first.profile_id.to_string())
+        .join("backend.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["api_id"] = 123.into();
+    std::fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    let first_backend = backend.clone();
+    let first_switch =
+        tokio::spawn(async move { first_backend.switch_profile(first.profile_id).await });
+    secrets.entered.notified().await;
+    let second_backend = backend.clone();
+    let mut second_switch =
+        tokio::spawn(async move { second_backend.switch_profile(second.profile_id).await });
+    // The first transition is held at a known boundary. The second must wait;
+    // release before asserting so a regression cannot strand the blocking worker.
+    let premature =
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut second_switch).await;
+    release.send(()).unwrap();
+    let first_result = first_switch.await.unwrap().unwrap();
+    let waited = premature.is_err();
+    let second_result = match premature {
+        Ok(result) => result.unwrap().unwrap(),
+        Err(_) => second_switch.await.unwrap().unwrap(),
+    };
+    backend.shutdown().await.unwrap();
+    assert!(
+        waited,
+        "a second switch interleaved with secret restoration"
+    );
+    assert_eq!(first_result.context.profile_id, first.profile_id);
+    assert_eq!(second_result.context.profile_id, second.profile_id);
+    assert_eq!(
+        backend.active_profile_id().unwrap(),
+        Some(second.profile_id)
+    );
+
+    // Dropping the IPC caller must not release the transition while its worker
+    // still owns the profile. Shutdown must wait, then close the published session.
+    let cancelled_backend = backend.clone();
+    let cancelled =
+        tokio::spawn(async move { cancelled_backend.switch_profile(first.profile_id).await });
+    secrets.entered.notified().await;
+    cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
+    let shutdown_backend = backend.clone();
+    let mut shutdown = tokio::spawn(async move { shutdown_backend.shutdown().await });
+    let premature =
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut shutdown).await;
+    release.send(()).unwrap();
+    let waited = premature.is_err();
+    match premature {
+        Ok(result) => result.unwrap().unwrap(),
+        Err(_) => shutdown.await.unwrap().unwrap(),
+    }
+    assert!(waited, "shutdown raced an accepted profile transition");
+    assert!(backend.context().await.is_none());
+    ProfileStore::at(temp.path())
+        .unwrap()
+        .acquire(first.profile_id)
+        .unwrap();
+}
+
+#[tokio::test]
 async fn local_cache_and_device_queries_work_without_telegram_and_quota_persists() {
     let temp = tempdir().unwrap();
     let backend = Backend::new(ProfileStore::at(temp.path()).unwrap(), "missing-tdjson.so");

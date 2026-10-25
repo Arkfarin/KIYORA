@@ -1,8 +1,50 @@
-# Backend readiness — work in progress
+# Backend readiness — RELEASE_BLOCKED
 
 Scope: the complete backend hardening request supplied on 2026-10-23. This is a
 living evidence record, not an MVP acceptance declaration. Existing historical
 reports under `src-tauri/docs` are leads, not proof of current behavior.
+
+## Current audit (2026-10-25)
+
+The complete requirement matrix, file changes, CI causes and remaining acceptance
+criteria are in [BACKEND_COMPLETION_REPORT.md](BACKEND_COMPLETION_REPORT.md).
+The sections below retain implementation and measurement history; the current
+report and this section supersede older pending-verification notes.
+
+- Final current Rust gate: **PASS**, 160 workspace tests, zero failures, two
+  explicitly opt-in tests ignored. The gate additionally ran the real pinned
+  TDLib start/version/close/reopen test successfully. Formatting, all-targets
+  check, strict all-targets Clippy, CLI help and schema equality pass.
+- Audio output failure/reopen: **PASS**, one opt-in test using real Rodio/ALSA
+  null output and a simulated CPAL error signal. It proves worker cleanup and
+  explicit restart; it does not prove hardware route migration or audible output.
+- Android 15 x86_64 emulator: **PASS**, 14 plugin instrumentation tests and one
+  installed-app test of packaged TDLib digest/loading, WebView and Rust IPC.
+  Final-source APK passed the corrected teardown harness and two repeats;
+  `scripts/check-android-app.sh` rejects runner crashes even when adb exits zero.
+- Linux Debian extraction/native lifecycle: **PASS**. Newly added AppImage
+  verification exposed a manifest mismatch caused by linuxdeploy adding RUNPATH;
+  native preparation now supplies `$ORIGIN` before hashing. The final extracted
+  AppImage digest/dependencies/native lifecycle also pass.
+- The extracted AppImage also launched/rendered in isolated Xvfb for 15 seconds
+  with a new empty data directory; this is a GUI startup smoke, not audio/account
+  or full end-user acceptance. Screenshot and logs are in `target/audit-evidence`.
+- Final ARM64 debug and unsigned release APKs and Linux debug/release
+  Debian/AppImage native checks pass. Windows and live Telegram acceptance remain
+  unverified. No personal account or vault was used.
+- Current scale acceptance: **PASS**, 10,000 tracks / 100,000 entries / 10,000 tail
+  events restored with exact reducer equality. Raw measurements and concurrent
+  build load are documented in the completion report.
+- Current GC acceptance: **PASS** at 1k/10k/50k/100k events, including preserved
+  media/tombstones/post-barrier events and cold-restore equality. The 100k GC took
+  39,381 ms in this uncontrolled host run; it is not evidence of a speedup over
+  the historical figures below.
+
+New fixes cover deletion during reconciliation, overlapping/cancelled profile
+transitions, account-aware upload bounds, FloodWait, failed cache unpin, failed
+background-job checkpoint, audio-device failures, actual Windows Clippy and
+Android wrapper/ELF-verifier failures. Real SQLite SQLITE_FULL rollback/reopen
+coverage was added. Frontend and public IPC schemas are unchanged in this increment.
 
 ## Implemented
 
@@ -105,7 +147,7 @@ platform results must be revalidated for this worktree.
 - Optional live-account, installed-app and physical-device acceptance procedure
   in `src-tauri/docs/e2e.md`; no personal credentials are read or required by CI.
   Android instrumentation now includes installed TDLib digest/loader and actual
-  Tauri-to-Rust IPC startup checks (execution still pending).
+  Tauri-to-Rust IPC startup checks (now executed on the Android 15 emulator).
 
 ## Performance
 
@@ -130,6 +172,13 @@ comparison against the original full-history-per-batch implementation. Raw rows:
 [`gc-progress-optimized-2026-10-24.jsonl`](benchmarks/gc-progress-optimized-2026-10-24.jsonl).
 All eight cases passed the preservation and cold-restore assertions. Per-message
 reads and cumulative completed-ID persistence still leave further scaling work.
+
+The final 2026-10-25 validation is retained separately in
+[`gc-2026-10-25.jsonl`](benchmarks/gc-2026-10-25.jsonl) and
+[`scale-2026-10-25.jsonl`](benchmarks/scale-2026-10-25.jsonl).
+All four GC preservation/restore assertions and the 10k-track/100k-entry/10k-tail
+scale assertion passed. GC wall times were 75 / 997 / 12,446 / 39,381 ms; no
+controlled before/after performance comparison was performed in this final run.
 
 ## Tests
 
@@ -187,54 +236,43 @@ reads and cumulative completed-ID persistence still leave further scaling work.
 - Full Tauri Android debug APK assembly: PASS after fixing AndroidX opt-in,
   all-module Build Tools 36 selection, compatible buildSrc JVM targets and a
   configuration-cache-safe native dependency guard. Installed-app instrumentation
-  APK compiles (108 Gradle tasks); device execution is still pending. The final
-  payload check follows TDLib's pinned-zlib rebuild.
+  APK compiles (108 Gradle tasks). Subsequent device execution and final
+  payload checks pass; see the current audit above.
 
 ## Platform Status
 
-| Platform | Status | Current evidence needed |
+| Platform | Status | Evidence / outstanding requirement |
 | --- | --- | --- |
-| Linux x86_64 | BUILDS_ONLY | Debian installer and extracted TDLib lifecycle pass; GUI/audio/account and Ubuntu baseline acceptance pending |
-| Windows x86_64 | UNVERIFIED | Native compilation/tests, tdjson packaging, sleep/audio |
-| Android ARM64 | BUILDS_ONLY | App `.so` linked with Opus/AAudio; APK/TDLib packaging and physical/account acceptance pending |
+| Linux x86_64 | PARTIAL | Current Rust/native tests and extracted debug/release Debian pass; AppImage extraction and real native lifecycle pass; base Ubuntu 24.04 CI release package passed; isolated Xvfb AppImage GUI startup passed; hardware/live acceptance absent |
+| Windows x86_64 | PLATFORM_UNVERIFIED | Base CI all-target check passed; identified large-enum Clippy failure fixed; current full CI, DLL/MSI and installed acceptance required |
+| Android ARM64 | PARTIAL | Current debug APK ABI/dependencies/digest/16 KiB verification passed; physical/account acceptance required |
+| Android x86_64 | PARTIAL | APK ABI/digest/dependencies/16 KiB checks and installed app+plugin emulator tests pass; no physical-audio/account claim |
 
 macOS is not a required release target for this request.
 
 ## Remaining Issues
 
-Dependency-ordered implementation/audit plan (retain the full requested scope):
+The local code/fault audit has produced concrete fixes and tests. Release remains
+blocked on the following evidence, rather than the older open-ended audit plan:
 
-1. **Critical reliability**: finish native library lookup/package audit; TDLib
-   authorization, completion correlation and shutdown; transactional versioned
-   migrations, corruption recovery and profile/secret boundaries. Existing repair
-   implementation is present and must be tested rather than replaced.
-2. **Sync** (depends on 1): fast path/update-loss regressions are implemented;
-   finish the complete requested edge-case matrix and user-visible mode audit.
-3. **Maintenance** (depends on 2): scheduler, GC batching, safety regressions and
-   all four benchmarks are implemented; finish concurrency/barrier/partial-history
-   audit and evaluate remaining per-message calls/cumulative progress cost.
-4. **Media and sharing** (depends on 1–2): metadata uploads, server-side incoming
-   copies and durable sharing outcomes are implemented and regression-tested.
-   Format fixtures pass locally; verify the new native decoder on each target.
-   Incoming cover handling is implemented; finish streaming, device
-   changes, queues and cache/disk fault regressions. Sharing deduplication is local
-   to the existing profile/vault journal; it cannot deduplicate independent
-   devices or a deleted local journal. Unknown sends require recipient inspection
-   before a deliberate new operation.
-5. **IPC/security/platforms**: lost-event notification, state refresh and CSP are
-   implemented; complete the remaining cancellation and security audit;
-   bounded input and safe paths; native library bundling on Linux/Windows/Android;
-   Android document picker, focus, Bluetooth, background/lifecycle and restart.
-6. **Final gates** (depends on all): fmt/Clippy/workspace/integration/schema gates,
-   actual builds, native dependencies, optional real-account E2E instructions,
-   requirement-by-requirement edge-case matrix and final evidence report.
+1. Dedicated test-account live Telegram authentication, multi-device library,
+   sharing, interrupted sends, long-absent restore and snapshot/GC acceptance.
+2. Current Windows CI and installed MSI/DLL/audio/suspend acceptance.
+3. Physical Linux/Windows/ARM64 audio, route changes and Android background,
+   lockscreen, headset/Bluetooth and process restart endurance.
+4. Retain current artifact verifications recorded in the completion report; rerun release-mode CI after publishing the patch for review.
+
+Known limits: no Telegram cross-message transaction/CAS; no reconstruction after
+all proofs are manually destroyed; sharing deduplication is local to its durable
+journal; full tombstone/receipt retention and snapshot bounds constrain very large
+vaults. Device error handling reopens output on the next explicit Play; it does
+not claim automatic route/position migration. These limits and their priorities
+are detailed in the completion report.
 
 Do not push or publish a release. Do not use the ignored personal Telegram session
-under `tmp_files`; use only explicitly provisioned test-account configuration for
-live account acceptance. Physical/device/account requirements remain UNVERIFIED
-until actually exercised; mock and compile results must be labeled accordingly.
+under `tmp_files`; use only explicitly provisioned test-account configuration.
 
-## Breaking Changes
+## Earlier API changes (already present in the audit baseline)
 
 `share_track` now requires `op_id`; its `shared` response adds explicit delivery
 state and nullable message/error fields. Callers must check `state == "sent"`.
@@ -252,9 +290,11 @@ The existing lockfile retains previous package versions and adds four dependenci
 for Opus/ALAC: `opus`, `opusic-sys` (bundled libopus), `cmake`,
 `symphonia-codec-alac`. The existing Rust toolchain is unchanged. Native builds now
 need CMake; Android passes its NDK toolchain/API explicitly. Added native licenses
-are included in Tauri bundle resources; final package verification remains due.
+are included in Tauri bundle resources; current Debian/AppImage/APK payload
+verification is recorded in the completion report.
 
 ## Release Readiness
 
-Not established. The audit has identified implementation gaps, and available
-checks plus platform acceptance are still pending. No production-readiness claim.
+**RELEASE_BLOCKED**. Account-free tests and native/emulator checks do not satisfy
+Windows, physical audio and mandatory Live E2E requirements. See the completion
+report for reproducible commands and the exact remaining release criteria.

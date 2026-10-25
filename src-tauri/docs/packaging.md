@@ -28,12 +28,22 @@ map to Tauri. The installed library is `/usr/lib/kiyora/native/libtdjson.so`.
 Its manifest and TDLib/OpenSSL/zlib/Opus licenses are included. Standard platform
 libraries such as glibc and libstdc++ remain system dependencies.
 
-The verifier extracts the Debian archive to a temporary directory, checks the
+The verifier extracts the Debian archive to a temporary directory containing
+spaces and Unicode characters, checks the
 actual payload and runs the Rust TDLib version/start/close/reopen test against
 that extracted file. It does not test the graphical shell or audio hardware.
-`--debug` selects a debug package for local iteration. `--bundles appimage` can
-be passed through to Tauri with its additional packaging tools; the current
-installer verifier accepts Debian and MSI packages.
+`--debug` selects a debug package for local iteration. `--bundles deb,appimage`
+builds both Linux formats with Tauri's packaging tools. Verify the AppImage with:
+
+```sh
+python3 scripts/check-installer.py target/release/bundle/appimage/kiyora_0.1.0_amd64.AppImage
+```
+
+Extraction uses the AppImage runtime without FUSE. Run it only on the locally
+built/trusted installer. The verifier checks the extracted AppDir and native
+library lifecycle; it does not establish graphical startup or audio output.
+Linux CI checks both formats and records whole-installer `SHA256SUMS` in the
+bundle directory after successful verification.
 
 ## Windows x86_64
 
@@ -53,7 +63,8 @@ python scripts/check-installer.py $msi[0].FullName
 `native/tdjson.dll` is installed beside the application with its manifest and
 licenses. `dumpbin` checks architecture and rejects unexpected non-system DLL
 dependencies. The verifier performs an MSI administrative extraction to a
-temporary directory and tests the extracted DLL through the Rust adapter.
+temporary directory containing spaces and Unicode and tests the extracted DLL
+through the Rust adapter.
 These commands must run on Windows before claiming Windows runtime verification.
 
 ## Android ARM64
@@ -87,6 +98,10 @@ about uncompressed ZIP page alignment. APK inspection does not prove startup,
 audible playback, background behavior or real-account operations. Device checks
 remain separate; see [Android integration](android.md) and the
 [optional live/device acceptance procedure](e2e.md).
+
+The ABI check reads the numeric ELF machine field, so GNU/LLVM readelf spelling
+differences cannot reject a valid x86_64 package. The Gradle wrapper verifies the
+official 8.14.3 distribution checksum; CI exercises it before native compilation.
 
 ## Dependency and loader policy
 

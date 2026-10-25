@@ -217,6 +217,54 @@ async fn online_guard_discovers_missed_new_events_and_reaudits_deleted_history()
 }
 
 #[tokio::test]
+async fn deletion_during_full_reconciliation_cannot_authorize_a_mutation() {
+    let (server, mut client) = setup().await;
+    let cancel = CancellationToken::new();
+    let playlist = Uuid::new_v4();
+    let created = execute(
+        &mut client,
+        playlist,
+        Action::PlaylistCreate {
+            title: "Keep local evidence".into(),
+        },
+    )
+    .await;
+    // Keep the head intact: checking only the newest message cannot reveal loss
+    // of an older event between receiving the history page and accepting it.
+    execute(
+        &mut client,
+        playlist,
+        Action::PlaylistRename {
+            title: "Latest title".into(),
+        },
+    )
+    .await;
+    let before = client.state().await.unwrap();
+    server
+        .set_faults(Faults {
+            remove_after_history: created.server_message_id,
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(client.sync(&cancel).await.is_err());
+    assert_ne!(client.mode(), RuntimeMode::OnlineReady);
+    assert_eq!(client.state().await.unwrap(), before);
+    // A fresh audit now sees the missing receipt and must retain local data.
+    assert!(client.sync(&cancel).await.is_err());
+    assert_eq!(client.mode(), RuntimeMode::DegradedReadonly);
+    let count = server.messages().unwrap().len();
+    assert!(
+        client
+            .execute(Uuid::new_v4(), playlist, Action::PlaylistDelete {}, &cancel)
+            .await
+            .is_err()
+    );
+    assert_eq!(server.messages().unwrap().len(), count);
+    assert_eq!(client.state().await.unwrap(), before);
+}
+
+#[tokio::test]
 async fn lost_ack_is_reconciled_without_duplicate_and_offline_never_queues_mutations() {
     let (server, mut a) = setup().await;
     let cancel = CancellationToken::new();

@@ -97,6 +97,11 @@ pub enum Update {
 /// Transport methods return only confirmed, permanent messages. A timeout on a
 /// send has unknown outcome: the caller must reconcile, never blindly resend.
 pub trait Telegram: Send + Sync {
+    /// Current account's upload limit. Download/copy limits are independent.
+    fn upload_limit(
+        &self,
+        cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<u64, TelegramError>> + Send;
     /// Positive search results are hints only. None always falls back to history;
     /// a search miss never authorizes creation or proves absence of a vault.
     fn init_hint(
@@ -250,6 +255,25 @@ impl Drop for Pump {
     }
 }
 impl TdTransport {
+    async fn validate_upload(
+        &self,
+        path: &std::path::Path,
+        cancel: &CancellationToken,
+    ) -> Result<(), TelegramError> {
+        if !path.is_absolute() {
+            return Err(TelegramError::InvalidInput);
+        }
+        let metadata = tokio::fs::symlink_metadata(path)
+            .await
+            .map_err(|_| TelegramError::LocalFile)?;
+        if !metadata.is_file()
+            || metadata.len() == 0
+            || metadata.len() > self.upload_limit(cancel).await?
+        {
+            return Err(TelegramError::InvalidInput);
+        }
+        Ok(())
+    }
     pub fn new(client: TdClient) -> Self {
         let mut input = client.subscribe();
         let (updates, _) = broadcast::channel(2048);
@@ -331,6 +355,21 @@ impl TdTransport {
     }
 }
 impl Telegram for TdTransport {
+    async fn upload_limit(&self, cancel: &CancellationToken) -> Result<u64, TelegramError> {
+        let option = self
+            .client
+            .read(json!({"@type":"getOption","name":"is_premium"}), cancel)
+            .await?;
+        if option["@type"] != "optionValueBoolean" {
+            return Err(TelegramError::InvalidResponse);
+        }
+        let premium = option["value"]
+            .as_bool()
+            .ok_or(TelegramError::InvalidResponse)?;
+        // Pinned TDLib 1.8.69 PartsManager: 4000/8000 parts of 512 KiB.
+        // FileLoaderUtils independently caps local uploads at 4000 MiB.
+        Ok(if premium { 4000 } else { 2000 } * 1024 * 1024)
+    }
     async fn init_hint(
         &self,
         chat: ChatId,
@@ -508,6 +547,7 @@ impl Telegram for TdTransport {
         if !path.is_absolute() || !path.is_file() || caption.encode_utf16().count() > 1024 {
             return Err(TelegramError::InvalidInput);
         }
+        self.validate_upload(&path, cancel).await?;
         self.send_content(chat,json!({"@type":"inputMessageDocument","document":{"@type":"inputDocument","document":{"@type":"inputFileLocal","path":path.to_str().ok_or(TelegramError::InvalidInput)?},"thumbnail":null,"disable_content_type_detection":true},"caption":{"@type":"formattedText","text":caption,"entities":[]}}),cancel).await
     }
     async fn send_audio(
@@ -527,6 +567,7 @@ impl Telegram for TdTransport {
         }
         let duration =
             i32::try_from(audio.duration_seconds).map_err(|_| TelegramError::InvalidInput)?;
+        self.validate_upload(&audio.path, cancel).await?;
         self.send_content(
             chat,
             json!({

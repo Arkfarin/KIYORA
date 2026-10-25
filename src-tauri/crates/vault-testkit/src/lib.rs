@@ -12,6 +12,7 @@ use vault_telegram::*;
 
 #[derive(Debug, Clone, Default)]
 pub struct Faults {
+    pub upload_limit_bytes: Option<u64>,
     /// Definite remote rejection: no message was created, retry is safe.
     pub reject_document: bool,
     pub prohibit_copy: bool,
@@ -29,6 +30,8 @@ pub struct Faults {
     pub duplicate_updates: bool,
     pub delay_updates: bool,
     pub history_page_size: Option<usize>,
+    /// Delete after capturing the next history response, before its caller replays it.
+    pub remove_after_history: Option<MessageId>,
     pub flood_wait: Option<u64>,
     /// Fail before the Nth subsequent call (1 is next); may model a process crash.
     pub fail_call: Option<usize>,
@@ -363,6 +366,14 @@ impl FakeTelegram {
     }
 }
 impl Telegram for FakeTelegram {
+    async fn upload_limit(&self, cancel: &CancellationToken) -> Result<u64, TelegramError> {
+        let mut server = self.server.lock()?;
+        server.gate(cancel)?;
+        Ok(server
+            .faults
+            .upload_limit_bytes
+            .unwrap_or(2000 * 1024 * 1024))
+    }
     fn subscribe(&self) -> broadcast::Receiver<Update> {
         self.updates.subscribe()
     }
@@ -398,14 +409,22 @@ impl Telegram for FakeTelegram {
             .unwrap_or(usize::from(limit))
             .max(1)
             .min(usize::from(limit));
-        Ok(server
+        let page = server
             .messages
             .values()
             .rev()
             .filter(|m| before.is_none_or(|id| m.id < id))
             .take(limit)
             .cloned()
-            .collect())
+            .collect();
+        if let Some(id) = server.faults.remove_after_history.take() {
+            server.messages.remove(&id);
+            server.emit(Update::Deleted {
+                chat_id: chat,
+                message_ids: vec![id],
+            });
+        }
+        Ok(page)
     }
     async fn message(
         &self,

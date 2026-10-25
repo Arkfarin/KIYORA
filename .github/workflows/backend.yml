@@ -29,15 +29,28 @@ jobs:
       - name: System libraries
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libssl-dev libdbus-1-dev cmake gperf
       - run: bash scripts/check-backend.sh
+      - name: Audio output failure and reopen with isolated ALSA output
+        run: |
+          cat > "$RUNNER_TEMP/kiyora-asound.conf" <<'ALSA'
+          pcm.!default { type null }
+          ctl.!default { type hw card 0 }
+          ALSA
+          ALSA_CONFIG_PATH="$RUNNER_TEMP/kiyora-asound.conf" cargo test --locked -p vault-media --lib output_device_failure_releases_media_and_next_play_reopens -- --ignored
       - name: Scale acceptance (simulated)
         run: cargo run --locked --release -p vault-sync --example scale-benchmark
       - name: Packaged app with pinned native TDLib
-        run: python3 scripts/package-desktop.py
+        run: python3 scripts/package-desktop.py --bundles deb,appimage
       - name: Verify extracted Debian installer
         run: |
           packages=(target/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
           python3 scripts/check-installer.py "${packages[0]}"
+      - name: Verify extracted AppImage and record installer digests
+        run: |
+          packages=(target/release/bundle/appimage/*.AppImage)
+          test "${#packages[@]}" -eq 1
+          python3 scripts/check-installer.py "${packages[0]}"
+          sha256sum target/release/bundle/deb/*.deb "${packages[0]}" > target/release/bundle/SHA256SUMS
   windows:
     runs-on: windows-2022
     timeout-minutes: 120
@@ -105,6 +118,8 @@ jobs:
         with:
           cache-provider: basic
           gradle-version: '8.14.3'
+      - name: Verify the app Gradle wrapper before native builds
+        run: gen/android/gradlew --version
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
       - name: Native build tools
         run: sudo apt-get update && sudo apt-get install -y cmake gperf perl make

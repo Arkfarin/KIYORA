@@ -31,6 +31,7 @@ fi
 # This is separate from the host generator build used by Android cross compilation.
 cmake -S "$native_root/td-9d92b49bc5d0d2e29fe518239af647a88f8680e6" -B "$native_root/linux-td-build" \
   -DCMAKE_BUILD_TYPE=Release '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG' \
+  -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON '-DCMAKE_INSTALL_RPATH=$ORIGIN' \
   -DGPERF_EXECUTABLE="$gperf_path" -DTD_ENABLE_JNI=OFF -DTD_ENABLE_DOTNET=OFF \
   -DOPENSSL_ROOT_DIR="$openssl_root" -DOPENSSL_INCLUDE_DIR="$openssl_root/include" \
   -DOPENSSL_CRYPTO_LIBRARY="$openssl_root/lib/libcrypto.a" \
@@ -41,6 +42,8 @@ package="$native_root/desktop"
 mkdir -p "$package/native" "$package/licenses"
 cp "$native_root/linux-td-build/libtdjson.so" "$package/native/libtdjson.so.part"
 strip --strip-unneeded "$package/native/libtdjson.so.part"
+# The final $ORIGIN RUNPATH is present before hashing. linuxdeploy otherwise
+# inserts it into the AppImage copy and invalidates the prepared manifest digest.
 mv "$package/native/libtdjson.so.part" "$package/native/libtdjson.so"
 cp "$native_root/td-9d92b49bc5d0d2e29fe518239af647a88f8680e6/LICENSE_1_0.txt" "$package/licenses/TDLib.txt"
 cp "$native_root/openssl-3.5.9/LICENSE.txt" "$package/licenses/OpenSSL.txt"

@@ -90,7 +90,7 @@ because `/data/user/0` may alias `/data/data`. The application's own child
 directories, ciphertext records and AtomicFile siblings remain subject to
 symlink rejection. Tests cover the legitimate alias and a malicious record link.
 
-## Full application requirements still to verify
+## Packaged application and remaining acceptance
 
 The complete app additionally needs the Android NDK, a Tauri Android project and
 the pinned TDLib build described in [tdlib.md](tdlib.md). Package `libtdjson.so`
@@ -99,9 +99,10 @@ under `ApplicationInfo.nativeLibraryDir`; configure the app's Android packaging
 with `jniLibs.useLegacyPackaging = true` so those libraries are extracted there.
 Verify native dependencies and startup on the final packaged application.
 
-Current evidence: native plugin assembly/Lint, linked full Rust arm64 native library
-(`libkiyora_lib.so`, AAudio/JNI exports/16 KiB LOAD alignment checked),
-six real Keystore tests and six native playback service tests (12 passing in total) on an Android 15/API 35
+Current evidence: native plugin assembly/Lint, complete ARM64 and x86_64 debug
+APKs plus an optimized unsigned ARM64 release APK, all with native
+dependency/digest/license/16 KiB LOAD checks,
+six Keystore, six playback-service and two document-import tests (14 passing in total) on an Android 15/API 35
 AOSP x86_64 emulator, with the test APK targeting SDK 36. Playback tests exercise
 metadata, notification/transport commands, focus loss, background resume,
 heartbeat failure and ownership fencing. Android Lint reports two dependency-version
@@ -113,5 +114,20 @@ verified fixes for asynchronous service destruction and stale notification actio
 
 These instrumentation tests exercise Android OS integration with a test command
 consumer. They do not execute the Rust PCM engine through the Tauri JNI bridge.
-Complete app startup, packaged TDLib, audible physical-device output, headset
-hardware and extended screen-off streaming remain separate acceptance gates.
+The separate installed-app test now verifies complete app startup, the extracted
+TDLib digest/loader and a real WebView-to-Rust IPC response. Run it after building
+a debug package:
+
+```sh
+ANDROID_HOME=/path/to/android-sdk KIYORA_ANDROID_ABI=x86_64 \
+  KIYORA_ANDROID_SERIAL=emulator-5580 bash scripts/check-android-app.sh
+```
+
+It stops the Activity and lets the instrumentation runner report before process
+termination; destroying Tauri's last Activity first races Tao's process exit with
+the result reporter. The script requires `OK (1 test)` and rejects runner crashes.
+The corrected harness and two repeats passed on the final x86_64 debug APK.
+See [the completion report](../../docs/BACKEND_COMPLETION_REPORT.md) for exact
+build variants and results. Audible physical output, headset hardware, actual
+16 KiB-page devices, extended screen-off streaming and live Telegram remain
+separate acceptance gates.

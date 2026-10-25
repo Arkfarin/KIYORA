@@ -113,6 +113,9 @@ pub struct Backend {
     native_path: PathBuf,
     events: EventBus,
     session: Arc<Mutex<Option<Session>>>,
+    // Separate from session: closing jobs must let their stale calls acquire
+    // session and fail, while another switch/shutdown waits for the full close.
+    session_transition: Arc<Mutex<()>>,
 }
 impl Backend {
     pub fn new(store: ProfileStore, native_path: impl Into<PathBuf>) -> Self {
@@ -134,6 +137,7 @@ impl Backend {
             native_path: native_path.into(),
             events: EventBus::default(),
             session: Arc::new(Mutex::new(None)),
+            session_transition: Arc::new(Mutex::new(())),
         }
     }
     pub fn default_backend() -> Result<Self, ApiError> {
@@ -185,6 +189,18 @@ impl Backend {
             .map(|s| s.context.clone())
     }
     pub async fn switch_profile(&self, id: Uuid) -> Result<Status, ApiError> {
+        let transition = self.session_transition.clone().lock_owned().await;
+        let backend = self.clone();
+        // Once accepted, finish closing/publishing even if the IPC waiter goes
+        // away. The transition lock belongs to the worker until it is complete.
+        tokio::spawn(async move {
+            let _transition = transition;
+            backend.switch_profile_inner(id).await
+        })
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Internal))?
+    }
+    async fn switch_profile_inner(&self, id: Uuid) -> Result<Status, ApiError> {
         // Acquire the new process lock and validate its durable binding before closing
         // the current account, so a failed switch leaves the old session usable.
         let store = self.store.clone();
@@ -625,6 +641,7 @@ impl Backend {
             let events = self.events.clone();
             let context = session.context.clone();
             let weak_session = Arc::downgrade(&self.session);
+            let session_transition = self.session_transition.clone();
             let job_access = self.job_access.clone();
             let import_resolver = self.import_resolver.clone();
             let store = self.store.clone();
@@ -645,6 +662,7 @@ impl Backend {
                             native_path: native_path.clone(),
                             events: events.clone(),
                             session,
+                            session_transition: session_transition.clone(),
                             job_access: job_access.clone(),
                             import_resolver: import_resolver.clone(),
                         };
@@ -1569,6 +1587,16 @@ impl Backend {
         Ok(())
     }
     pub async fn shutdown(&self) -> Result<(), ApiError> {
+        let transition = self.session_transition.clone().lock_owned().await;
+        let backend = self.clone();
+        tokio::spawn(async move {
+            let _transition = transition;
+            backend.shutdown_inner().await
+        })
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Internal))?
+    }
+    async fn shutdown_inner(&self) -> Result<(), ApiError> {
         if let Some((_, jobs)) = self
             .job_access
             .lock()

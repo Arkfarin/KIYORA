@@ -23,6 +23,11 @@ import org.junit.runner.RunWith
 class NativePackagingTest {
     @Test
     fun installedTdlibLoadsAndRustIpcResponds() {
+        assertEquals(
+            "Use scripts/check-android-app.sh: Tauri exits the process when its Activity is destroyed",
+            "false",
+            InstrumentationRegistry.getArguments().getString("waitForActivitiesToComplete")
+        )
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val library = File(context.applicationInfo.nativeLibraryDir, "libtdjson.so")
         assertTrue("TDLib must be extracted into nativeLibraryDir", library.isFile)
@@ -44,7 +49,8 @@ class NativePackagingTest {
         // Exercise Android's loader with the same runtime location used by Rust.
         // Missing libc++/OpenSSL/other native dependencies fail here on the device.
         System.load(library.absolutePath)
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+        val scenario = ActivityScenario.launch(MainActivity::class.java)
+        try {
             awaitJavascript(scenario, "Boolean(window.__TAURI_INTERNALS__)", "true")
             javascript(scenario, """
                 window.__kiyoraPackagingProbe = null;
@@ -53,6 +59,11 @@ class NativePackagingTest {
                   .catch(() => { window.__kiyoraPackagingProbe = 'ipc-error'; });
             """.trimIndent())
             awaitJavascript(scenario, "window.__kiyoraPackagingProbe", "\"ok\"")
+        } finally {
+            // Stop the Activity, but let Instrumentation.finish report the test
+            // result before killing the process. Destroying the last Tauri
+            // Activity here races JUnit reporting with Tao's process::exit(0).
+            scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED)
         }
     }
 

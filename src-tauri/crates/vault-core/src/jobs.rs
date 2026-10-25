@@ -164,8 +164,14 @@ impl JobRegistry {
             request: entry.saved.request.clone(),
             info,
         };
-        entry.saved = saved.clone();
-        self.persist(saved).await?;
+        if let Err(error) = self.persist(saved.clone()).await {
+            // An unpersisted success must not be returned by job_status, and a
+            // completed worker must not remain Running and prevent resumption.
+            entry.saved.info.state = JobState::Failed;
+            entry.saved.info.error = Some(error.clone());
+            return Err(error);
+        }
+        entry.saved = saved;
         Ok(())
     }
     pub(crate) fn cancel_all(&self) {
@@ -453,6 +459,78 @@ async fn run_job(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn failed_job_checkpoint_never_reports_success_or_blocks_explicit_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("jobs");
+        let registry = JobRegistry::open(root.clone()).unwrap();
+        let id = Uuid::new_v4();
+        let info = JobInfo {
+            job_id: id,
+            state: JobState::Running,
+            completed: 0,
+            total: 1,
+            result: None,
+            error: None,
+        };
+        registry
+            .persist(Saved {
+                request: JobRequest::Vault(VaultRequest::Sync),
+                info: info.clone(),
+            })
+            .await
+            .unwrap();
+        drop(registry);
+        let registry = JobRegistry::open(root.clone()).unwrap();
+        let file = root.join(format!("{id}.json"));
+        let original = root.join("checkpoint.saved");
+        std::fs::rename(&file, &original).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let mut completed = info;
+        completed.state = JobState::Succeeded;
+        completed.completed = 1;
+        assert!(registry.update(completed.clone()).await.is_err());
+        let cached = registry
+            .entries
+            .lock()
+            .await
+            .get(&id)
+            .unwrap()
+            .saved
+            .info
+            .clone();
+        assert_eq!(cached.state, JobState::Failed);
+        assert_eq!(cached.error.unwrap().code, ErrorCode::Storage);
+        std::fs::remove_dir(&file).unwrap();
+        std::fs::rename(&original, &file).unwrap();
+        let reopened = JobRegistry::open(root).unwrap();
+        assert_eq!(
+            reopened
+                .entries
+                .lock()
+                .await
+                .get(&id)
+                .unwrap()
+                .saved
+                .info
+                .state,
+            JobState::Interrupted
+        );
+        registry.update(completed).await.unwrap();
+        assert_eq!(
+            registry
+                .entries
+                .lock()
+                .await
+                .get(&id)
+                .unwrap()
+                .saved
+                .info
+                .state,
+            JobState::Succeeded
+        );
+    }
+
     #[tokio::test]
     async fn reopened_jobs_require_explicit_resume_after_crash() {
         let temp = tempfile::tempdir().unwrap();

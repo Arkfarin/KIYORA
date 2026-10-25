@@ -45,8 +45,10 @@ with zipfile.ZipFile(args.apk) as apk, tempfile.TemporaryDirectory() as director
             path = pathlib.Path(directory) / pathlib.Path(name).name
             path.write_bytes(payload)
             elf = subprocess.check_output([str(args.readelf), '-h', '-l', '-d', str(path)], text=True)
-            machine = 'AArch64' if abi == 'arm64-v8a' else 'X86-64'
-            if not re.search(r'Machine:\s+' + machine, elf):
+            # Read the standardized ELF field, not readelf's vendor-dependent
+            # spelling (LLVM uses "Advanced Micro Devices X86-64").
+            machine = 183 if abi == 'arm64-v8a' else 62
+            if payload[:6] != b'\x7fELF\x02\x01' or int.from_bytes(payload[18:20], 'little') != machine:
                 raise SystemExit('Wrong ELF architecture: ' + name)
             loads = [line.split() for line in elf.splitlines() if line.strip().startswith('LOAD ')]
             if not loads or any(int(row[-1], 16) < 16384 for row in loads):

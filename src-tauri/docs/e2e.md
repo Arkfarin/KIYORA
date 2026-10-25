@@ -1,7 +1,8 @@
 # Optional live-account and device acceptance
 
-These checks are opt-in and are not part of mandatory account-free CI. They have
-not been executed in this worktree without an explicitly supplied test account.
+Live account and physical-device checks are opt-in and are separate from
+account-free CI. Emulator/native results and outstanding live checks are recorded
+in [the completion report](../../docs/BACKEND_COMPLETION_REPORT.md).
 Use dedicated Telegram accounts, a disposable private test vault and a test
 recipient. Do not reuse personal session files. Use generated tone fixtures from
 `spec/test-vectors/audio`, and record build revision, platform, app/TDLib versions,
@@ -83,6 +84,7 @@ gen/android/gradlew --project-dir gen/android \
 adb -s <serial> install -r gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
 adb -s <serial> install -r gen/android/app/build/outputs/apk/androidTest/universal/debug/app-universal-debug-androidTest.apk
 adb -s <serial> shell am instrument -w \
+  -e waitForActivitiesToComplete false \
   -e class io.github.arkfarin.kiyora.NativePackagingTest \
   io.github.arkfarin.kiyora.test/androidx.test.runner.AndroidJUnitRunner
 ```
@@ -93,6 +95,15 @@ Android TDLib loading, Activity/WebView startup and a Rust IPC response. A passi
 runner must report `OK (1 test)`, not merely exit code zero. Run the native plugin
 instrumentation separately with `KIYORA_ANDROID_DEVICE_TESTS=1`, an explicit
 `KIYORA_ANDROID_SERIAL`, and `scripts/check-android-plugin.sh`.
+
+Alternatively, `KIYORA_ANDROID_SERIAL=<serial> KIYORA_ANDROID_ABI=x86_64 bash
+scripts/check-android-app.sh` builds the instrumentation, installs both APKs and
+requires a successful result. Set `KIYORA_ANDROID_APK` for a separately saved
+debug APK. The explicit runner argument is required: Tauri exits its process
+when the last Activity is destroyed. The test stops the Activity and lets the
+instrumentation runner report results before Android ends the process. This
+avoids a teardown/reporting race; it does not suppress application exceptions
+or replace any digest, loader, WebView or IPC assertion.
 
 On physical ARM64 hardware, use `kiyora-cli serve`'s equivalent Tauri commands via
 the existing API integration to execute the account cases above. Then play a
@@ -116,3 +127,27 @@ structured errors and recovery without blocking library reads or leaking audio
 workers. Capture measured memory/request counts for a large FLAC and rapid seek.
 Decoder tests do not prove these hardware behaviors. Final readiness must mark
 each unexecuted physical/account check `UNVERIFIED` with its reason.
+
+An account-free Linux check exercises the real output/mixer/decoder using an
+isolated ALSA null device. It injects the device-error notification, verifies a
+structured failure and lease release, then starts a new track and checks output
+reopening. It neither plays audible sound nor changes the user's default output:
+
+```sh
+audio_config=$(mktemp)
+cat > "$audio_config" <<'ALSA'
+pcm.!default { type null }
+ctl.!default { type hw card 0 }
+ALSA
+ALSA_CONFIG_PATH="$audio_config" cargo test --locked -p vault-media --lib \
+  output_device_failure_releases_media_and_next_play_reopens -- --ignored
+rm "$audio_config"
+```
+
+Actual route removal is still a physical-device acceptance test. After a hard
+output failure, the next explicit Play reopens the output; automatic migration
+and position restoration are not promised. Also verify that a cancelled download
+returns promptly while Telegram imposes a long FloodWait, and that an oversized
+local import is rejected before staging/upload (2000 MiB basic, 4000 MiB Premium
+for the pinned TDLib transport). Downloading or server-copying existing large
+messages is a distinct operation.

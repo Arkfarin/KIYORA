@@ -90,14 +90,22 @@ pub async fn download_to_cache<T: Telegram>(
                         break;
                     }
                     Err(error) => {
-                        if matches!(error, vault_telegram::TelegramError::Cancelled) {
-                            return Err(MediaError::Telegram(error));
-                        }
+                        let delay = match &error {
+                            vault_telegram::TelegramError::RateLimited {
+                                retry_after_seconds,
+                            } => std::time::Duration::from_secs(*retry_after_seconds),
+                            vault_telegram::TelegramError::Timeout
+                            | vault_telegram::TelegramError::Backpressure
+                            | vault_telegram::TelegramError::Request {
+                                code: 408 | 500..=599,
+                            } => std::time::Duration::from_millis(150 * (attempt as u64 + 1)),
+                            _ => return Err(MediaError::Telegram(error)),
+                        };
                         last_error = Some(error);
                         if attempt + 1 < MAX_RETRIES {
                             tokio::select! {
                                 _ = cancel.cancelled() => return Err(MediaError::Telegram(vault_telegram::TelegramError::Cancelled)),
-                                _ = tokio::time::sleep(std::time::Duration::from_millis(150 * (attempt as u64 + 1))) => {}
+                                _ = tokio::time::sleep(delay) => {}
                             }
                         }
                     }

@@ -20,7 +20,9 @@ void td_send(int id, const char *request) {
     size_t length=strcspn(extra,"\"");
     if (length>=sizeof(correlation)) return;
     memcpy(correlation,extra,length);
-    if (strstr(request,"\"getMessage\"")) {
+    if (strstr(request,"\"getOption\"") && strstr(request,"\"is_premium\"")) {
+        snprintf(queue[tail++%32],2048,"{\"@client_id\":1,\"@extra\":\"%s\",\"@type\":\"optionValueBoolean\",\"value\":false}",correlation);
+    } else if (strstr(request,"\"getMessage\"")) {
         int mid=strstr(request,"2097152") ? 2097152 : 1048576;
         snprintf(queue[tail++%32],2048,"{\"@client_id\":1,\"@extra\":\"%s\",\"@type\":\"message\",\"id\":%d,\"chat_id\":-100,\"edit_date\":0,%s}",correlation,mid,audio);
     } else if (strstr(request,"\"getMessageProperties\"")) {

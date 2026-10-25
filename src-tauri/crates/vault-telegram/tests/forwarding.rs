@@ -27,6 +27,37 @@ async fn copied_media_waits_for_final_ack_and_enforces_copy_permission() {
     let source = ChatId::new(-100).unwrap();
     let target = ChatId::new(-200).unwrap();
     let cancel = CancellationToken::new();
+    assert_eq!(
+        transport.upload_limit(&cancel).await.unwrap(),
+        2000 * 1024 * 1024
+    );
+    let oversized = dir.path().join("oversized.mp3");
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(2000 * 1024 * 1024 + 1)
+        .unwrap();
+    assert_eq!(
+        transport
+            .send_audio(
+                target,
+                AudioUpload {
+                    path: oversized.clone(),
+                    title: "Track title".into(),
+                    performer: "Artist".into(),
+                    duration_seconds: 123,
+                },
+                "media marker".into(),
+                &cancel
+            )
+            .await,
+        Err(TelegramError::InvalidInput)
+    );
+    assert_eq!(
+        transport
+            .send_document(target, oversized, "media marker".into(), &cancel)
+            .await,
+        Err(TelegramError::InvalidInput)
+    );
     let copied = transport
         .forward_media(
             source,

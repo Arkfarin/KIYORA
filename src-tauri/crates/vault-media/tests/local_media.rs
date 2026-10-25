@@ -48,6 +48,86 @@ fn imports_probe_real_audio_metadata_and_hash_full_source() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn downloads_honor_telegram_flood_wait_before_retrying() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("tone.wav");
+    wav(&path, 10);
+    let server = FakeServer::new(ChatId::new(-100).unwrap(), UserId::new(42).unwrap());
+    let telegram = server.client().unwrap();
+    let cancel = CancellationToken::new();
+    let message = telegram
+        .send_document(
+            ChatId::new(-100).unwrap(),
+            path.clone(),
+            String::new(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let file = message.file.unwrap();
+    let cache = CacheManager::open(dir.path().join("cache"), 1024).unwrap();
+    server
+        .set_faults(vault_testkit::Faults {
+            flood_wait: Some(5),
+            ..Default::default()
+        })
+        .unwrap();
+    let started = tokio::time::Instant::now();
+    let lease = download_to_cache(
+        &telegram,
+        &file,
+        &cache,
+        DownloadOptions {
+            cache_key: "flood-wait".into(),
+            expected_sha256: None,
+            pinned: false,
+        },
+        &cancel,
+        &|_, _| {},
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_secs(5));
+    assert_eq!(
+        std::fs::read(lease.path.clone()).unwrap(),
+        std::fs::read(path).unwrap()
+    );
+    drop(lease);
+    server
+        .set_faults(vault_testkit::Faults {
+            flood_wait: Some(3600),
+            ..Default::default()
+        })
+        .unwrap();
+    let waiting = tokio::sync::Notify::new();
+    let progress = |_, _| waiting.notify_one();
+    let download = download_to_cache(
+        &telegram,
+        &file,
+        &cache,
+        DownloadOptions {
+            cache_key: "cancel-flood-wait".into(),
+            expected_sha256: None,
+            pinned: false,
+        },
+        &cancel,
+        &progress,
+    );
+    let (result, ()) = tokio::join!(download, async {
+        waiting.notified().await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        cancel.cancel();
+    });
+    assert!(matches!(
+        result,
+        Err(MediaError::Telegram(
+            vault_telegram::TelegramError::Cancelled
+        ))
+    ));
+    assert_eq!(cache.stats().unwrap().reserved_bytes, 0);
+}
+
 #[test]
 fn import_formats_match_available_decoders_and_missing_tags_use_the_filename() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/test-vectors/audio");
@@ -310,6 +390,34 @@ fn incomplete_partial_cannot_be_published_even_with_matching_digest() {
     assert!(cache.acquire("incomplete").unwrap().is_none());
     assert_eq!(cache.stats().unwrap().reserved_bytes, 0);
     assert_eq!(cache.clear_unpinned().unwrap(), 20);
+}
+
+#[test]
+fn failed_unpin_keeps_media_protected_in_memory_and_after_reopen() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("cache");
+    let cache = CacheManager::open(&root, 100).unwrap();
+    let source = dir.path().join("source");
+    std::fs::write(&source, [7u8; 60]).unwrap();
+    let digest = hex::encode(Sha256::digest([7u8; 60]));
+    let lease = cache
+        .insert("pinned".into(), &source, &digest, true)
+        .unwrap();
+    let media = lease.path.clone();
+    drop(lease);
+    std::fs::rename(root.join("index.json"), root.join("saved-index.json")).unwrap();
+    std::fs::create_dir(root.join("index.json")).unwrap();
+    assert!(cache.pin("pinned", false).is_err());
+    assert!(cache.entries().unwrap()[0].pinned);
+    std::fs::remove_dir(root.join("index.json")).unwrap();
+    std::fs::rename(root.join("saved-index.json"), root.join("index.json")).unwrap();
+    assert_eq!(cache.clear_unpinned().unwrap(), 0);
+    assert!(media.is_file());
+    drop(cache);
+    let reopened = CacheManager::open(&root, 100).unwrap();
+    assert!(reopened.entries().unwrap()[0].pinned);
+    reopened.pin("pinned", false).unwrap();
+    assert_eq!(reopened.clear_unpinned().unwrap(), 60);
 }
 
 #[test]

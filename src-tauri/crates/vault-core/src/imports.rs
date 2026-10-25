@@ -262,6 +262,15 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
                 .await?,
         )));
     }
+    // Check the account limit before hashing or making a durable staged copy.
+    // The transport repeats the check immediately before every native upload.
+    let file_metadata = tokio::fs::symlink_metadata(&path).await?;
+    if !file_metadata.is_file()
+        || file_metadata.len() == 0
+        || file_metadata.len() > engine.transport().upload_limit(cancel).await?
+    {
+        return Err(ApiError::new(ErrorCode::InvalidInput));
+    }
     let inspect_path = path.clone();
     let token = cancel.clone();
     let asset = tokio::task::spawn_blocking(move || {

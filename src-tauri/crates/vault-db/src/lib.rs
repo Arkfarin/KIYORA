@@ -1,5 +1,7 @@
 //! Atomic SQLite projection and local queries for kiyora.
 
+#[cfg(test)]
+mod fault_tests;
 mod migrations;
 mod projection;
 mod queries;

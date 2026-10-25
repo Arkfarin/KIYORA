@@ -113,7 +113,7 @@ enum Command {
     Play {
         playback_id: Uuid,
         metadata: PlaybackMetadata,
-        input: PlaybackInput,
+        input: Box<PlaybackInput>,
     },
     Pause,
     Resume,
@@ -121,6 +121,33 @@ enum Command {
     Seek(u64),
     Volume(f32),
     Shutdown,
+    #[cfg(test)]
+    DeviceFailure,
+}
+
+fn open_output(failed: Arc<AtomicBool>) -> Result<rodio::OutputStream, rodio::StreamError> {
+    use rodio::cpal::traits::HostTrait;
+    let open = |builder: rodio::OutputStreamBuilder| {
+        let failed = failed.clone();
+        builder
+            .with_error_callback(move |_| failed.store(true, Ordering::Release))
+            .open_stream_or_fallback()
+    };
+    rodio::OutputStreamBuilder::from_default_device()
+        .and_then(open)
+        .or_else(|original| {
+            rodio::cpal::default_host()
+                .output_devices()
+                .ok()
+                .and_then(|mut devices| {
+                    devices.find_map(|device| {
+                        rodio::OutputStreamBuilder::from_device(device)
+                            .and_then(open)
+                            .ok()
+                    })
+                })
+                .ok_or(original)
+        })
 }
 impl PlaybackEngine {
     #[cfg(not(target_os = "android"))]
@@ -154,8 +181,9 @@ impl PlaybackEngine {
                         return;
                     }
                 };
-                let stream = match rodio::OutputStreamBuilder::open_default_stream() {
-                    Ok(stream) => stream,
+                let device_failed = Arc::new(AtomicBool::new(false));
+                let mut stream = match open_output(device_failed.clone()) {
+                    Ok(stream) => Some(stream),
                     Err(_) => {
                         let _ = ready_tx.send(false);
                         state_tx.send_replace(PlaybackState::Failed {
@@ -183,6 +211,22 @@ impl PlaybackEngine {
                                 old.stop();
                             }
                             active = None;
+                            if device_failed.swap(false, Ordering::AcqRel) {
+                                stream = None;
+                            }
+                            if stream.is_none() {
+                                stream = open_output(device_failed.clone()).ok();
+                            }
+                            let Some(output) = &stream else {
+                                if let Some(native) = &mut platform {
+                                    native.stop();
+                                }
+                                state_tx.send_replace(PlaybackState::Failed {
+                                    track_id: Some(track),
+                                    code: "AUDIO_DEVICE_UNAVAILABLE".into(),
+                                });
+                                continue;
+                            };
                             if let Some(native) = &mut platform
                                 && native.prepare(&metadata).is_err()
                             {
@@ -196,9 +240,9 @@ impl PlaybackEngine {
                             if closed.load(Ordering::Acquire) {
                                 break;
                             }
-                            match PcmController::start(input, duration_ms) {
+                            match PcmController::start(*input, duration_ms) {
                                 Ok((controller, source)) => {
-                                    let next = rodio::Sink::connect_new(stream.mixer());
+                                    let next = rodio::Sink::connect_new(output.mixer());
                                     next.set_volume(volume);
                                     next.append(source);
                                     next.play();
@@ -279,7 +323,25 @@ impl PlaybackEngine {
                         }
                         Ok(Command::Shutdown)
                         | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        #[cfg(test)]
+                        Ok(Command::DeviceFailure) => device_failed.store(true, Ordering::Release),
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                    if device_failed.swap(false, Ordering::AcqRel) {
+                        let track_id = active.as_ref().map(|(track, ..)| *track);
+                        if let Some(current) = sink.take() {
+                            current.stop();
+                        }
+                        active = None;
+                        stream = None;
+                        if let Some(native) = &mut platform {
+                            native.stop();
+                        }
+                        state_tx.send_replace(PlaybackState::Failed {
+                            track_id,
+                            code: "AUDIO_DEVICE_UNAVAILABLE".into(),
+                        });
+                        continue;
                     }
                     if let (Some(current), Some((track, controller, duration_ms, playback_id))) =
                         (&sink, &active)
@@ -421,7 +483,7 @@ impl PlaybackEngine {
         let playback_id = Uuid::new_v4();
         self.send(Command::Play {
             metadata,
-            input,
+            input: Box::new(input),
             playback_id,
         })?;
         Ok(playback_id)
@@ -460,6 +522,50 @@ impl Drop for PlaybackEngine {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+#[allow(clippy::unwrap_used)]
+mod output_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    #[ignore = "requires an explicitly configured audio output; use an isolated ALSA null device in CI"]
+    fn output_device_failure_releases_media_and_next_play_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::CacheManager::open(dir.path(), 1024 * 1024).unwrap();
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/test-vectors/audio/tone.flac");
+        let hash = hex::encode(Sha256::digest(std::fs::read(&path).unwrap()));
+        let lease = cache.insert("tone".into(), &path, &hash, false).unwrap();
+        let player = PlaybackEngine::open().unwrap();
+        let track = Uuid::new_v4();
+        let wait = |predicate: fn(&PlaybackState) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !predicate(&player.state()) {
+                assert!(std::time::Instant::now() < deadline, "{:?}", player.state());
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        player.play(track, lease, 300).unwrap();
+        player.pause().unwrap();
+        wait(|state| matches!(state, PlaybackState::Paused { .. }));
+        assert_eq!(cache.clear_unpinned().unwrap(), 0);
+        // Emulate the CPAL callback signal, while using a real output/mixer/decoder.
+        player.send(Command::DeviceFailure).unwrap();
+        wait(
+            |state| matches!(state, PlaybackState::Failed { code, .. } if code == "AUDIO_DEVICE_UNAVAILABLE"),
+        );
+        assert!(cache.clear_unpinned().unwrap() > 0);
+        let lease = cache.insert("tone".into(), &path, &hash, false).unwrap();
+        player.play(track, lease, 300).unwrap();
+        player.pause().unwrap();
+        wait(|state| matches!(state, PlaybackState::Paused { .. }));
+        assert_eq!(cache.clear_unpinned().unwrap(), 0);
+        drop(player);
+        assert!(cache.clear_unpinned().unwrap() > 0);
     }
 }
 

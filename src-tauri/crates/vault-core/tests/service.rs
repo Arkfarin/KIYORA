@@ -757,6 +757,73 @@ async fn incoming_copy_restrictions_offline_and_unknown_sends_never_upload_a_fal
 }
 
 #[tokio::test]
+async fn oversized_import_is_rejected_before_journaling_or_uploading() {
+    let (server, binding) = fixture().await;
+    let service = service(&server, binding, EventBus::default());
+    ready(&service).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("size-limited.wav");
+    let bytes = wav_fixture();
+    std::fs::write(&path, &bytes).unwrap();
+    let op_id = Uuid::new_v4();
+    let request = VaultRequest::Import {
+        path: path.to_string_lossy().into_owned(),
+        track_id: Uuid::new_v4(),
+        source_id: Uuid::new_v4(),
+        op_id,
+        allow_duplicate: false,
+    };
+    let before = server.messages().unwrap();
+    server
+        .set_faults(Faults {
+            upload_limit_bytes: Some(bytes.len() as u64 - 1),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        service
+            .request(request.clone(), &CancellationToken::new())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+    assert_eq!(server.messages().unwrap(), before);
+    assert!(service.reader().command(op_id).await.unwrap().is_none());
+    assert!(
+        service
+            .reader()
+            .local_settings(format!("import.v1:{op_id}"), 0, 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // An account limit change allows the same intent without a phantom unknown
+    // upload or abandoned staging entry from the rejected attempt.
+    server
+        .set_faults(Faults {
+            upload_limit_bytes: Some(bytes.len() as u64),
+            ..Default::default()
+        })
+        .unwrap();
+    service
+        .request(request, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .reader()
+            .command(op_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        CommandStatus::Applied
+    );
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn unknown_upload_without_visible_marker_never_blindly_retries() {
     let (server, binding) = fixture().await;
     let service = service(&server, binding, EventBus::default());
