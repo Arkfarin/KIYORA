@@ -151,7 +151,7 @@ mod native {
             .connect_native(
                 id,
                 123,
-                "PRIVATE_API_HASH_123456789012345".to_owned().into(),
+                "0123456789abcdef0123456789abcdef".to_owned().into(),
             )
             .await
             .unwrap();
@@ -267,6 +267,8 @@ mod native {
             !diagnostics.contains("PRIVATE"),
             "credentials must not appear in diagnostics"
         );
+        assert!(!diagnostics.contains("0123456789abcdef0123456789abcdef"));
+        assert!(!diagnostics.contains("tg://login"));
         assert!(!diagnostics.contains(&profile_dir.to_string_lossy().to_string()));
         let events: Vec<serde_json::Value> = diagnostics
             .lines()

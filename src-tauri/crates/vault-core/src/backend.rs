@@ -21,6 +21,13 @@ pub use queue::{QueueInfo, QueuePage};
 pub use storage::StorageUsage;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AccountInfo {
+    #[schemars(with = "String")]
+    pub user_id: vault_domain::UserId,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProjectionSnapshot {
     pub context: Context,
     /// Subscribe before requesting. Ignore events <= this sequence; later
@@ -37,6 +44,10 @@ struct ProfileConfig {
     device_id: String,
     api_id: Option<i32>,
     binding: Option<Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    init_message_id: Option<vault_domain::MessageId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    discovery_hints: Vec<vault_telegram::SavedVault>,
     creation: Option<CreateIntent>,
     #[serde(default = "default_cache_quota")]
     cache_quota_bytes: u64,
@@ -45,12 +56,36 @@ fn default_cache_quota() -> u64 {
     10 * 1024 * 1024 * 1024
 }
 impl ProfileConfig {
+    fn remember_discovered_vault(&mut self, candidate: &vault_telegram::VaultCandidate) {
+        self.discovery_hints
+            .retain(|hint| hint.chat_id != candidate.channel.chat_id);
+        self.discovery_hints.push(vault_telegram::SavedVault {
+            chat_id: candidate.channel.chat_id,
+            owner_id: candidate.channel.owner_id,
+            vault_id: candidate.init.vault_id,
+            init_message_id: Some(candidate.init_message_id),
+        });
+        // backend.json has a 16 KiB read limit. Keep this optional lookup cache
+        // small; the selected binding's marker is stored independently.
+        if self.discovery_hints.len() > 40 {
+            self.discovery_hints.remove(0);
+        }
+        if self.binding.is_some_and(|b| {
+            b.chat_id == candidate.channel.chat_id
+                && b.vault_id == candidate.init.vault_id
+                && b.owner_id == candidate.channel.owner_id
+        }) {
+            self.init_message_id = Some(candidate.init_message_id);
+        }
+    }
     fn fresh() -> Self {
         Self {
             schema: 2,
             device_id: Uuid::new_v4().to_string(),
             api_id: None,
             binding: None,
+            init_message_id: None,
+            discovery_hints: Vec::new(),
             creation: None,
             cache_quota_bytes: default_cache_quota(),
         }
@@ -909,7 +944,7 @@ impl Backend {
         if s.config.api_id.is_some_and(|saved| saved != api_id) {
             return Err(ApiError::new(ErrorCode::Conflict));
         }
-        if api_id <= 0 || api_hash.len() != 32 {
+        if !vault_telegram::valid_api_credentials(api_id, &api_hash) {
             return Err(ApiError::new(ErrorCode::InvalidInput));
         }
         let secrets = self.secrets.clone();
@@ -1075,7 +1110,7 @@ impl Backend {
         if cancel.is_cancelled() {
             return Err(ApiError::new(ErrorCode::Cancelled));
         }
-        let (status, context) = {
+        let (client, context, epoch) = {
             let guard = self.session.lock().await;
             let s = guard
                 .as_ref()
@@ -1085,8 +1120,23 @@ impl Backend {
                 .native
                 .as_ref()
                 .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?;
-            (native.client.authenticate(input).await?, s.context.clone())
+            (native.client.clone(), s.context.clone(), native.epoch)
         };
+        let status = client.authenticate_cancellable(input, cancel).await?;
+        {
+            let guard = self.session.lock().await;
+            let session = guard
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            check_session(session, session_id)?;
+            if !session
+                .native
+                .as_ref()
+                .is_some_and(|native| native.epoch == epoch)
+            {
+                return Err(ApiError::new(ErrorCode::Closed));
+            }
+        }
         self.events.emit(&context, EventData::Auth(status.clone()));
         if status == AuthStatus::Ready {
             self.activate_account(session_id, cancel).await?;
@@ -1124,12 +1174,89 @@ impl Backend {
         }
         Ok(status)
     }
+    /// Subscribe after native initialization and before requesting QR authentication.
+    /// The stream coalesces updates and is scoped to this native session.
+    pub async fn auth_updates(
+        &self,
+        session_id: Uuid,
+    ) -> Result<vault_telegram::AuthUpdates, ApiError> {
+        let guard = self.session.lock().await;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        check_session(session, session_id)?;
+        Ok(session
+            .native
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?
+            .client
+            .auth_updates())
+    }
+    /// Account identity is read only after Ready and the profile owner check.
+    pub async fn authorized_account(
+        &self,
+        session_id: Uuid,
+        cancel: &CancellationToken,
+    ) -> Result<AccountInfo, ApiError> {
+        let mut guard = self.session.lock().await;
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        check_session(session, session_id)?;
+        activate_session(session, &self.events, cancel).await?;
+        let native = session
+            .native
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?;
+        let me = native
+            .client
+            .read(serde_json::json!({"@type":"getMe"}), cancel)
+            .await?;
+        if native.client.auth_status() != AuthStatus::Ready {
+            return Err(ApiError::new(ErrorCode::AuthRequired));
+        }
+        let user_id = vault_domain::UserId::new(td_integer(&me["id"])?)
+            .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
+        if session.lease.profile().owner_id != Some(user_id) {
+            return Err(ApiError::new(ErrorCode::Conflict));
+        }
+        let display_name = [
+            me["first_name"].as_str().unwrap_or(""),
+            me["last_name"].as_str().unwrap_or(""),
+        ]
+        .join(" ")
+        .trim()
+        .to_owned();
+        Ok(AccountInfo {
+            user_id,
+            display_name,
+        })
+    }
     pub async fn discover_vaults(
         &self,
         session_id: Uuid,
         cancel: &CancellationToken,
     ) -> Result<Vec<vault_telegram::VaultCandidate>, ApiError> {
-        let (transport, owner) = {
+        let report = self
+            .discover_vaults_with_options(session_id, false, None, cancel)
+            .await?;
+        if let Some(error) = report.failure {
+            return Err(error.into());
+        }
+        if !report.complete {
+            return Err(vault_telegram::TelegramError::IncompleteHistory.into());
+        }
+        Ok(report.candidates)
+    }
+
+    pub async fn discover_vaults_with_options(
+        &self,
+        session_id: Uuid,
+        deep: bool,
+        progress: Option<&tokio::sync::watch::Sender<vault_telegram::DiscoveryProgress>>,
+        cancel: &CancellationToken,
+    ) -> Result<vault_telegram::DiscoveryReport, ApiError> {
+        let (transport, owner, saved, session_cancel) = {
             let guard = self.session.lock().await;
             let s = guard
                 .as_ref()
@@ -1140,28 +1267,42 @@ impl Backend {
                 .profile()
                 .owner_id
                 .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?;
+            let native = s
+                .native
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?;
+            let saved = s.config.binding.map(|b| vault_telegram::SavedVault {
+                chat_id: b.chat_id,
+                owner_id: b.owner_id,
+                vault_id: b.vault_id,
+                init_message_id: s.config.init_message_id,
+            });
             (
-                s.native
-                    .as_ref()
-                    .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?
-                    .transport
-                    .clone(),
+                native.transport.clone(),
                 owner,
+                saved,
+                native.cancel.clone(),
             )
         };
-        let context = self
-            .context()
-            .await
+        let report = tokio::select! {
+            biased;
+            _ = session_cancel.cancelled() => return Err(ApiError::new(ErrorCode::Cancelled)),
+            result = transport.discover_with_options(owner, vault_telegram::DiscoveryOptions { deep, saved }, progress, cancel) => result?,
+        };
+        // Save lookup hints, never select or attach a discovered vault. Recheck
+        // the session after I/O so results cannot leak into a switched profile.
+        let mut guard = self.session.lock().await;
+        let s = guard
+            .as_mut()
             .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
-        self.events
-            .emit(&context, EventData::Sync { running: true });
-        let result = transport
-            .discover(owner, cancel)
-            .await
-            .map_err(ApiError::from);
-        self.events
-            .emit(&context, EventData::Sync { running: false });
-        result
+        check_session(s, session_id)?;
+        for candidate in &report.candidates {
+            s.config.remember_discovered_vault(candidate);
+        }
+        if !report.candidates.is_empty() {
+            save_config(&s.lease, &s.config)?;
+        }
+        Ok(report)
     }
     pub async fn attach_vault(
         &self,
@@ -1169,7 +1310,7 @@ impl Backend {
         chat_id: vault_domain::ChatId,
         cancel: &CancellationToken,
     ) -> Result<Status, ApiError> {
-        let (transport, owner, context) = {
+        let (transport, owner, context, hint) = {
             let g = self.session.lock().await;
             let s = g
                 .as_ref()
@@ -1186,10 +1327,24 @@ impl Backend {
                     .owner_id
                     .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?,
                 s.context.clone(),
+                s.config
+                    .discovery_hints
+                    .iter()
+                    .find(|hint| {
+                        hint.chat_id == chat_id && Some(hint.owner_id) == s.lease.profile().owner_id
+                    })
+                    .copied(),
             )
         };
-        let candidate =
-            vault_telegram::inspect_vault(&transport, chat_id, owner, None, cancel).await?;
+        let candidate = vault_telegram::inspect_vault_with_hint(
+            &transport,
+            chat_id,
+            owner,
+            hint.map(|h| h.vault_id),
+            hint.and_then(|h| h.init_message_id),
+            cancel,
+        )
+        .await?;
         let binding = Binding {
             vault_id: candidate.init.vault_id,
             owner_id: owner,
@@ -1204,6 +1359,7 @@ impl Backend {
             return Err(ApiError::new(ErrorCode::Conflict));
         }
         s.config.binding = Some(binding);
+        s.config.init_message_id = Some(candidate.init_message_id);
         save_config(&s.lease, &s.config)?;
         let db = Database::open(s.lease.database_path(), binding)?;
         s.reader = Some(ProjectionReader::new(db));
@@ -1234,7 +1390,7 @@ impl Backend {
                 .as_mut()
                 .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
             check_session(s, session_id)?;
-            if s.config.creation.is_some() {
+            if s.config.creation.is_some() || s.config.binding.is_some() {
                 return Err(ApiError::new(ErrorCode::Conflict));
             }
             let owner = s
@@ -1334,7 +1490,7 @@ impl Backend {
         let history =
             vault_telegram::scan_history(&transport, channel.chat_id, 0, None, 100_000, cancel)
                 .await?;
-        let mut init_exists = false;
+        let mut init_exists = None;
         for message in history {
             if let Some(record) = message.record()? {
                 if record.vault_id() != vault {
@@ -1342,16 +1498,18 @@ impl Backend {
                 }
                 match record {
                     Record::Init(marker)
-                        if marker.owner_telegram_user_id == channel.owner_id && !init_exists =>
+                        if marker.owner_telegram_user_id == channel.owner_id
+                            && init_exists.is_none() =>
                     {
-                        init_exists = true
+                        init_exists = Some(message.id)
                     }
                     Record::Init(_) => return Err(ApiError::new(ErrorCode::Integrity)),
                     _ => return Err(ApiError::new(ErrorCode::Conflict)),
                 }
             }
         }
-        if init_exists {
+        if let Some(id) = init_exists {
+            self.save_init_hint(session_id, id).await?;
             return Ok(());
         }
         let init = Record::Init(VaultInit {
@@ -1371,14 +1529,29 @@ impl Backend {
             }
             save_config(&s.lease, &s.config)?;
         }
-        transport
+        let message = transport
             .send_text(
                 channel.chat_id,
                 encode_text(&init).map_err(|_| ApiError::new(ErrorCode::Integrity))?,
                 cancel,
             )
             .await?;
+        self.save_init_hint(session_id, message.id).await?;
         Ok(())
+    }
+
+    async fn save_init_hint(
+        &self,
+        session_id: Uuid,
+        id: vault_domain::MessageId,
+    ) -> Result<(), ApiError> {
+        let mut guard = self.session.lock().await;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        check_session(s, session_id)?;
+        s.config.init_message_id = Some(id);
+        save_config(&s.lease, &s.config)
     }
 
     pub async fn complete_vault_creation(&self, session_id: Uuid) -> Result<(), ApiError> {
@@ -1792,4 +1965,67 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let m = mp + if mp < 10 { 3 } else { -9 };
     y += i64::from(m <= 2);
     (y, m as u32, d as u32)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod discovery_config_tests {
+    use super::*;
+    use vault_domain::{ChatId, MessageId, UserId};
+
+    #[test]
+    fn old_profile_config_loads_without_discovery_hints() {
+        let old = serde_json::json!({"schema":2,"device_id":"old-device","api_id":null,"binding":null,"creation":null});
+        let config: ProfileConfig = serde_json::from_value(old).unwrap();
+        assert!(config.init_message_id.is_none());
+        assert!(config.discovery_hints.is_empty());
+        assert!(
+            serde_json::to_value(config)
+                .unwrap()
+                .get("discovery_hints")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn hints_stay_with_the_profile_and_never_replace_a_selected_binding() {
+        let mut config = ProfileConfig::fresh();
+        let owner = UserId::new(42).unwrap();
+        let binding = Binding {
+            chat_id: ChatId::new(-100).unwrap(),
+            owner_id: owner,
+            vault_id: Uuid::from_u128(1),
+        };
+        config.binding = Some(binding);
+        let mut candidate = vault_telegram::VaultCandidate {
+            protocol: vault_protocol::PROTOCOL,
+            channel: ChannelInfo {
+                chat_id: binding.chat_id,
+                owner_id: owner,
+                title: "renamed".into(),
+            },
+            init: VaultInit {
+                vault_id: binding.vault_id,
+                owner_telegram_user_id: owner,
+                created_by: "kiyora".into(),
+                created_at_utc: "2026-10-25T00:00:00Z".into(),
+            },
+            init_message_id: MessageId::new(2 << 20).unwrap(),
+        };
+        config.remember_discovered_vault(&candidate);
+        assert_eq!(config.init_message_id, Some(candidate.init_message_id));
+        for n in 101..301 {
+            candidate.channel.chat_id = ChatId::new(-n).unwrap();
+            candidate.init.vault_id = Uuid::from_u128(n as u128);
+            config.remember_discovered_vault(&candidate);
+        }
+        assert_eq!(config.binding, Some(binding));
+        assert_eq!(config.discovery_hints.len(), 40);
+        assert_eq!(config.init_message_id, Some(candidate.init_message_id));
+        let bytes = serde_json::to_vec(&config).unwrap();
+        assert!(bytes.len() < 16 * 1024);
+        let restored: ProfileConfig = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.discovery_hints.len(), 40);
+        assert!(ProfileConfig::fresh().discovery_hints.is_empty());
+    }
 }

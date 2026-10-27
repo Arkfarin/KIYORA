@@ -3,7 +3,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use tokio::time::Instant;
+use tokio::{sync::watch, time::Instant};
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 /// Safe delivery metadata. Phone numbers, code hints, receipts and token URLs
@@ -123,7 +124,7 @@ impl TdParameters {
         result
     }
     async fn initialize_inner(self, client: &TdClient) -> Result<(), TelegramError> {
-        if self.api_id <= 0 || self.api_hash.len() != 32 || self.database_key.len() != 32 {
+        if !valid_api_credentials(self.api_id, &self.api_hash) || self.database_key.len() != 32 {
             return Err(TelegramError::InvalidInput);
         }
         let database = self
@@ -152,7 +153,7 @@ impl TdParameters {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AuthStatus {
     ParametersRequired,
@@ -170,6 +171,45 @@ pub enum AuthStatus {
     Closed,
     Unsupported,
 }
+// AuthStatus travels through UI events, but Debug must never reveal QR credentials.
+impl std::fmt::Debug for AuthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+pub fn valid_api_credentials(api_id: i32, api_hash: &str) -> bool {
+    api_id > 0 && api_hash.len() == 32 && api_hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Latest values, coalesced rather than queued: a slow UI must not replay expired QR tokens.
+/// Contains ephemeral credentials; never persist or log the returned authorization state.
+pub struct AuthUpdates {
+    pub(crate) auth: watch::Receiver<Value>,
+    pub(crate) connection: watch::Receiver<Value>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthUpdate {
+    pub status: AuthStatus,
+    pub connected: bool,
+}
+impl AuthUpdates {
+    pub fn current(&mut self) -> AuthUpdate {
+        AuthUpdate {
+            status: AuthStatus::from_td(&self.auth.borrow_and_update()),
+            connected: self.connection.borrow_and_update()["@type"] == "connectionStateReady",
+        }
+    }
+    pub async fn changed(&mut self, cancel: &CancellationToken) -> Result<(), TelegramError> {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(TelegramError::Cancelled),
+            result = self.auth.changed() => result.map_err(|_| TelegramError::Closed),
+            result = self.connection.changed() => result.map_err(|_| TelegramError::Closed),
+        }
+    }
+}
+
 impl AuthStatus {
     pub fn from_td(value: &Value) -> Self {
         match value["@type"].as_str() {
@@ -228,6 +268,20 @@ impl AuthStatus {
             timeout_seconds = info.and_then(|v| v.timeout_seconds),
             next_delivery = info.and_then(|v| v.next_delivery).map(tracing::field::debug));
     }
+    /// TDLib 1.8.69 also requires no outstanding authentication query.
+    /// This checks the state only; the client/worker enforce query exclusion.
+    pub fn can_request_qr(&self) -> bool {
+        matches!(
+            self,
+            Self::PhoneRequired
+                | Self::PremiumRequired
+                | Self::EmailRequired
+                | Self::EmailCodeRequired { .. }
+                | Self::CodeRequired { .. }
+                | Self::RegistrationRequired
+                | Self::PasswordRequired
+        )
+    }
     fn validate_input(&self, input: &AuthInput) -> Result<(), TelegramError> {
         if matches!(input, AuthInput::ResendCode) {
             return match self {
@@ -244,6 +298,13 @@ impl AuthStatus {
                 _ => Err(TelegramError::ResendUnavailable),
             };
         }
+        if matches!(input, AuthInput::Qr) {
+            return if self.can_request_qr() {
+                Ok(())
+            } else {
+                Err(TelegramError::AuthStateMismatch)
+            };
+        }
         let valid = matches!(
             (self, input),
             (Self::PhoneRequired, AuthInput::Phone(_))
@@ -251,16 +312,6 @@ impl AuthStatus {
                 | (Self::PasswordRequired, AuthInput::Password(_))
                 | (Self::EmailRequired, AuthInput::Email(_))
                 | (Self::EmailCodeRequired { .. }, AuthInput::EmailCode(_))
-                | (
-                    Self::PhoneRequired
-                        | Self::PremiumRequired
-                        | Self::EmailRequired
-                        | Self::EmailCodeRequired { .. }
-                        | Self::CodeRequired { .. }
-                        | Self::RegistrationRequired
-                        | Self::PasswordRequired,
-                    AuthInput::Qr
-                )
         );
         if valid {
             Ok(())
@@ -298,7 +349,25 @@ impl TdClient {
         AuthStatus::from_td(&self.authorization())
     }
     pub async fn authenticate(&self, input: AuthInput) -> Result<AuthStatus, TelegramError> {
-        let mut attempts = self.auth_attempts.lock().await;
+        self.authenticate_cancellable(input, &CancellationToken::new())
+            .await
+    }
+    pub async fn authenticate_cancellable(
+        &self,
+        input: AuthInput,
+        cancel: &CancellationToken,
+    ) -> Result<AuthStatus, TelegramError> {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(TelegramError::Cancelled),
+            result = self.authenticate_inner(input) => result,
+        }
+    }
+    async fn authenticate_inner(&self, input: AuthInput) -> Result<AuthStatus, TelegramError> {
+        let mut attempts = self
+            .auth_attempts
+            .try_lock()
+            .map_err(|_| TelegramError::AuthBusy)?;
         let operation = input.operation();
         let started = Instant::now();
         tracing::info!(target: "kiyora::auth", event = "auth.request", operation, state = self.auth_status().name(), connection = self.auth_connection_name());
@@ -360,6 +429,7 @@ impl TdClient {
                 ResendTooEarly { .. } => "resend_too_early",
                 ResendUnavailable => "resend_unavailable",
                 AuthStateMismatch => "auth_state_mismatch",
+                AuthBusy => "auth_busy",
                 Request { code: 408 } | Timeout => "timeout",
                 Network
                 | Request {

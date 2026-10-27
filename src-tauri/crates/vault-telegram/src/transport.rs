@@ -102,9 +102,16 @@ pub trait Telegram: Send + Sync {
         &self,
         cancel: &CancellationToken,
     ) -> impl Future<Output = Result<u64, TelegramError>> + Send;
-    /// Positive search results are hints only. None always falls back to history;
-    /// a search miss never authorizes creation or proves absence of a vault.
+    /// Positive search results are hints only. A miss never authorizes creation
+    /// or proves absence; discovery uses a bounded history fallback.
     fn init_hint(
+        &self,
+        _chat: ChatId,
+        _cancel: &CancellationToken,
+    ) -> impl Future<Output = Result<Option<RemoteMessage>, TelegramError>> + Send {
+        async { Ok(None) }
+    }
+    fn pinned_message(
         &self,
         _chat: ChatId,
         _cancel: &CancellationToken,
@@ -216,7 +223,8 @@ pub struct DownloadedRange {
 /// Owns an update forwarder. Every clone shares one forwarder and stops it on drop.
 #[derive(Clone)]
 pub struct TdTransport {
-    client: TdClient,
+    pub(crate) client: TdClient,
+    pub(crate) discovery_gate: Arc<tokio::sync::Mutex<()>>,
     updates: broadcast::Sender<Update>,
     _pump: std::sync::Arc<Pump>,
     downloads: Arc<DownloadLocks>,
@@ -297,6 +305,7 @@ impl TdTransport {
         });
         Self {
             client,
+            discovery_gate: Arc::default(),
             updates,
             _pump: std::sync::Arc::new(Pump(token)),
             downloads: Arc::new(DownloadLocks::default()),
@@ -376,7 +385,7 @@ impl Telegram for TdTransport {
         cancel: &CancellationToken,
     ) -> Result<Option<RemoteMessage>, TelegramError> {
         let result=self.client.read(json!({"@type":"searchChatMessages","chat_id":chat.get(),"topic_id":null,
-            "query":"VAULT_INIT","sender_id":null,"from_message_id":0,"offset":0,"limit":100,"filter":null}),cancel).await?;
+            "query":"VAULT_INIT","sender_id":null,"from_message_id":0,"offset":0,"limit":20,"filter":null}),cancel).await?;
         let values = result["messages"]
             .as_array()
             .ok_or(TelegramError::InvalidResponse)?;
@@ -402,6 +411,24 @@ impl Telegram for TdTransport {
             Ok(actual)
         } else {
             Ok(None)
+        }
+    }
+    async fn pinned_message(
+        &self,
+        chat: ChatId,
+        cancel: &CancellationToken,
+    ) -> Result<Option<RemoteMessage>, TelegramError> {
+        match self
+            .client
+            .read(
+                json!({"@type":"getChatPinnedMessage","chat_id":chat.get()}),
+                cancel,
+            )
+            .await
+        {
+            Ok(value) => parse_message(&value, chat).map(Some),
+            Err(TelegramError::Request { code: 404 }) => Ok(None),
+            Err(error) => Err(error),
         }
     }
     async fn audio_info(

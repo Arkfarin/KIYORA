@@ -43,7 +43,18 @@ queues are bounded; lag forces reconciliation. Only an explicit allowlist of rea
 is retried, including FLOOD_WAIT delays. Mutation timeouts retain unknown outcomes.
 Native logs are disabled, and raw TDLib errors/updates never go directly to UI logs.
 
+Vault discovery uses a scoped read policy without automatic retries: rate limits
+are returned with their retry delay, and every candidate and operation has a
+deadline. See [ordinary and deep discovery](vault-discovery.md) for the exact
+TDLib methods, limits and recovery commands.
+
 ### Authorization and diagnostics
+
+`kiyora-cli auth qr` provides interactive terminal QR login, live token updates,
+hidden 2FA input and Ctrl+C cancellation. See [CLI authentication](cli-auth.md)
+for Android scanning, profile restoration, terminal fallback and error guidance.
+The flow uses the pinned schema's `requestQrCodeAuthentication` and
+`authorizationStateWaitOtherDeviceConfirmation`, through the existing Backend.
 
 `kiyora-cli auth login` resumes the authorization state in the selected profile's
 TDLib database. A normal CLI exit, an error, or EOF closes the native client;
@@ -84,7 +95,7 @@ directories, covering all auth states, resend restrictions, concurrent attempts,
 invalid/expired codes, FloodWait, diagnostic redaction and interrupted login:
 
 ```sh
-cargo test --locked -p vault-telegram --test auth --lib
+cargo test --locked -p vault-telegram --test auth --test qr_auth --lib
 cargo test --locked -p vault-core --test auth_recovery --bin kiyora-cli
 ```
 

@@ -14,7 +14,7 @@ pub use transport::*;
 pub const TDLIB_VERSION: &str = "1.8.69";
 pub const TDLIB_REVISION: &str = "9d92b49bc5d0d2e29fe518239af647a88f8680e6";
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum TelegramError {
     #[error("TDLib shared library unavailable or incompatible")]
     NativeLibrary,
@@ -42,6 +42,8 @@ pub enum TelegramError {
     Network,
     #[error("authentication input does not match the current state")]
     AuthStateMismatch,
+    #[error("another authentication query is still pending")]
+    AuthBusy,
     #[error("Telegram does not offer code resending in this state")]
     ResendUnavailable,
     #[error("code resending is available in {retry_after_seconds} seconds")]
@@ -78,7 +80,7 @@ impl TelegramError {
             Self::InvalidInput | Self::Unshareable | Self::AuthRequired
             | Self::UnsafeChannel | Self::RateLimited { .. }
             | Self::InvalidCode | Self::CodeExpired | Self::InvalidPassword
-            | Self::AuthStateMismatch | Self::ResendUnavailable | Self::ResendTooEarly { .. }
+            | Self::AuthStateMismatch | Self::AuthBusy | Self::ResendUnavailable | Self::ResendTooEarly { .. }
             | Self::Request { code: 400..=407 | 409..=499 })
     }
 }
@@ -118,6 +120,7 @@ pub fn check_response(value: serde_json::Value) -> Result<serde_json::Value, Tel
         | "Code must be non-empty" => TelegramError::InvalidCode,
         "Authentication code can't be resend" => TelegramError::ResendUnavailable,
         "PHONE_CODE_EXPIRED" | "EMAIL_CODE_EXPIRED" => TelegramError::CodeExpired,
+        "Another authorization query has started" => TelegramError::AuthBusy,
         "PASSWORD_HASH_INVALID" => TelegramError::InvalidPassword,
         "NETWORK_ERROR" | "CONNECTION_FAILED" | "CONNECTION_TIMEOUT" => TelegramError::Network,
         _ => TelegramError::Request { code },

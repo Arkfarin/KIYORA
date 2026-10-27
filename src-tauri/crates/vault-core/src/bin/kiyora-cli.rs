@@ -1,7 +1,4 @@
-use std::{
-    io::{self, IsTerminal, Write},
-    path::PathBuf,
-};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use vault_core::ShareState;
@@ -10,9 +7,14 @@ use vault_core::{
     PlaybackAction, Status, VaultRequest, VaultResponse,
 };
 use vault_domain::{Action, ChatId};
-use zeroize::Zeroizing;
+#[path = "kiyora-cli/auth_flow.rs"]
+mod auth_flow;
+#[path = "kiyora-cli/auth_terminal.rs"]
+mod auth_terminal;
 #[path = "kiyora-cli/auth_ui.rs"]
 mod auth_ui;
+#[path = "kiyora-cli/discovery_ui.rs"]
+mod discovery_ui;
 #[path = "kiyora-cli/simulation.rs"]
 mod simulation;
 
@@ -46,6 +48,17 @@ async fn run() -> Result<(), ApiError> {
         return simulation::run(&args[1..]).await;
     }
     let backend = Backend::default_backend()?;
+    let auth_cancel = CancellationToken::new();
+    let signal = if matches!(args[0].as_str(), "auth" | "vault") {
+        let cancel = auth_cancel.clone();
+        Some(tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancel.cancel();
+            }
+        }))
+    } else {
+        None
+    };
     let result = async {
         match args[0].as_str() {
             "serve" => vault_core::serve_stdio(&backend).await?,
@@ -73,7 +86,7 @@ async fn run() -> Result<(), ApiError> {
                 print_json(&report)?;
             }
             "profiles" => profiles(&backend, &args[1..]).await?,
-            "auth" => auth(&backend, &args[1..]).await?,
+            "auth" => auth(&backend, &args[1..], &auth_cancel).await?,
             "status" => {
                 let status = active(&backend).await?;
                 if args.iter().any(|arg| arg == "--json") {
@@ -82,7 +95,7 @@ async fn run() -> Result<(), ApiError> {
                     print_status(&status);
                 }
             }
-            "vault" => vault(&backend, &args[1..]).await?,
+            "vault" => vault(&backend, &args[1..], &auth_cancel).await?,
             "sync" => sync(&backend, &args[1..]).await?,
             "library" => library(&backend, &args[1..]).await?,
             "playlist" => playlist(&backend, &args[1..]).await?,
@@ -150,12 +163,17 @@ async fn run() -> Result<(), ApiError> {
     }
     .await;
     let closed = backend.shutdown().await;
-    result.and(closed)
+    if let Some(signal) = signal {
+        signal.abort();
+    }
+    // A close failure must remain visible even if authentication was cancelled.
+    closed.and(result)
 }
 fn print_help() {
     println!(
-        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list [--json]|create <label>|switch <uuid>\n  auth login|resend|status [--json]|logout\n  status [--json]\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id> [--op-id <uuid>]\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|cache stats|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
+        "kiyora-cli\n\nUSAGE:\n  kiyora-cli <command>\n\nCOMMANDS:\n  profiles list [--json]|create <label>|switch <uuid>\n  auth login|qr|resend|status [--json]|logout\n  status [--json]\n  vault discover|attach <chat-id>|create\n  sync run|status\n  library list|search <query>|import <path>|delete <track-id>|share <track-id> <source-id> <recipient-chat-id> [--op-id <uuid>]\n  playlist list|create <title>|rename <id> <title>|delete <id>\n  snapshot create|verify\n  gc plan|inspect <plan-id>|execute <plan-id> <plan-sha256>\n  backup verify <file>|export <file> [--full]|import <file>\n  media import <path> [--allow-duplicate]|download <track-id> <source-id>|cache stats|clear-cache\n  playback play <track-id> <source-id>|pause|resume|stop|seek <milliseconds>|volume <0..1>|status\n  diagnose"
     );
+    println!("  auth qr (interactive Telegram QR login; /cancel or Ctrl+C to exit)");
     println!("  media import-incoming <chat-id> <message-id>");
     println!(
         "  playlist show <id>|add <playlist-id> <track-id> [after-entry-id]|remove <entry-id>|move <entry-id> [after-entry-id]"
@@ -166,6 +184,9 @@ fn print_help() {
     println!("  media cache quota <bytes>");
     println!("  media imports|resume <op-id>|orphans");
     println!("  vault resume <chat-id>");
+    println!(
+        "  vault discover [--deep] [--json] (bounded search; --deep scans legacy/renamed channels)"
+    );
     println!("  library metadata <track-id> <patch.json>");
     println!("  simulate [event-count] (three simulated clients; no Telegram account)");
     println!("  snapshot repair (publishes a new verified A/B generation)");
@@ -244,25 +265,35 @@ async fn profiles(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     }
     Ok(())
 }
-async fn auth(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
+async fn auth(
+    backend: &Backend,
+    args: &[String],
+    cancel: &CancellationToken,
+) -> Result<(), ApiError> {
     let status = active(backend).await?;
     match args.first().map(String::as_str) {
         Some("status") => {
             let auth = backend.auth_status(status.context.session_id).await?;
             if args.iter().any(|arg| arg == "--json") {
-                print_json(&auth)?;
+                // QR links are credentials, including in redirected JSON diagnostics.
+                if matches!(auth, vault_telegram::AuthStatus::QrConfirmation { .. }) {
+                    print_json(&serde_json::json!({"state":"QR_CONFIRMATION"}))?;
+                } else {
+                    print_json(&auth)?;
+                }
             } else {
                 println!("{}", auth_ui::status_description(&auth));
             }
         }
         Some("logout") => backend.logout(status.context.session_id).await?,
-        Some("login") => login(backend, status).await?,
+        Some("login") => auth_flow::login(backend, status, false, cancel).await?,
+        Some("qr") => auth_flow::login(backend, status, true, cancel).await?,
         Some("resend") => {
             let state = backend
                 .authenticate(
                     status.context.session_id,
                     vault_telegram::AuthInput::ResendCode,
-                    &CancellationToken::new(),
+                    cancel,
                 )
                 .await?;
             println!("{}", auth_ui::status_description(&state));
@@ -271,133 +302,22 @@ async fn auth(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     }
     Ok(())
 }
-async fn login(backend: &Backend, status: Status) -> Result<(), ApiError> {
-    login_with_input(backend, status, prompt_secret).await
-}
-async fn login_with_input(
-    backend: &Backend,
-    status: Status,
-    mut read: impl FnMut(&str) -> Result<Zeroizing<String>, ApiError>,
-) -> Result<(), ApiError> {
-    let mut state = backend.auth_status(status.context.session_id).await?;
-    if state == vault_telegram::AuthStatus::ParametersRequired {
-        let api_id = std::env::var("KIYORA_API_ID")
-            .ok()
-            .and_then(|v| v.parse::<i32>().ok())
-            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
-        let api_hash =
-            std::env::var("KIYORA_API_HASH").map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
-        state = backend
-            .connect_native(status.context.session_id, api_id, Zeroizing::new(api_hash))
-            .await?;
-    }
-    loop {
-        use vault_telegram::{AuthInput, AuthStatus};
-        let input = match &state {
-            AuthStatus::PhoneRequired => AuthInput::Phone(read("Telegram phone number: ")?),
-            AuthStatus::CodeRequired { .. } => {
-                println!("{}", auth_ui::status_description(&state));
-                code_input(read("Telegram code (or /resend): ")?, false)
-            }
-            AuthStatus::PasswordRequired => AuthInput::Password(read("Telegram 2FA password: ")?),
-            AuthStatus::EmailRequired => AuthInput::Email(read("Telegram email: ")?),
-            AuthStatus::EmailCodeRequired { .. } => {
-                println!("{}", auth_ui::status_description(&state));
-                code_input(read("Telegram email code (or /resend): ")?, true)
-            }
-            AuthStatus::QrConfirmation { link } => {
-                println!("Approve this Telegram login on your other device: {link}");
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let next = backend.auth_status(status.context.session_id).await?;
-                    if next != state {
-                        state = next;
-                        break;
-                    }
-                }
-                continue;
-            }
-            AuthStatus::Ready => {
-                print_status(&backend.runtime_status().await?);
-                return Ok(());
-            }
-            _ => {
-                println!("{}", auth_ui::status_description(&state));
-                return Err(ApiError::new(ErrorCode::AuthRequired));
-            }
-        };
-        match backend
-            .authenticate(status.context.session_id, input, &CancellationToken::new())
-            .await
-        {
-            Ok(next) => state = next,
-            Err(error) if auth_ui::retry_in_login(&error) => {
-                print_error(&error);
-                state = backend.auth_status(status.context.session_id).await?;
-            }
-            Err(error) => {
-                eprintln!("Run auth login again to continue with the saved Telegram session.");
-                return Err(error);
-            }
-        }
-    }
-}
 fn print_error(error: &ApiError) {
     eprintln!("error[{:?}]: {}", error.code, error.message);
     if let Some(seconds) = error.retry_after_seconds {
         eprintln!("Retry after {seconds} seconds.");
     }
 }
-fn prompt_secret(label: &str) -> Result<Zeroizing<String>, ApiError> {
-    let value = if io::stdin().is_terminal() {
-        rpassword::prompt_password(label).map_err(|_| ApiError::new(ErrorCode::Cancelled))?
-    } else {
-        prompt(label)?
-    };
-    Ok(Zeroizing::new(value))
-}
-fn code_input(code: Zeroizing<String>, email: bool) -> vault_telegram::AuthInput {
-    if code.as_str() == "/resend" {
-        vault_telegram::AuthInput::ResendCode
-    } else if email {
-        vault_telegram::AuthInput::EmailCode(code)
-    } else {
-        vault_telegram::AuthInput::Code(code)
+async fn vault(
+    backend: &Backend,
+    args: &[String],
+    token: &CancellationToken,
+) -> Result<(), ApiError> {
+    if args.first().is_some_and(|arg| arg == "discover") {
+        return discovery_ui::run(backend, &args[1..], token).await;
     }
-}
-
-fn prompt(label: &str) -> Result<String, ApiError> {
-    print!("{label}");
-    io::stdout()
-        .flush()
-        .map_err(|_| ApiError::new(ErrorCode::Storage))?;
-    let mut value = String::new();
-    let count = io::stdin()
-        .read_line(&mut value)
-        .map_err(|_| ApiError::new(ErrorCode::Storage))?;
-    if count == 0 {
-        return Err(ApiError::new(ErrorCode::Cancelled));
-    }
-    while value.ends_with(['\n', '\r']) {
-        value.pop();
-    }
-    Ok(value)
-}
-async fn vault(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
-    let token = CancellationToken::new();
     match args.first().map(String::as_str) {
-        Some("discover") => {
-            for c in backend
-                .discover_vaults(status.context.session_id, &token)
-                .await?
-            {
-                println!(
-                    "chat={} vault={} title={}",
-                    c.channel.chat_id, c.init.vault_id, c.channel.title
-                );
-            }
-        }
         Some("attach") => {
             let chat = ChatId::new(
                 args.get(1)

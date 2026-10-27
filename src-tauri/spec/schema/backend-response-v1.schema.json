@@ -3526,7 +3526,8 @@
       "required": [
         "channel",
         "init",
-        "init_message_id"
+        "init_message_id",
+        "protocol"
       ],
       "properties": {
         "channel": {
@@ -3537,6 +3538,12 @@
         },
         "init_message_id": {
           "type": "string"
+        },
+        "protocol": {
+          "description": "All candidates passed the existing protocol decoder for this version.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
         }
       }
     },

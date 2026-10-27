@@ -30,13 +30,61 @@ provider, then run `"$cli" auth login`. Values must not be embedded in command
 history or source files. An unavailable keyring must produce a structured error;
 do not substitute plaintext storage. Check wrong/expired code and wrong 2FA
 password, cancel the attempt, then complete login. Exit and reopen the CLI and
-verify `auth status --json` without another login. Test QR login through
-`kiyora-cli serve` using the `authenticate` variant in the generated API schema.
+verify `auth status --json` without another login. Test `kiyora-cli auth qr`
+using the dedicated acceptance steps below.
 
-Run `vault discover`, `vault create`, `status --json` and `diagnose`. Capture only
+Run `vault discover`, `status --json` and `diagnose`. Use `vault create` only when
+intentionally creating a new test vault. For renamed/archive recovery, JSON,
+request counts and cancellation, follow [Vault discovery E2E](vault-discovery.md#manual-live-e2e).
+Capture only
 redacted application results. Create a second isolated directory/profile on a
 second device, log in to the same **test account**, discover and attach the test
 vault. Wait for `online_ready` on both clients before mutations.
+
+## QR authorization acceptance
+
+These are **manual, opt-in, real-account checks**. ABI mocks prove local control
+flow and persistence behavior, not Telegram server acceptance or phone scanning.
+Use a test account already logged into Telegram on Android. Do not record the QR,
+its link, API hash, codes or password in evidence screenshots or logs.
+
+With the pinned native library and API credentials configured as above:
+
+```sh
+kiyora-cli profiles create test
+kiyora-cli profiles switch <uuid>
+kiyora-cli auth qr
+kiyora-cli auth status --json
+kiyora-cli vault discover
+```
+
+1. In Kitty, Konsole or Alacritty, leave the first QR unscanned until TDLib rotates
+   it. Only the newest QR should remain visible. Resize the window: the code must
+   fit with its white border, or disappear with an enlarge-window instruction.
+2. Android: Telegram → Settings → Devices → Link Desktop Device. Scan and confirm.
+   With 2FA enabled, enter a wrong password once, then the correct password in the
+   hidden CLI prompt. Success must include account name, user ID and profile.
+   Repeat with a test account without 2FA to verify direct confirmation → Ready.
+3. Run `auth status --json` in a new process: expect `READY`. Run `auth qr` again:
+   expect “already authorized,” no new QR. `vault discover` must use this session.
+4. Start an unfinished login in another disposable profile. Ctrl+C at QR and 2FA,
+   then resume; also test `/cancel`. Verify the terminal echo/mode is restored and
+   the saved profile/TDLib files remain. Do not use SIGKILL as a graceful-close test.
+5. While waiting for QR, disconnect/reconnect the network: the old QR disappears;
+   scanning resumes when TDLib supplies a fresh link. Cancel during the outage.
+6. Run a second `auth qr` against the same active profile: expect `ProfileBusy`.
+   Stop the first cleanly, then verify the second can open the same profile.
+7. In a disposable phone-login profile, run `auth login`, enter `/qr` at the code
+   prompt and complete QR login. Check `/resend` still reports Telegram's offered
+   delivery/delay and suggests QR when no alternative delivery exists.
+8. Repeat QR display/rotation/cancel with `TERM=dumb` and a dark terminal background.
+   Old output is scrolled away and marked invalid; fallback cannot erase scrollback.
+   Redirected stdout must refuse QR output without printing the token/link.
+
+Record OS, terminal, TDLib version, whether 2FA was enabled, and the outcome of
+these checks without secrets. Windows terminal behavior and real Android scanning
+remain separate platform acceptance; a Linux mock or compilation pass does not
+verify them. See [CLI troubleshooting](cli-auth.md#troubleshooting).
 
 ## Account data and recovery
 

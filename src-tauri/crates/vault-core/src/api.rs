@@ -159,6 +159,7 @@ impl From<TelegramError> for ApiError {
             CodeExpired => ErrorCode::CodeExpired,
             InvalidPassword => ErrorCode::InvalidPassword,
             AuthStateMismatch => ErrorCode::AuthStateMismatch,
+            AuthBusy => ErrorCode::Conflict,
             ResendUnavailable => ErrorCode::ResendUnavailable,
             ResendTooEarly { .. } => ErrorCode::ResendTooEarly,
             RateLimited { .. } => ErrorCode::RateLimited,

@@ -67,6 +67,8 @@ fn cli_help_is_standalone_and_lists_backend_operations() {
     assert!(result.status.success());
     let text = String::from_utf8(result.stdout).unwrap();
     assert!(text.contains("vault discover|attach"));
+    assert!(text.contains("auth login|qr|resend|status"));
+    assert!(text.contains("auth qr (interactive"));
     assert!(text.contains("backup verify"));
     assert!(text.contains("media import-incoming"));
     assert!(text.contains("playlist show <id>"));
@@ -246,4 +248,56 @@ fn cli_simulation_runs_three_clients_without_account_credentials() {
     assert_eq!(report["clients"], 3);
     assert_eq!(report["converged"], true);
     assert_eq!(report["cold_recovery"], true);
+}
+
+#[test]
+fn qr_without_profile_or_credentials_reports_a_safe_error() {
+    let dir = tempdir().unwrap();
+    let data = dir.path().to_owned();
+    let output = run(&data, &["auth", "qr"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("NoProfile"));
+    let created = run(&data, &["profiles", "create", "QR"]);
+    let id = String::from_utf8(created.stdout).unwrap().trim().to_owned();
+    assert!(run(&data, &["profiles", "switch", &id]).status.success());
+    for hash in [None, Some("PRIVATE_INVALID_HASH")] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_kiyora-cli"));
+        command
+            .env("KIYORA_DATA_DIR", &data)
+            .env("KIYORA_API_ID", "123")
+            .env_remove("KIYORA_API_HASH")
+            .env("KIYORA_TDJSON", "unavailable-tdjson.so")
+            .args(["auth", "qr"]);
+        if let Some(hash) = hash {
+            command.env("KIYORA_API_HASH", hash);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("InvalidInput"));
+        assert!(stderr.contains("KIYORA_API_HASH"));
+        assert!(!stderr.contains("PRIVATE_INVALID_HASH"));
+    }
+}
+
+#[test]
+fn discovery_help_is_standalone_and_json_errors_are_one_document() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().to_owned();
+    let help = run(&root, &["vault", "discover", "--help"]);
+    assert!(help.status.success());
+    let text = String::from_utf8(help.stdout).unwrap();
+    assert!(text.contains("--deep") && text.contains("--json"));
+    for flags in [
+        vec!["vault", "discover", "--json"],
+        vec!["vault", "discover", "--deep", "--json"],
+    ] {
+        let output = run(&root, &flags);
+        assert!(!output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["code"], "NO_PROFILE");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Kiyora —"));
+    }
+    let output = run(&root, &["vault", "discover", "--depe", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "INVALID_INPUT");
 }

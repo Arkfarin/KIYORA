@@ -224,12 +224,7 @@ async fn native_auth_resends_only_when_allowed_and_recovers_interrupted_login() 
         client.resend_authentication_code()
     );
     assert!(a.is_ok());
-    assert_eq!(
-        b,
-        Err(TelegramError::ResendTooEarly {
-            retry_after_seconds: 30
-        })
-    );
+    assert_eq!(b, Err(TelegramError::AuthBusy));
     assert_eq!(
         client.call(json!({"@type":"testStats"})).await.unwrap()["resend_calls"],
         1
@@ -398,4 +393,39 @@ async fn native_auth_resends_only_when_allowed_and_recovers_interrupted_login() 
         AuthStatus::CodeRequired { .. }
     ));
     client.close().await.unwrap();
+}
+
+#[test]
+fn qr_credentials_are_redacted_from_debug_and_availability_is_explicit() {
+    let status = AuthStatus::QrConfirmation {
+        link: "tg://login?token=PRIVATE_QR".into(),
+    };
+    assert!(!format!("{status:?}").contains("PRIVATE_QR"));
+    for state in [
+        "WaitPhoneNumber",
+        "WaitCode",
+        "WaitPassword",
+        "WaitEmailAddress",
+        "WaitEmailCode",
+        "WaitRegistration",
+        "WaitPremiumPurchase",
+    ] {
+        assert!(
+            AuthStatus::from_td(&json!({"@type":format!("authorizationState{state}")}))
+                .can_request_qr()
+        );
+    }
+    for state in [
+        "Ready",
+        "WaitTdlibParameters",
+        "WaitOtherDeviceConfirmation",
+        "Closing",
+        "Closed",
+        "Future",
+    ] {
+        assert!(
+            !AuthStatus::from_td(&json!({"@type":format!("authorizationState{state}")}))
+                .can_request_qr()
+        );
+    }
 }

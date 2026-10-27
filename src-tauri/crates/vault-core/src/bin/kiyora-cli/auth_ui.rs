@@ -31,7 +31,7 @@ pub(super) fn code_description(info: &AuthCodeInfo) -> String {
             delivery_name(next))),
         (Some(next), None) => text.push_str(&format!(
             " Next delivery: {}; its availability is unknown. Enter /resend to check with Telegram.", delivery_name(next))),
-        (None, _) => text.push_str(" Telegram does not currently offer another delivery method."),
+        (None, _) => text.push_str(" Telegram does not currently offer another delivery method. Enter /qr to sign in using Telegram on your phone."),
     }
     text
 }
@@ -132,6 +132,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn interactive_login_recovers_after_bad_codes_resend_and_interruption_at_2fa() {
+        let _guard = super::super::auth_flow::NATIVE_TEST_LOCK.lock().await;
         use std::{
             collections::BTreeMap,
             sync::{Arc, Mutex},
@@ -183,7 +184,7 @@ mod tests {
         ]
         .into_iter();
         let mut prompts = Vec::new();
-        let result = super::super::login_with_input(&backend, status.clone(), |label| {
+        let result = super::super::auth_flow::with_input(&backend, status.clone(), |label| {
             prompts.push(label.to_owned());
             inputs
                 .next()
@@ -203,7 +204,7 @@ mod tests {
         backend.shutdown().await.unwrap();
         let restored = backend.restore_active_profile().await.unwrap().unwrap();
         let mut inputs = ["WRONG_PASSWORD_PRIVATE", "PASSWORD_PRIVATE"].into_iter();
-        super::super::login_with_input(&backend, restored.clone(), |label| {
+        super::super::auth_flow::with_input(&backend, restored.clone(), |label| {
             assert!(label.contains("2FA"));
             Ok(inputs.next().unwrap().to_owned().into())
         })

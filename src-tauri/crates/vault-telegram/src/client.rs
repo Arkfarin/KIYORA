@@ -4,14 +4,40 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use vault_domain::ChatId;
+
+/// Passive ID cache, populated before request replies. It never loads chats.
+/// This also retains previously delivered pages for later deep discoveries.
+#[derive(Default)]
+struct KnownChats {
+    ids: BTreeSet<ChatId>,
+    invalid: bool,
+}
+impl KnownChats {
+    fn observe(&mut self, update: &Value) {
+        let id = match update["@type"].as_str() {
+            Some("updateNewChat") => &update["chat"]["id"],
+            Some("updateChatPosition") => &update["chat_id"],
+            _ => return,
+        };
+        match crate::integer(id)
+            .and_then(|id| ChatId::new(id).map_err(|_| TelegramError::InvalidResponse))
+        {
+            Ok(id) => {
+                self.ids.insert(id);
+            }
+            Err(_) => self.invalid = true,
+        }
+    }
+}
 
 const CAPACITY: usize = 128;
 type Reply = oneshot::Sender<Result<Value, TelegramError>>;
@@ -30,6 +56,10 @@ struct Pending {
 /// is dropped. Raw updates are internal backend data, never emitted directly to UI.
 #[derive(Clone)]
 pub struct TdClient {
+    // Discovery reports rate limits immediately and never hides them in retries.
+    retry_reads: bool,
+    request_counter: Option<Arc<std::sync::atomic::AtomicU64>>,
+    known_chats: Arc<Mutex<KnownChats>>,
     pub(crate) auth_attempts: Arc<tokio::sync::Mutex<crate::auth::AuthAttempts>>,
     requests: mpsc::Sender<Request>,
     updates: broadcast::Sender<Value>,
@@ -52,7 +82,9 @@ impl TdClient {
         let (closed_tx, closed) = watch::channel(false);
         let (started_tx, started_rx) = oneshot::channel();
         let shutdown = CancellationToken::new();
+        let known_chats = Arc::new(Mutex::new(KnownChats::default()));
         let worker = Worker {
+            known_chats: known_chats.clone(),
             rx,
             updates: updates.clone(),
             auth: auth_tx,
@@ -60,6 +92,7 @@ impl TdClient {
             closed: closed_tx,
             shutdown: shutdown.clone(),
             pending: BTreeMap::new(),
+            pending_auth: None,
         };
         std::thread::Builder::new()
             .name("kiyora-tdjson".into())
@@ -82,6 +115,9 @@ impl TdClient {
             .map_err(|_| TelegramError::NativeLibrary)?;
         started_rx.await.map_err(|_| TelegramError::Closed)??;
         Ok(Self {
+            retry_reads: true,
+            request_counter: None,
+            known_chats,
             auth_attempts: Arc::default(),
             requests,
             updates,
@@ -94,14 +130,42 @@ impl TdClient {
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.updates.subscribe()
     }
+    pub(crate) fn known_chat_ids(&self, limit: usize) -> Result<Vec<ChatId>, TelegramError> {
+        let known = self.known_chats.lock().map_err(|_| TelegramError::Closed)?;
+        if known.invalid {
+            return Err(TelegramError::InvalidResponse);
+        }
+        Ok(known.ids.iter().take(limit).copied().collect())
+    }
+    pub(crate) fn without_read_retries(&self) -> Self {
+        Self {
+            retry_reads: false,
+            request_counter: Some(Arc::default()),
+            ..self.clone()
+        }
+    }
+    pub(crate) fn request_count(&self) -> u64 {
+        self.request_counter.as_ref().map_or(0, |counter| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    }
     pub fn authorization(&self) -> Value {
         self.auth.borrow().clone()
     }
     pub fn authorization_changes(&self) -> watch::Receiver<Value> {
         self.auth.clone()
     }
+    pub fn auth_updates(&self) -> crate::AuthUpdates {
+        crate::AuthUpdates {
+            auth: self.auth.clone(),
+            connection: self.connection.clone(),
+        }
+    }
     pub fn connection_state(&self) -> Value {
         self.connection.borrow().clone()
+    }
+    pub(crate) fn connection_changes(&self) -> watch::Receiver<Value> {
+        self.connection.clone()
     }
     pub async fn request(
         &self,
@@ -132,6 +196,9 @@ impl TdClient {
                 mpsc::error::TrySendError::Full(_) => TelegramError::Backpressure,
                 mpsc::error::TrySendError::Closed(_) => TelegramError::Closed,
             })?;
+        if let Some(counter) = &self.request_counter {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         tokio::select! {
             biased;
             _=cancel.cancelled()=>Err(TelegramError::Cancelled),
@@ -177,6 +244,7 @@ impl TdClient {
                     | "getAuthorizationState"
                     | "getChat"
                     | "getMessage"
+                    | "getChatPinnedMessage"
                     | "getChatHistory"
                     | "searchChatMessages"
                     | "getSupergroup"
@@ -202,7 +270,7 @@ impl TdClient {
                 Err(TelegramError::Timeout) => Some(Duration::from_secs(1 << attempt)),
                 _ => None,
             };
-            if attempt == 2 || wait.is_none() {
+            if !self.retry_reads || attempt == 2 || wait.is_none() {
                 return result;
             }
             if let Some(wait) = wait {
@@ -237,6 +305,7 @@ impl TdClient {
 }
 
 struct Worker {
+    known_chats: Arc<Mutex<KnownChats>>,
     rx: mpsc::Receiver<Request>,
     updates: broadcast::Sender<Value>,
     auth: watch::Sender<Value>,
@@ -244,6 +313,9 @@ struct Worker {
     closed: watch::Sender<bool>,
     shutdown: CancellationToken,
     pending: BTreeMap<String, Pending>,
+    // Kept until the native reply, even when the caller cancels or times out.
+    // Dropping a Rust future does not cancel Telegram's pending query.
+    pending_auth: Option<String>,
 }
 impl Worker {
     fn run(mut self, native: Native, id: i32) {
@@ -283,10 +355,29 @@ impl Worker {
                         let _ = request.reply.send(Err(TelegramError::Backpressure));
                         continue;
                     }
+                    let auth_mutation = matches!(
+                        request.value["@type"].as_str(),
+                        Some(
+                            "setAuthenticationPhoneNumber"
+                                | "checkAuthenticationCode"
+                                | "checkAuthenticationPassword"
+                                | "requestQrCodeAuthentication"
+                                | "setAuthenticationEmailAddress"
+                                | "checkAuthenticationEmailCode"
+                                | "resendAuthenticationCode"
+                        )
+                    );
+                    if auth_mutation && self.pending_auth.is_some() {
+                        let _ = request.reply.send(Err(TelegramError::AuthBusy));
+                        continue;
+                    }
                     let correlation = Uuid::new_v4().to_string();
                     request.value["@extra"] = json!(correlation);
                     match native.send(id, &request.value) {
                         Ok(()) => {
+                            if auth_mutation {
+                                self.pending_auth = Some(correlation.clone());
+                            }
                             self.pending.insert(
                                 correlation,
                                 Pending {
@@ -309,6 +400,9 @@ impl Worker {
                         continue;
                     }
                     if let Some(correlation) = value["@extra"].as_str() {
+                        if self.pending_auth.as_deref() == Some(correlation) {
+                            self.pending_auth = None;
+                        }
                         if let Some(pending) = self.pending.remove(correlation) {
                             if pending.authorization
                                 && value["@type"]
@@ -320,6 +414,9 @@ impl Worker {
                             let _ = pending.reply.send(check_response(value));
                         }
                     } else {
+                        if let Ok(mut chats) = self.known_chats.lock() {
+                            chats.observe(&value);
+                        }
                         if value["@type"] == "updateAuthorizationState" {
                             let state = value["authorization_state"].clone();
                             let is_closed = state["@type"] == "authorizationStateClosed";
@@ -371,6 +468,68 @@ impl Worker {
         if *self.auth.borrow() != state {
             crate::AuthStatus::from_td(&state).trace();
             self.auth.send_replace(state);
+        }
+    }
+}
+
+#[cfg(test)]
+impl TdClient {
+    /// In-process JSON TDLib double: exercises real request cancellation,
+    /// timeouts, read policies and update subscriptions without native FFI.
+    pub(crate) fn mock<F, Fut>(mut handler: F) -> Self
+    where
+        F: FnMut(Value, broadcast::Sender<Value>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Value, TelegramError>> + Send + 'static,
+    {
+        let (requests, mut rx) = mpsc::channel::<Request>(CAPACITY);
+        let (updates, _) = broadcast::channel(1024);
+        let (auth_tx, auth) = watch::channel(json!({"@type":"authorizationStateReady"}));
+        let (connection_tx, connection) = watch::channel(json!({"@type":"connectionStateReady"}));
+        let (closed_tx, closed) = watch::channel(false);
+        let mut connection_updates: broadcast::Receiver<Value> = updates.subscribe();
+        tokio::spawn(async move {
+            while let Ok(value) = connection_updates.recv().await {
+                if value["@type"] == "updateConnectionState" {
+                    connection_tx.send_replace(value["state"].clone());
+                }
+            }
+        });
+        let output = updates.clone();
+        let known_chats = Arc::new(Mutex::new(KnownChats::default()));
+        let worker_chats = known_chats.clone();
+        let mut chat_updates = updates.subscribe();
+        tokio::spawn(async move {
+            let _states = (auth_tx, closed_tx);
+            while let Some(request) = rx.recv().await {
+                let result = handler(request.value, output.clone())
+                    .await
+                    .and_then(check_response);
+                while let Ok(value) = chat_updates.try_recv() {
+                    if let Ok(mut chats) = worker_chats.lock() {
+                        chats.observe(&value);
+                    }
+                }
+                let _ = request.reply.send(result);
+            }
+        });
+        Self {
+            retry_reads: true,
+            request_counter: None,
+            known_chats,
+            auth_attempts: Arc::default(),
+            requests,
+            updates,
+            auth,
+            connection,
+            closed,
+            shutdown: CancellationToken::new(),
+        }
+    }
+    pub(crate) fn seed_known_chat_ids(&self, ids: &[i64]) {
+        if let Ok(mut chats) = self.known_chats.lock() {
+            for id in ids {
+                chats.observe(&json!({"@type":"updateNewChat","chat":{"id":id}}));
+            }
         }
     }
 }
