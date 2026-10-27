@@ -33,6 +33,8 @@ pub enum SyncError {
     CoordinatorConflict,
     #[error("vault initialization is incomplete")]
     InitializationRequired,
+    #[error("{0}")]
+    Initialization(&'static str),
     #[error("vault history failed integrity or compatibility checks")]
     Integrity,
     #[error("registered media source is unavailable")]
@@ -269,6 +271,8 @@ impl<T: Telegram> SyncEngine<T> {
                 | TelegramError::RateLimited { .. }
                 | TelegramError::Cancelled
                 | TelegramError::UpdatesLost
+                | TelegramError::Network
+                | TelegramError::Request { code: 408 | 500..=599 | -1 | 0 }
                 | TelegramError::Backpressure,
             ) => RuntimeMode::Reconnecting,
             SyncError::ReconcileRequired => RuntimeMode::Syncing,
@@ -663,99 +667,143 @@ impl<T: Telegram> SyncEngine<T> {
         }
         Ok(())
     }
-    /// Explicit initialization continuation, allowed only for an INIT-only vault.
-    /// This exception creates the empty S0 needed before ONLINE_READY is possible.
+    /// Explicit recovery of an empty, unfinished vault. A committed vault always
+    /// follows normal sync; it can never be replaced by a new empty projection.
     pub async fn initialize(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
-        self.mode = RuntimeMode::Discovering;
+        self.mode = RuntimeMode::Syncing;
         let result = self.initialize_inner(cancel).await;
-        if let Err(error) = &result {
-            self.fail(error);
-        }
+        if let Err(error) = &result { self.fail(error); }
         result
     }
     async fn initialize_inner(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
-        self.transport
-            .verify_channel(self.binding.chat_id, self.binding.owner_id, cancel)
-            .await?;
-        let history = scan_history(
-            &self.transport,
-            self.binding.chat_id,
-            0,
-            None,
-            1_000_000,
-            cancel,
-        )
-        .await?;
-        let mut init = false;
+        use crate::{Operation, Phase};
+        const KEY: &str = "initialization.publication.v1";
+        #[derive(Clone, Serialize, Deserialize)]
+        struct Intent {
+            snapshot_id: Uuid,
+            barrier_unknown: bool,
+            #[serde(default)]
+            barrier_id: Option<MessageId>,
+            pending: Option<vault_snapshot::PublicationStep>,
+        }
+        self.report(Operation::Create, Phase::Verify, 0, None);
+        self.transport.verify_channel(self.binding.chat_id, self.binding.owner_id, cancel).await?;
+        let history = scan_history(&self.transport, self.binding.chat_id, 0, None, 1_000_000, cancel).await?;
+        let mut init = None;
         let mut committed = false;
+        let mut nonempty = false;
+        let mut barriers = Vec::new();
         for message in &history {
             if let Some(record) = message.record()? {
                 if record.vault_id() != self.binding.vault_id {
-                    return Err(SyncError::Integrity);
+                    return Err(SyncError::Initialization("initialization history contains another vault UUID"));
                 }
                 match record {
                     Record::Init(marker) => {
-                        if init || marker.owner_telegram_user_id != self.binding.owner_id {
-                            return Err(SyncError::Integrity);
+                        if init.is_some() || marker.owner_telegram_user_id != self.binding.owner_id {
+                            return Err(SyncError::Initialization("VAULT_INIT is duplicated or its owner differs from the selected account"));
                         }
-                        init = true;
+                        init = Some(message.id);
                     }
                     Record::Commit(_) => committed = true,
-                    Record::Event(_) | Record::Media(_) | Record::GcReport(_) => {
-                        return Err(SyncError::Integrity);
-                    }
-                    Record::Barrier(_) | Record::Snapshot(_) => {}
+                    Record::Event(_) | Record::Media(_) | Record::GcReport(_) => nonempty = true,
+                    Record::Barrier(marker) => barriers.push((message.clone(), marker)),
+                    Record::Snapshot(_) => {}
                 }
             }
         }
-        if !init {
-            return Err(SyncError::InitializationRequired);
+        // Check commits before rejecting post-initialization media/events: a
+        // previous attempt may have finished and other clients may have written.
+        if committed { return self.sync(cancel).await; }
+        let init = init.ok_or(SyncError::InitializationRequired)?;
+        if nonempty {
+            return Err(SyncError::Initialization("uncommitted vault contains media or events; empty initialization would lose data and is blocked"));
         }
-        if committed {
-            return self.sync(cancel).await;
+        let saved = self.local_setting(KEY.into()).await?;
+        let mut intent: Intent = match saved {
+            Some(raw) => serde_json::from_str(&raw)
+                .map_err(|_| SyncError::Initialization("snapshot publication journal is invalid; retain it for recovery"))?,
+            None => Intent {
+                snapshot_id: barriers.last().map(|(_, marker)| marker.snapshot_id).unwrap_or_else(Uuid::new_v4),
+                barrier_unknown: false,
+                barrier_id: None,
+                pending: None,
+            },
+        };
+        let existing = barriers.iter().find(|(_, marker)| marker.snapshot_id == intent.snapshot_id);
+        let barrier = if let Some((message, marker)) = existing {
+            if marker.generation != 0 || message.id <= init
+                || intent.barrier_id.is_some_and(|id| id != message.id)
+                || barriers.iter().filter(|(_, b)| b.snapshot_id == intent.snapshot_id).count() != 1
+            {
+                return Err(SyncError::Initialization("initial BARRIER generation, order or identity is inconsistent"));
+            }
+            message.clone()
+        } else {
+            if intent.barrier_id.is_some() {
+                return Err(SyncError::Initialization("previously confirmed BARRIER is missing from history; it will not be republished"));
+            }
+            if intent.barrier_unknown { return Err(SyncError::UnknownOutcome); }
+            intent.barrier_unknown = true;
+            self.set_local_setting(KEY.into(), serde_json::to_string(&intent).map_err(|_| SyncError::Worker)?).await?;
+            self.report(Operation::Create, Phase::Barrier, 0, None);
+            let record = Record::Barrier(Barrier { vault_id: self.binding.vault_id, snapshot_id: intent.snapshot_id, generation: 0 });
+            match self.transport.send_text(self.binding.chat_id, encode_text(&record).map_err(|_| SyncError::Integrity)?, cancel).await {
+                Ok(message) => {
+                    if message.record()? != Some(record) || message.id <= init {
+                        return Err(SyncError::Initialization("published BARRIER does not match initialization intent"));
+                    }
+                    message
+                }
+                Err(error) => {
+                    if error.definitely_not_sent() {
+                        intent.barrier_unknown = false;
+                        self.set_local_setting(KEY.into(), serde_json::to_string(&intent).map_err(|_| SyncError::Worker)?).await?;
+                    }
+                    return Err(error.into());
+                }
+            }
+        };
+        intent.barrier_unknown = false;
+        intent.barrier_id = Some(barrier.id);
+        self.set_local_setting(KEY.into(), serde_json::to_string(&intent).map_err(|_| SyncError::Worker)?).await?;
+        let confirmed = self.transport.message(self.binding.chat_id, barrier.id, cancel).await?
+            .ok_or(SyncError::Initialization("confirmed BARRIER is not readable; retry recovery without creating another channel"))?;
+        if confirmed.record()? != barrier.record()? {
+            return Err(SyncError::Initialization("BARRIER changed between publication and read-back"));
         }
-        let snapshot_id = Uuid::new_v4();
-        let record = Record::Barrier(Barrier {
-            vault_id: self.binding.vault_id,
-            snapshot_id,
-            generation: 0,
-        });
-        let barrier = self
-            .transport
-            .send_text(
-                self.binding.chat_id,
-                encode_text(&record).map_err(|_| SyncError::Integrity)?,
-                cancel,
-            )
-            .await?;
-        // Re-read after barrier: another initializer may have committed meanwhile.
-        let history = scan_history(
-            &self.transport,
-            self.binding.chat_id,
-            0,
-            None,
-            1_000_000,
-            cancel,
-        )
-        .await?;
+        // Re-read before creating empty state. A concurrent committed generation
+        // must be restored, and new media/events must never be covered by S0.
+        let history = scan_history(&self.transport, self.binding.chat_id, 0, None, 1_000_000, cancel).await?;
         for message in &history {
-            if let Some(Record::Commit(_)) = message.record()? {
-                return self.sync(cancel).await;
-            }
-            if matches!(message.record()?, Some(Record::Event(_) | Record::Media(_))) {
-                return Err(SyncError::Integrity);
+            if let Some(record) = message.record()? {
+                if record.vault_id() != self.binding.vault_id { return Err(SyncError::Integrity); }
+                if matches!(record, Record::Commit(_)) { return self.sync(cancel).await; }
+                if matches!(record, Record::Event(_) | Record::Media(_) | Record::GcReport(_)) {
+                    return Err(SyncError::Initialization("vault changed during initialization; empty snapshot publication was stopped"));
+                }
             }
         }
-        let encoded = vault_snapshot::build(
-            State::new(self.binding.vault_id),
-            self.binding.owner_id,
-            snapshot_id,
-            0,
-            barrier.id,
-        )?;
-        vault_snapshot::publish(&self.transport, self.binding.chat_id, encoded, None, cancel)
-            .await?;
-        self.sync(cancel).await
+        self.report(Operation::Create, Phase::Encode, 0, None);
+        let encoded = vault_snapshot::build(State::new(self.binding.vault_id), self.binding.owner_id, intent.snapshot_id, 0, barrier.id)?;
+        self.report(Operation::Create, Phase::PublishCopies, 0, Some(2));
+        let engine = &*self;
+        vault_snapshot::publish_resuming(&engine.transport, engine.binding.chat_id, encoded, None, intent.pending, |pending| {
+            let mut next = intent.clone();
+            next.pending = pending;
+            async move {
+                if pending == Some(vault_snapshot::PublicationStep::Commit) {
+                    engine.report(Operation::Create, Phase::PublishCommit, 0, None);
+                }
+                let raw = serde_json::to_string(&next).map_err(|_| SnapshotError::Journal)?;
+                engine.set_local_setting(KEY.into(), raw).await.map_err(|_| SnapshotError::Journal)
+            }
+        }, cancel).await?;
+        self.report(Operation::Create, Phase::Verify, 0, None);
+        self.sync(cancel).await?;
+        self.clear_local_setting(KEY.into()).await?;
+        self.report(Operation::Create, Phase::Complete, 1, Some(1));
+        Ok(())
     }
     pub async fn require_online(&mut self, cancel: &CancellationToken) -> Result<(), SyncError> {
         self.invalidate_from_updates();

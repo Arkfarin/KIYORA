@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
+    Create,
     Sync,
     Snapshot,
     Gc,
@@ -10,6 +11,9 @@ pub enum Operation {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
+    CreatingChannel,
+    PublishingInit,
+    PublishCommit,
     Verify,
     Replay,
     ReconcileHead,

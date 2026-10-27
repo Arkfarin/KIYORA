@@ -2028,6 +2028,7 @@
     "Operation": {
       "type": "string",
       "enum": [
+        "create",
         "sync",
         "snapshot",
         "gc"
@@ -2154,6 +2155,9 @@
     "Phase": {
       "type": "string",
       "enum": [
+        "creating_channel",
+        "publishing_init",
+        "publish_commit",
         "verify",
         "replay",
         "reconcile_head",

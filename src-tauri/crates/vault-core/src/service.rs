@@ -138,7 +138,15 @@ impl VaultService {
         self.reader.clone()
     }
     pub fn status(&self) -> Status {
-        self.status.borrow().clone()
+        let mut status = self.status.borrow().clone();
+        if self.is_closed() {
+            status.mode = RuntimeMode::DegradedReadonly;
+            if let Some(vault) = &mut status.vault { vault.mode = status.mode; }
+        }
+        status
+    }
+    pub fn is_closed(&self) -> bool {
+        *self.closed.borrow() || self.lifetime.0.is_cancelled()
     }
     pub fn status_changes(&self) -> watch::Receiver<Status> {
         self.status.clone()
@@ -483,6 +491,13 @@ async fn run<T: Telegram + Clone + 'static>(
             job=jobs.recv()=> {
                 let Some(job)=job else {break};
                 last_activity = tokio::time::Instant::now();
+                if matches!(&job.request, VaultRequest::Sync | VaultRequest::Initialize) {
+                    let mut syncing = status.borrow().clone();
+                    syncing.mode = RuntimeMode::Syncing;
+                    if let Some(vault) = &mut syncing.vault { vault.mode = RuntimeMode::Syncing; }
+                    status.send_replace(syncing.clone());
+                    events.emit(&context, EventData::Runtime(syncing));
+                }
                 let new_maintenance = match &job.request {
                     VaultRequest::SetMaintenanceConfig { config } => Some(config.clone()),
                     _ => None,

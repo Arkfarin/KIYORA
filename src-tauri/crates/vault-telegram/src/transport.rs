@@ -369,12 +369,16 @@ impl Telegram for TdTransport {
             .client
             .read(json!({"@type":"getOption","name":"is_premium"}), cancel)
             .await?;
-        if option["@type"] != "optionValueBoolean" {
-            return Err(TelegramError::InvalidResponse);
-        }
-        let premium = option["value"]
-            .as_bool()
-            .ok_or(TelegramError::InvalidResponse)?;
+        // In pinned TDLib, UserManager only sets this option when its value
+        // differs from the default false. A never-premium account therefore
+        // legitimately returns optionValueEmpty, including after getMe.
+        let premium = match option["@type"].as_str() {
+            Some("optionValueEmpty") => false,
+            Some("optionValueBoolean") => option["value"]
+                .as_bool()
+                .ok_or(TelegramError::InvalidResponse)?,
+            _ => return Err(TelegramError::InvalidResponse),
+        };
         // Pinned TDLib 1.8.69 PartsManager: 4000/8000 parts of 512 KiB.
         // FileLoaderUtils independently caps local uploads at 4000 MiB.
         Ok(if premium { 4000 } else { 2000 } * 1024 * 1024)

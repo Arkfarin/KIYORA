@@ -26,6 +26,10 @@ pub enum SnapshotError {
     BothCopiesInvalid,
     #[error("conflicting snapshot generations or barriers")]
     Conflict,
+    #[error("snapshot publication outcome is unknown; retry recovery after Telegram history catches up; no message was resent")]
+    PublicationPending,
+    #[error("snapshot publication journal could not be saved; reconcile existing messages before retrying")]
+    Journal,
     #[error(transparent)]
     Telegram(#[from] TelegramError),
     #[error("local snapshot file operation failed")]
@@ -272,10 +276,37 @@ pub async fn publish<T: Telegram>(
     previous: Option<MessageId>,
     cancel: &CancellationToken,
 ) -> Result<Recovery, SnapshotError> {
+    publish_resuming(transport, chat, encoded, previous, None, |_| async { Ok(()) }, cancel).await
+}
+
+/// A durable caller records the next send before dispatch. On resume, existing
+/// messages are verified and reused; an unobserved ambiguous send is never retried.
+/// Ordinary snapshot publication uses the same implementation with no journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationStep { CopyA, CopyB, Commit }
+
+pub async fn publish_resuming<T, F, Fut>(
+    transport: &T,
+    chat: ChatId,
+    encoded: EncodedSnapshot,
+    previous: Option<MessageId>,
+    pending: Option<PublicationStep>,
+    mut journal: F,
+    cancel: &CancellationToken,
+) -> Result<Recovery, SnapshotError>
+where
+    T: Telegram,
+    F: FnMut(Option<PublicationStep>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), SnapshotError>>,
+{
     let mut file = tempfile::Builder::new().suffix(".json.zst").tempfile()?;
     file.write_all(&encoded.compressed)?;
     file.as_file().sync_all()?;
     let snap = &encoded.snapshot;
+    let history = vault_telegram::scan_history(
+        transport, chat, snap.barrier_message_id.get(), None, 1_000_000, cancel,
+    ).await?;
     let mut copies = Vec::new();
     for copy in [CopyLabel::A, CopyLabel::B] {
         let marker = Record::Snapshot(SnapshotMarker {
@@ -286,14 +317,38 @@ pub async fn publish<T: Telegram>(
             copy,
             sha256_compressed: encoded.sha256_compressed.clone(),
         });
-        let caption = encode_text(&marker).map_err(|_| SnapshotError::Corrupt)?;
-        let sent = transport
-            .send_document(chat, file.path().to_path_buf(), caption, cancel)
-            .await?;
-        if sent.record()? != Some(marker) || sent.id <= snap.barrier_message_id {
-            return Err(SnapshotError::Corrupt);
+        let step = if copy == CopyLabel::A { PublicationStep::CopyA } else { PublicationStep::CopyB };
+        let mut existing = None;
+        for message in &history {
+            if let Some(Record::Snapshot(found)) = message.record()?
+                && found.snapshot_id == snap.snapshot_id && found.copy == copy
+            {
+                if Record::Snapshot(found) != marker || existing.is_some() {
+                    return Err(SnapshotError::Conflict);
+                }
+                existing = Some(message.id);
+            }
         }
-        copies.push(sent.id);
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            if pending == Some(step) { return Err(SnapshotError::PublicationPending); }
+            let caption = encode_text(&marker).map_err(|_| SnapshotError::Corrupt)?;
+            journal(Some(step)).await?;
+            let sent = match transport.send_document(chat, file.path().to_path_buf(), caption, cancel).await {
+                Ok(sent) => sent,
+                Err(error) => {
+                    if error.definitely_not_sent() { journal(None).await?; }
+                    return Err(error.into());
+                }
+            };
+            if sent.record()? != Some(marker) || sent.id <= snap.barrier_message_id {
+                return Err(SnapshotError::Corrupt);
+            }
+            journal(None).await?;
+            sent.id
+        };
+        copies.push(id);
     }
     let [a, b] = copies.as_slice() else {
         return Err(SnapshotError::Corrupt);
@@ -324,13 +379,30 @@ pub async fn publish<T: Telegram>(
         }
     }
     let record = Record::Commit(commit.clone());
-    let sent = transport
-        .send_text(
-            chat,
-            encode_text(&record).map_err(|_| SnapshotError::Corrupt)?,
-            cancel,
-        )
-        .await?;
+    let mut existing_commit = None;
+    for message in &history {
+        if let Some(Record::Commit(found)) = message.record()?
+            && found.snapshot_id == snap.snapshot_id
+        {
+            if Record::Commit(found) != record || existing_commit.is_some() {
+                return Err(SnapshotError::Conflict);
+            }
+            existing_commit = Some(message.clone());
+        }
+    }
+    let sent = if let Some(message) = existing_commit {
+        message
+    } else {
+        if pending == Some(PublicationStep::Commit) { return Err(SnapshotError::PublicationPending); }
+        journal(Some(PublicationStep::Commit)).await?;
+        match transport.send_text(chat, encode_text(&record).map_err(|_| SnapshotError::Corrupt)?, cancel).await {
+            Ok(sent) => sent,
+            Err(error) => {
+                if error.definitely_not_sent() { journal(None).await?; }
+                return Err(error.into());
+            }
+        }
+    };
     let read = transport
         .message(chat, sent.id, cancel)
         .await?
@@ -338,6 +410,7 @@ pub async fn publish<T: Telegram>(
     if read.record()? != Some(record) || read.id <= *a || read.id <= *b {
         return Err(SnapshotError::Corrupt);
     }
+    journal(None).await?;
     Ok(Recovery {
         snapshot: encoded.snapshot,
         commit,

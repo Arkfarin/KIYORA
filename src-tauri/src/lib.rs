@@ -62,6 +62,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            backend_bootstrap,
+            backend_session_info,
+            backend_reconnect,
+            backend_auth_qr,
+            backend_resume_job,
             backend_invoke,
             backend_list_profiles,
             backend_create_profile,
@@ -104,6 +109,27 @@ use vault_core::LoginInput;
 use vault_core::{ApiError, Backend, Profile, Status, VaultRequest, VaultResponse};
 use vault_telegram::{AuthStatus, VaultCandidate};
 use zeroize::Zeroizing;
+
+#[tauri::command]
+async fn backend_bootstrap(backend: State<'_, std::sync::Arc<Backend>>) -> Result<Option<Status>, ApiError> {
+    backend.restore_active_profile().await
+}
+#[tauri::command]
+async fn backend_session_info(backend: State<'_, std::sync::Arc<Backend>>, session_id: Uuid) -> Result<vault_core::SessionInfo, ApiError> {
+    backend.session_info(session_id).await
+}
+#[tauri::command]
+async fn backend_reconnect(backend: State<'_, std::sync::Arc<Backend>>, session_id: Uuid) -> Result<AuthStatus, ApiError> {
+    backend.reconnect(session_id).await
+}
+#[tauri::command]
+async fn backend_auth_qr(backend: State<'_, std::sync::Arc<Backend>>, session_id: Uuid) -> Result<Option<String>, ApiError> {
+    backend.auth_qr(session_id).await
+}
+#[tauri::command]
+async fn backend_resume_job(backend: State<'_, std::sync::Arc<Backend>>, session_id: Uuid, job_id: Uuid) -> Result<vault_core::JobInfo, ApiError> {
+    backend.resume_job(session_id, job_id).await
+}
 
 #[tauri::command]
 async fn backend_invoke(

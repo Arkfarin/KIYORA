@@ -57,6 +57,10 @@ pub struct ApiError {
     pub retry_after_seconds: Option<u64>,
 }
 impl ApiError {
+    /// Only use application-owned diagnostics, never raw TDLib text or inputs.
+    pub fn diagnostic(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self { message: message.into(), ..Self::new(code) }
+    }
     pub fn new(code: ErrorCode) -> Self {
         use ErrorCode::*;
         let message = match code {
@@ -122,7 +126,9 @@ impl From<SyncError> for ApiError {
             }),
             Readonly => Self::new(ErrorCode::Readonly),
             CoordinatorConflict => Self::new(ErrorCode::Conflict),
-            InitializationRequired => Self::new(ErrorCode::NoVault),
+            InitializationRequired => Self::diagnostic(ErrorCode::NoVault,
+                "vault binding exists, but no committed snapshot was found; explicitly resume initialization in this channel"),
+            Initialization(reason) => Self::diagnostic(ErrorCode::Integrity, reason),
             Worker => Self::new(ErrorCode::Internal),
             UnknownOutcome => Self::new(ErrorCode::Timeout),
             ReconcileRequired => Self::new(ErrorCode::Network),
@@ -130,7 +136,11 @@ impl From<SyncError> for ApiError {
                 Self::new(ErrorCode::SnapshotUnavailable)
             }
             Snapshot(vault_snapshot::SnapshotError::Telegram(error)) => error.into(),
-            Snapshot(_) | Integrity => Self::new(ErrorCode::Integrity),
+            Snapshot(vault_snapshot::SnapshotError::PublicationPending) => Self::diagnostic(ErrorCode::Timeout,
+                "snapshot send outcome is unknown; retry recovery after Telegram history catches up; no message was resent"),
+            Snapshot(error) => Self::diagnostic(ErrorCode::Integrity, error.to_string()),
+            Integrity => Self::diagnostic(ErrorCode::Integrity,
+                "vault history, snapshot context or stored receipts disagree; retain all data and inspect diagnostics"),
             MediaSourceMissing => Self::new(ErrorCode::MediaSourceMissing),
         }
     }
@@ -175,7 +185,12 @@ impl From<TelegramError> for ApiError {
             Unshareable => ErrorCode::Conflict,
             UnsafeChannel => ErrorCode::UnsafeVault,
             Protocol => ErrorCode::ProtocolUnsupported,
-            InvalidResponse | InvalidVault | IncompleteHistory => ErrorCode::Integrity,
+            InvalidResponse => return Self::diagnostic(ErrorCode::Integrity,
+                "TDLib returned an unexpected response shape; verify the pinned native library version"),
+            InvalidVault => return Self::diagnostic(ErrorCode::Integrity,
+                "vault marker is missing, duplicated, edited, untrusted or belongs to another vault/account"),
+            IncompleteHistory => return Self::diagnostic(ErrorCode::Integrity,
+                "Telegram history could not be read completely; initialization is blocked to preserve existing records"),
         });
         result.retry_after_seconds = retry_after_seconds;
         result
@@ -226,9 +241,10 @@ impl From<vault_media::PlaybackError> for ApiError {
             vault_media::PlaybackError::DeviceUnavailable => {
                 Self::new(ErrorCode::PlaybackUnavailable)
             }
-            vault_media::PlaybackError::Decode | vault_media::PlaybackError::Seek => {
-                Self::new(ErrorCode::InvalidInput)
-            }
+            vault_media::PlaybackError::Decode => Self::diagnostic(ErrorCode::InvalidInput,
+                "audio decoder rejected the selected file"),
+            vault_media::PlaybackError::Seek => Self::diagnostic(ErrorCode::InvalidInput,
+                "audio seek is unsupported or outside the stream"),
             vault_media::PlaybackError::Closed => Self::new(ErrorCode::Closed),
             vault_media::PlaybackError::Media(error) => error.into(),
         }

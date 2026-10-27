@@ -103,6 +103,7 @@ impl EventSubscription {
 #[derive(Clone)]
 pub struct EventBus {
     sequence: Arc<Mutex<u64>>,
+    diagnostics: Arc<Mutex<std::collections::VecDeque<DiagnosticEvent>>>,
     sender: broadcast::Sender<BackendEvent>,
 }
 impl Default for EventBus {
@@ -110,11 +111,16 @@ impl Default for EventBus {
         let (sender, _) = broadcast::channel(1024);
         Self {
             sequence: Arc::new(Mutex::new(0)),
+            diagnostics: Arc::default(),
             sender,
         }
     }
 }
 impl EventBus {
+    pub fn diagnostics(&self, session_id: Uuid) -> Vec<DiagnosticEvent> {
+        self.diagnostics.lock().map(|items| items.iter()
+            .filter(|item| item.context.session_id == session_id).cloned().collect()).unwrap_or_default()
+    }
     pub fn subscribe_reliable(&self) -> EventSubscription {
         EventSubscription {
             receiver: self.sender.subscribe(),
@@ -138,6 +144,25 @@ impl EventBus {
             && let Some(next) = sequence.checked_add(1)
         {
             *sequence = next;
+            // Deliberate allowlist: QR tokens, auth inputs, paths and job results
+            // never enter the diagnostic history, including after a WebView reload.
+            let detail = match &data {
+                EventData::Auth(auth) => auth.name().to_owned(),
+                EventData::Warning(error) => format!("{:?}: {}", error.code, error.message),
+                EventData::Runtime(status) => format!("{:?}", status.mode),
+                EventData::Operation(progress) => format!("{:?}: {:?} ({})", progress.operation, progress.phase, progress.completed),
+                EventData::Job(job) => format!("job {}: {:?}", job.job_id, job.state),
+                EventData::Import(import) => format!("import {}: {:?}", import.op_id, import.stage),
+                _ => String::new(),
+            };
+            if !detail.is_empty() && let Ok(mut history) = self.diagnostics.lock() {
+                history.push_back(DiagnosticEvent {
+                    sequence: next.to_string(), context: context.clone(), detail,
+                    error: match &data { EventData::Warning(error) => Some(error.clone()), _ => None },
+                    progress: match &data { EventData::Operation(progress) => Some(progress.clone()), _ => None },
+                });
+                while history.len() > 100 { history.pop_front(); }
+            }
             let _ = self.sender.send(BackendEvent {
                 sequence: next.to_string(),
                 context: context.clone(),
@@ -145,6 +170,15 @@ impl EventBus {
             });
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticEvent {
+    pub sequence: String,
+    pub context: Context,
+    pub detail: String,
+    pub error: Option<ApiError>,
+    pub progress: Option<vault_sync::OperationProgress>,
 }
 
 #[cfg(test)]

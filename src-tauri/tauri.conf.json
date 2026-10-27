@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "kiyora",
+  "productName": "Kiyora",
   "version": "0.1.0",
   "identifier": "io.github.arkfarin.kiyora",
   "build": {
@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "kiyora",
-        "width": 800,
-        "height": 600
+        "title": "Kiyora",
+        "width": 1180,
+        "height": 780
       }
     ],
     "security": {
