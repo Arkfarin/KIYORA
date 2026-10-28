@@ -20,9 +20,9 @@ function database() {
     request.onsuccess = () => resolve(request.result);
   });
 }
-export async function readDraft(
+export async function readDraft<T = MetadataDraft>(
   key: string,
-): Promise<MetadataDraft | undefined> {
+): Promise<T | undefined> {
   // Closing and immediately reopening an editor must see its final queued write.
   await writes.get(key)?.catch(() => {});
   const db = await database();
@@ -30,14 +30,14 @@ export async function readDraft(
     return await new Promise((resolve, reject) => {
       const tx = db.transaction("drafts");
       const req = tx.objectStore("drafts").get(key);
-      req.onsuccess = () => resolve(req.result as MetadataDraft | undefined);
+      req.onsuccess = () => resolve(req.result as T | undefined);
       req.onerror = () => reject(req.error);
     });
   } finally {
     db.close();
   }
 }
-async function persistDraft(key: string, value?: MetadataDraft) {
+async function persistDraft(key: string, value?: unknown) {
   const db = await database();
   try {
     await new Promise<void>((resolve, reject) => {
@@ -54,7 +54,7 @@ async function persistDraft(key: string, value?: MetadataDraft) {
   }
 }
 // A delayed autosave must never resurrect a draft after successful publication.
-export function writeDraft(key: string, value?: MetadataDraft) {
+export function writeDraft(key: string, value?: unknown) {
   const next = (writes.get(key) ?? Promise.resolve())
     .catch(() => {})
     .then(() => persistDraft(key, value));

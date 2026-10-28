@@ -8,7 +8,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { call, errorOf, mutate, uuid } from "../../backend";
+import { call, errorOf, mutate } from "../../backend";
 import type { Playlist, PlaylistDetail, Track } from "../../backend";
 import type { Runtime } from "../../useBackend";
 import type { Navigate } from "../../app/navigation";
@@ -17,82 +17,11 @@ import {
   Empty,
   IconButton,
   Loading,
-  Modal,
   PageHeading,
 } from "../../components/ui/Primitives";
 import { Cover } from "../../components/music/Cover";
-export function PlaylistForm({
-  runtime,
-  playlist,
-  onClose,
-  onSaved,
-}: {
-  runtime: Runtime;
-  playlist?: Playlist;
-  onClose: () => void;
-  onSaved: (id: string) => void;
-}) {
-  const [title, setTitle] = useState(playlist?.title ?? "");
-  const [saving, setSaving] = useState(false);
-  const [id] = useState(playlist?.playlist_id ?? uuid());
-  const [op] = useState(uuid());
-  return (
-    <Modal
-      title={playlist ? "Название плейлиста" : "Новый плейлист"}
-      onClose={onClose}
-    >
-      <form
-        className="stack"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (saving) return;
-          setSaving(true);
-          void runtime
-            .run("Сохранение плейлиста", async () => {
-              await mutate(
-                runtime.model.status!.context.session_id,
-                id,
-                {
-                  action: playlist ? "playlist.rename" : "playlist.create",
-                  payload: { title: title.trim() },
-                },
-                op,
-              );
-              onSaved(id);
-            })
-            .finally(() => setSaving(false));
-        }}
-      >
-        <label>
-          Название
-          <input
-            autoFocus
-            value={title}
-            maxLength={512}
-            onChange={(e) => setTitle(e.target.value)}
-            required
-            placeholder="Музыка для…"
-          />
-        </label>
-        <div className="dialog-actions">
-          <button type="button" onClick={onClose}>
-            Отмена
-          </button>
-          <button
-            className="primary"
-            disabled={
-              saving ||
-              !title.trim() ||
-              runtime.model.status?.mode !== "ONLINE_READY"
-            }
-          >
-            {saving ? "Сохраняем…" : "Сохранить"}
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
+import { PlaylistForm } from "./PlaylistForm";
+export { PlaylistForm } from "./PlaylistForm";
 export function PlaylistCover({
   runtime,
   playlist,
@@ -107,6 +36,15 @@ export function PlaylistCover({
         .map((e) => e.track_id),
     ),
   ].slice(0, 4);
+  if (playlist.artwork)
+    return (
+      <span className="playlist-cover">
+        <Cover
+          session={runtime.model.status!.context.session_id}
+          playlist={playlist}
+        />
+      </span>
+    );
   return (
     <span className={`playlist-cover ${ids.length > 1 ? "mosaic" : ""}`}>
       {ids.length ? (
@@ -282,11 +220,7 @@ export function PlaylistScreen({
           <Play fill="currentColor" />
           Слушать
         </button>
-        <IconButton
-          label="Переименовать плейлист"
-          disabled={!online}
-          onClick={() => setRename(true)}
-        >
+        <IconButton label="Изменить плейлист" onClick={() => setRename(true)}>
           <Pencil />
         </IconButton>
         <IconButton

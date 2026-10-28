@@ -919,6 +919,15 @@ async fn handle<T: Telegram + Clone + 'static>(
             )
             .await?
         }
+        VaultRequest::EditPlaylist {
+            op_id,
+            playlist_id,
+            edit,
+        } => {
+            let response = crate::playlists::edit(engine, op_id, playlist_id, edit, cancel).await?;
+            events.emit(context, EventData::Playlist { playlist_id });
+            response
+        }
         VaultRequest::EditMetadata {
             op_id,
             track_id,
@@ -1508,12 +1517,33 @@ async fn handle<T: Telegram + Clone + 'static>(
                         return Err(ApiError::new(ErrorCode::Integrity));
                     }
                 }
-                let mut plan = vault_snapshot::backup::plan_new_vault_with_lyrics(
+                let mut playlist_artwork = std::collections::BTreeMap::new();
+                for playlist in backup.state.playlists.values() {
+                    if let Some(source) = crate::backups::restore_playlist_artwork(
+                        engine,
+                        &backup,
+                        playlist,
+                        &download_cache,
+                        restore_uuid(
+                            target_vault,
+                            &fingerprint,
+                            playlist.playlist_id,
+                            b"playlist-artwork",
+                        ),
+                        cancel,
+                    )
+                    .await?
+                    {
+                        playlist_artwork.insert(playlist.playlist_id, source);
+                    }
+                }
+                let mut plan = vault_snapshot::backup::plan_new_vault_with_attachments(
                     &backup,
                     target_vault,
                     target_chat,
                     &sources,
                     &lyrics,
+                    &playlist_artwork,
                 )
                 .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
                 for operation in &mut plan.operations {

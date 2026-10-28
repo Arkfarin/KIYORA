@@ -143,6 +143,8 @@ pub enum Action {
     PlaylistCreate { title: String },
     #[serde(rename = "playlist.rename")]
     PlaylistRename { title: String },
+    #[serde(rename = "playlist.metadata.update")]
+    PlaylistMetadataUpdate { patch: PlaylistPatch },
     #[serde(rename = "playlist.delete")]
     PlaylistDelete {},
     #[serde(rename = "playlist.track.add")]
@@ -175,6 +177,7 @@ impl Action {
             Self::TrackDelete {} => "track.delete",
             Self::PlaylistCreate { .. } => "playlist.create",
             Self::PlaylistRename { .. } => "playlist.rename",
+            Self::PlaylistMetadataUpdate { .. } => "playlist.metadata.update",
             Self::PlaylistDelete {} => "playlist.delete",
             Self::PlaylistTrackAdd { .. } => "playlist.track.add",
             Self::PlaylistTrackRemove { .. } => "playlist.track.remove",
@@ -219,12 +222,28 @@ pub struct Track {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Playlist {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork: Option<Artwork>,
     pub playlist_id: Uuid,
     pub title: String,
     #[schemars(with = "String")]
     pub created_order: MessageId,
     #[schemars(with = "String")]
     pub updated_order: MessageId,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct PlaylistPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artwork: Option<Artwork>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clear_artwork: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub expected_order: Option<MessageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -374,5 +393,16 @@ impl Track {
                     .and_then(|a| a.source.as_ref()),
             )
             .chain(self.metadata.lyrics.as_ref().map(|l| &l.source))
+    }
+}
+
+impl State {
+    /// All live media dependencies, including non-track attachments.
+    pub fn media_sources(&self) -> impl Iterator<Item = &Source> {
+        self.tracks.values().flat_map(Track::media_sources).chain(
+            self.playlists
+                .values()
+                .filter_map(|p| p.artwork.as_ref()?.source.as_ref()),
+        )
     }
 }

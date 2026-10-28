@@ -18,7 +18,42 @@ impl Backend {
             .tracks
             .get(&track_id)
             .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
-        let Some(artwork) = track.metadata.artwork.clone() else {
+        self.load_artwork(
+            session_id,
+            reader.binding().chat_id,
+            track.metadata.artwork.clone(),
+            cancel,
+        )
+        .await
+    }
+    pub async fn playlist_artwork(
+        &self,
+        session_id: Uuid,
+        playlist_id: Uuid,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ArtworkData>, ApiError> {
+        let reader = self.local_reader(session_id).await?;
+        let state = reader.state().await?;
+        let playlist = state
+            .playlists
+            .get(&playlist_id)
+            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
+        self.load_artwork(
+            session_id,
+            reader.binding().chat_id,
+            playlist.artwork.clone(),
+            cancel,
+        )
+        .await
+    }
+    pub(super) async fn load_artwork(
+        &self,
+        session_id: Uuid,
+        chat_id: vault_domain::ChatId,
+        artwork: Option<vault_domain::Artwork>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ArtworkData>, ApiError> {
+        let Some(artwork) = artwork else {
             return Ok(None);
         };
         let (cache, transport, owner) = {
@@ -49,7 +84,7 @@ impl Backend {
                     .source
                     .as_ref()
                     .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
-                if source.chat_id != reader.binding().chat_id {
+                if source.chat_id != chat_id {
                     return Err(ApiError::new(ErrorCode::Integrity));
                 }
                 let (transport, lifetime) =

@@ -203,6 +203,34 @@
             "action": {
               "type": "string",
               "enum": [
+                "playlist.metadata.update"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "patch"
+              ],
+              "properties": {
+                "patch": {
+                  "$ref": "#/definitions/PlaylistPatch"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "action",
+            "payload"
+          ],
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
                 "playlist.delete"
               ]
             },
@@ -754,6 +782,40 @@
               "type": "string",
               "enum": [
                 "trim_telegram_storage"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "playlist_id",
+                "session_id"
+              ],
+              "properties": {
+                "playlist_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "playlist_artwork"
               ]
             }
           },
@@ -3132,6 +3194,68 @@
         }
       ]
     },
+    "PlaylistEdit": {
+      "type": "object",
+      "required": [
+        "clear_artwork",
+        "expected_order",
+        "title"
+      ],
+      "properties": {
+        "artwork": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0.0
+          }
+        },
+        "clear_artwork": {
+          "type": "boolean"
+        },
+        "expected_order": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PlaylistPatch": {
+      "type": "object",
+      "properties": {
+        "artwork": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Artwork"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clear_artwork": {
+          "type": "boolean"
+        },
+        "expected_order": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "QueueAction": {
       "oneOf": [
         {
@@ -3333,6 +3457,44 @@
     },
     "VaultRequest": {
       "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "edit_playlist"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "edit",
+                "op_id",
+                "playlist_id"
+              ],
+              "properties": {
+                "edit": {
+                  "$ref": "#/definitions/PlaylistEdit"
+                },
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "playlist_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         {
           "type": "object",
           "required": [

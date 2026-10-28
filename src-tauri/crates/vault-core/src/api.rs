@@ -408,6 +408,11 @@ pub enum PlaybackAction {
     deny_unknown_fields
 )]
 pub enum VaultRequest {
+    EditPlaylist {
+        op_id: Uuid,
+        playlist_id: Uuid,
+        edit: crate::PlaylistEdit,
+    },
     RewriteTrack {
         op_id: Uuid,
         track_id: Uuid,

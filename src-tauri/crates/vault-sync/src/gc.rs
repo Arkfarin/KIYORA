@@ -251,9 +251,7 @@ impl<T: Telegram> SyncEngine<T> {
             .map(|candidate| candidate.message_id)
             .collect();
         let live_sources: BTreeSet<_> = state
-            .tracks
-            .values()
-            .flat_map(|track| track.media_sources())
+            .media_sources()
             .map(|source| source.message_id)
             .collect();
         let mut retained_copy_references = BTreeSet::new();

@@ -88,10 +88,8 @@ pub fn plan(
         current.snapshot_a_message_id,
         current.snapshot_b_message_id,
     ]);
-    for track in state.tracks.values() {
-        for source in track.media_sources() {
-            protected.insert(source.message_id);
-        }
+    for source in state.media_sources() {
+        protected.insert(source.message_id);
     }
     let mut candidates = BTreeMap::new();
     let mut references: BTreeMap<MessageId, BTreeSet<MessageId>> = BTreeMap::new();

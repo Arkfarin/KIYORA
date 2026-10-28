@@ -28,6 +28,7 @@ Payloads:
 | track.media.replace | track UUID | metadata, source, expected_order |
 | track.delete | track UUID | {} |
 | playlist.create / playlist.rename | playlist UUID | title |
+| playlist.metadata.update | playlist UUID | patch: optional title, artwork, clear_artwork, expected_order CAS |
 | playlist.delete | playlist UUID | {} |
 | playlist.track.add | playlist UUID | track_id, entry_id, after_entry_id |
 | playlist.track.remove | playlist UUID | entry_id |
@@ -77,3 +78,24 @@ existing event, snapshot or user database is rewritten in place by UI startup.
 Portable full backups additionally carry checked `lyrics/<track_id>` files. A
 new-vault restore must rebind them to confirmed uploads in the target channel;
 missing or foreign references are not silently copied or discarded.
+
+### Playlist artwork extension
+
+`Playlist.artwork` is optional and omitted when absent; legacy playlists and
+snapshots retain their serialized representation. `playlist.metadata.update`
+updates the name and/or cover atomically, rejecting stale `expected_order` and
+respecting playlist tombstones. Editor IPC requires an expected version; restore
+plans may omit it when recreating a new UUID in an empty vault. An artwork source
+must include its SHA-256, confirmed Telegram message reference and positive size
+at most 4 MiB. It is a MEDIA document, never an audio overwrite. Live playlist
+references participate in snapshot GC protection and orphan classification.
+
+Full backups carry `playlist-artwork/<playlist_id>` with manifest checksums;
+new-vault restore uploads and verifies those documents before publishing any
+playlist operations. Metadata-only archives require access to the original
+attachment. Missing covers fail full export/restore rather than disappearing.
+
+This is an additive v1 extension with fail-closed readers: old clients that do
+not recognize the action/field must stay read-only. Upgrade all participating
+clients before editing playlist covers; compatibility is old data -> new client,
+not new events -> old client.

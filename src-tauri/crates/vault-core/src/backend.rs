@@ -896,6 +896,7 @@ impl Backend {
         let mut artwork = std::collections::BTreeMap::new();
         let mut lyrics = std::collections::BTreeMap::new();
         let mut covers = Vec::new();
+        let mut playlist_artwork = std::collections::BTreeMap::new();
         if kind == vault_snapshot::backup::BackupKind::Full {
             for (track_id, track) in &state.tracks {
                 if cancel.is_cancelled()
@@ -981,13 +982,32 @@ impl Backend {
                 leases.push(lease);
             }
         }
+        if kind == vault_snapshot::backup::BackupKind::Full {
+            for playlist in state.playlists.values() {
+                if let Some(art) = &playlist.artwork {
+                    self.load_artwork(
+                        session_id,
+                        reader.binding().chat_id,
+                        Some(art.clone()),
+                        cancel,
+                    )
+                    .await?
+                    .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
+                    let lease = cache
+                        .acquire(&format!("artwork:{}", art.sha256))?
+                        .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
+                    playlist_artwork.insert(playlist.playlist_id, lease.path.clone());
+                    leases.push(lease);
+                }
+            }
+        }
         if cancel.is_cancelled() {
             return Err(ApiError::new(ErrorCode::Cancelled));
         }
         tokio::task::spawn_blocking(move || {
             let _leases = leases;
             let _covers = covers;
-            vault_snapshot::backup::export_with_attachments(
+            vault_snapshot::backup::export_with_playlist_artwork(
                 &destination,
                 &state,
                 owner,
@@ -996,6 +1016,7 @@ impl Backend {
                 &media,
                 &artwork,
                 &lyrics,
+                &playlist_artwork,
                 Default::default(),
             )
         })

@@ -613,6 +613,7 @@ main:focus {
 }
 .page-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -620,13 +621,15 @@ main:focus {
 }
 .page-heading > div:first-child {
   min-width: 0;
+  flex: 1 1 220px;
 }
 .page-heading p {
   font-size: 13px;
   margin: 8px 0 0;
 }
 .page-heading .actions {
-  flex-shrink: 0;
+  max-width: 100%;
+  flex-shrink: 1;
 }
 .page-heading button {
   white-space: nowrap;
@@ -885,12 +888,21 @@ main > section {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+.playlist-home .playlist-cover {
+  width: 44px;
+  height: 44px;
+  margin: 0;
+}
+.playlist-shortcuts .cover {
+  width: 28px;
+  height: 28px;
+}
 .playlist-home > button {
   background: var(--surface-elevated);
   justify-content: flex-start;
   padding: 18px;
 }
-.playlist-home > button span {
+.playlist-home > button > span:not(.playlist-cover) {
   flex: 1;
   text-align: left;
   overflow: hidden;

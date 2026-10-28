@@ -55,7 +55,7 @@ export function ArtworkEditor({
     <div className="artwork-editor">
       <div className="artwork-preview">
         {url ? (
-          <img src={url} alt="Обложка композиции" />
+          <img src={url} alt="Предварительный просмотр обложки" />
         ) : (
           <ImagePlus size={48} strokeWidth={1} />
         )}

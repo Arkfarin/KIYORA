@@ -89,6 +89,10 @@ pub enum BackendCommand {
         session_id: Uuid,
         target_bytes: u64,
     },
+    PlaylistArtwork {
+        session_id: Uuid,
+        playlist_id: Uuid,
+    },
     Artwork {
         session_id: Uuid,
         track_id: Uuid,
@@ -334,6 +338,13 @@ impl Backend {
                 target_bytes,
             } => BackendReply::Storage(
                 self.trim_telegram_storage(session_id, target_bytes, cancel)
+                    .await?,
+            ),
+            PlaylistArtwork {
+                session_id,
+                playlist_id,
+            } => BackendReply::Artwork(
+                self.playlist_artwork(session_id, playlist_id, cancel)
                     .await?,
             ),
             Artwork {

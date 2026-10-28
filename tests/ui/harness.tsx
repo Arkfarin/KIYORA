@@ -5,6 +5,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import { Shell } from "../../src/components/layout/Shell";
 import { TrackList } from "../../src/components/music/TrackList";
 import { Player } from "../../src/features/playback/Player";
+import { PlaylistForm } from "../../src/features/playlists/PlaylistForm";
 import { MetadataEditor } from "../../src/features/metadata-editor/MetadataEditor";
 import { PageHeading } from "../../src/components/ui/Primitives";
 import { resumePlayback } from "../../src/services/playback";
@@ -92,7 +93,14 @@ const model: Model = {
       tracks: Object.fromEntries(
         tracks.map((track) => [track.track_id, track]),
       ),
-      playlists: {},
+      playlists: {
+        [id(90005)]: {
+          playlist_id: id(90005),
+          title: "Мой плейлист",
+          created_order: "8",
+          updated_order: "9",
+        },
+      },
       entries: {},
       favorites: {},
     },
@@ -139,12 +147,16 @@ Object.assign(window, {
 function Harness() {
   const [route, navigate] = useState<Route>({ kind: "library" });
   const [editing, setEditing] = useState(false);
+  const [playlistEditing, setPlaylistEditing] = useState(
+    params.has("playlist-editor"),
+  );
+  const [playlistCreating, setPlaylistCreating] = useState(false);
   return (
     <Shell
       runtime={runtime}
       route={route}
       navigate={navigate}
-      createPlaylist={() => {}}
+      createPlaylist={() => setPlaylistCreating(true)}
       player={
         <Player
           runtime={runtime}
@@ -160,6 +172,12 @@ function Harness() {
         <button onClick={() => setEditing(true)}>
           Редактировать тестовый трек
         </button>
+        <button onClick={() => setPlaylistEditing(true)}>
+          Редактировать тестовый плейлист
+        </button>
+        <button onClick={() => setPlaylistCreating(true)}>
+          Создать тестовый плейлист
+        </button>
       </PageHeading>
       <TrackList
         runtime={runtime}
@@ -168,6 +186,24 @@ function Harness() {
         onMenu={() => setEditing(true)}
         onDelete={() => {}}
       />
+      {(playlistEditing || playlistCreating) && (
+        <PlaylistForm
+          runtime={runtime}
+          playlist={
+            playlistCreating
+              ? undefined
+              : model.projection!.state.playlists[id(90005)]
+          }
+          onClose={() => {
+            setPlaylistEditing(false);
+            setPlaylistCreating(false);
+          }}
+          onSaved={() => {
+            setPlaylistEditing(false);
+            setPlaylistCreating(false);
+          }}
+        />
+      )}
       {editing && (
         <MetadataEditor
           runtime={runtime}

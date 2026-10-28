@@ -14,7 +14,7 @@
     "device_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "base_generation": {"type": "integer", "minimum": 0},
     "entity_id": {"$ref": "#/$defs/uuid"},
-    "action": {"enum": ["track.register", "track.metadata.update", "track.media.replace", "track.delete", "playlist.create", "playlist.rename", "playlist.delete", "playlist.track.add", "playlist.track.remove", "playlist.entry.move", "favorite.set", "source.relink", "vault.settings.update"]},
+    "action": {"enum": ["track.register", "track.metadata.update", "track.media.replace", "track.delete", "playlist.create", "playlist.rename", "playlist.metadata.update", "playlist.delete", "playlist.track.add", "playlist.track.remove", "playlist.entry.move", "favorite.set", "source.relink", "vault.settings.update"]},
     "payload": {"type": "object"}
   },
   "$defs": {

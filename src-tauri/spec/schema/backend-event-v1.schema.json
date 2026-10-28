@@ -597,6 +597,34 @@
             "action": {
               "type": "string",
               "enum": [
+                "playlist.metadata.update"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "patch"
+              ],
+              "properties": {
+                "patch": {
+                  "$ref": "#/definitions/PlaylistPatch"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "action",
+            "payload"
+          ],
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
                 "playlist.delete"
               ]
             },
@@ -2585,6 +2613,37 @@
           }
         }
       ]
+    },
+    "PlaylistPatch": {
+      "type": "object",
+      "properties": {
+        "artwork": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Artwork"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clear_artwork": {
+          "type": "boolean"
+        },
+        "expected_order": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "ProjectionDiagnostics": {
       "description": "Local, read-only accounting; no Telegram completeness is inferred from it.",

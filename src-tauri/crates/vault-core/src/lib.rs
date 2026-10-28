@@ -33,3 +33,6 @@ mod attachments;
 mod metadata;
 pub use imports::ImportPreview;
 pub use metadata::MediaEdit;
+
+mod playlists;
+pub use playlists::PlaylistEdit;

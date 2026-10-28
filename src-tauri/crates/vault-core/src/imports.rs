@@ -603,9 +603,7 @@ pub(crate) async fn orphans<T: Telegram>(
     engine.require_online(cancel).await?;
     let state = engine.state().await?;
     let referenced = state
-        .tracks
-        .values()
-        .flat_map(|t| t.media_sources())
+        .media_sources()
         .map(|s| (s.chat_id, s.message_id))
         .collect::<std::collections::BTreeSet<_>>();
     let mut result = Vec::new();

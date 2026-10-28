@@ -1,28 +1,32 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { Disc3 } from "lucide-react";
-import type { Track } from "../../backend";
+import type { Playlist, Track } from "../../backend";
 import { acquireArtwork } from "../../services/artwork";
 export const Cover = memo(function Cover({
   track,
+  playlist,
   session,
   className = "",
 }: {
   track?: Track;
+  playlist?: Playlist;
   session: string;
   className?: string;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [url, setUrl] = useState<string>();
-  const sha = track?.metadata.artwork?.sha256;
+  const sha = playlist?.artwork?.sha256 ?? track?.metadata.artwork?.sha256;
+  const id = playlist?.playlist_id ?? track?.track_id;
+  const kind = playlist ? "playlist" : "track";
   useEffect(() => {
     let disposed = false;
     let release: (() => void) | undefined;
     let started = false;
     setUrl(undefined);
     const load = () => {
-      if (!sha || !track || started) return;
+      if (!sha || !id || started) return;
       started = true;
-      void acquireArtwork(session, track.track_id, sha)
+      void acquireArtwork(session, id, sha, kind)
         .then((asset) => {
           if (disposed) asset?.release();
           else if (asset) {
@@ -49,7 +53,7 @@ export const Cover = memo(function Cover({
       observer.disconnect();
       release?.();
     };
-  }, [session, track?.track_id, sha]);
+  }, [session, id, sha, kind]);
   return (
     <span ref={ref} className={`cover ${className}`} aria-hidden="true">
       {url ? (

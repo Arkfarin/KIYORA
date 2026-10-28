@@ -1,3 +1,4 @@
+import { PlaylistCover } from "../playlists/Playlists";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
@@ -270,7 +271,7 @@ export function HomeScreen(props: Props) {
                   navigate({ kind: "playlist", id: p.playlist_id })
                 }
               >
-                <ListMusic />
+                <PlaylistCover runtime={runtime} playlist={p} />
                 <span>{p.title}</span>
                 <ArrowRight size={16} />
               </button>

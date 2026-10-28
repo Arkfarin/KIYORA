@@ -97,6 +97,7 @@ export interface Track {
   sources: Record<string, Source>;
 }
 export interface Playlist {
+  artwork?: Metadata["artwork"];
   created_order: string;
   updated_order: string;
   playlist_id: string;
@@ -289,7 +290,17 @@ export type MutationAction =
       };
     }
   | { action: "playlist.track.remove"; payload: { entry_id: string } };
+export interface PlaylistEdit {
+  title: string;
+  artwork: number[] | null;
+  clear_artwork: boolean;
+  expected_order: string;
+}
 export type VaultRequest =
+  | {
+      kind: "edit_playlist";
+      payload: { op_id: string; playlist_id: string; edit: PlaylistEdit };
+    }
   | {
       kind: "remove_cached_media";
       payload: { track_id: string; source_id: string };
@@ -431,6 +442,7 @@ interface Commands {
   ];
   control_playback: [Session & { action: PlaybackAction }, Playback];
   artwork: [Session & { track_id: string }, Artwork | null];
+  playlist_artwork: [Session & { playlist_id: string }, Artwork | null];
   query: [
     Session & {
       query: { kind: string; payload?: Record<string, string | number> };

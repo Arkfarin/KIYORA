@@ -2670,3 +2670,299 @@ async fn retagging_legacy_embedded_cover_preserves_artwork_and_publishes_referen
     assert_eq!(std::fs::read(original).unwrap(), original_bytes);
     service.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn playlist_cover_recovers_lost_ack_and_survives_snapshot_and_portable_backup() {
+    use std::collections::BTreeMap;
+    let (server, binding) = fixture().await;
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("playlist.sqlite");
+    let start = || {
+        VaultService::start(
+            SyncEngine::new(
+                server.client().unwrap(),
+                Database::open(&database, binding).unwrap(),
+                "device".into(),
+            ),
+            Context {
+                profile_id: Uuid::new_v4(),
+                session_id: Uuid::new_v4(),
+                vault_id: Some(binding.vault_id),
+            },
+            EventBus::default(),
+        )
+    };
+    let first = start();
+    ready(&first).await;
+    let cancel = CancellationToken::new();
+    let playlist_id = Uuid::new_v4();
+    first
+        .request(
+            VaultRequest::Mutate(Box::new(Mutation {
+                op_id: Uuid::new_v4(),
+                entity_id: playlist_id,
+                action: Action::PlaylistCreate {
+                    title: "Original".into(),
+                },
+            })),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let before = first.reader().state().await.unwrap();
+    let art = vault_media::artwork(include_bytes!("../../../icons/32x32.png"), None).unwrap();
+    let edit = PlaylistEdit {
+        title: "Собственная обложка".into(),
+        artwork: Some(art.bytes.clone()),
+        clear_artwork: false,
+        expected_order: before.playlists[&playlist_id].updated_order,
+    };
+    let op_id = Uuid::new_v4();
+    let request = VaultRequest::EditPlaylist {
+        op_id,
+        playlist_id,
+        edit: edit.clone(),
+    };
+    let count = server.messages().unwrap().len();
+    let invalid = VaultRequest::EditPlaylist {
+        op_id: Uuid::new_v4(),
+        playlist_id,
+        edit: PlaylistEdit {
+            artwork: Some(vec![0; 100]),
+            ..edit.clone()
+        },
+    };
+    assert_eq!(
+        first.request(invalid, &cancel).await.unwrap_err().code,
+        ErrorCode::EditNotSent
+    );
+    assert_eq!(server.messages().unwrap().len(), count);
+    server
+        .set_faults(Faults {
+            lost_ack: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(first.request(request.clone(), &cancel).await.is_err());
+    assert_eq!(
+        first.reader().state().await.unwrap().playlists,
+        before.playlists
+    );
+    assert_eq!(
+        server.messages().unwrap().len(),
+        count + 1,
+        "only the attachment was sent"
+    );
+    first.shutdown().await.unwrap();
+    drop(first);
+    server.set_faults(Faults::default()).unwrap();
+    let second = start();
+    ready(&second).await;
+    let changed = VaultRequest::EditPlaylist {
+        op_id,
+        playlist_id,
+        edit: PlaylistEdit {
+            title: "Changed retry".into(),
+            ..edit.clone()
+        },
+    };
+    assert_eq!(
+        second.request(changed, &cancel).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert!(
+        matches!(second.request(request.clone(), &cancel).await.unwrap(), VaultResponse::Command(c) if c.status == CommandStatus::Applied)
+    );
+    assert_eq!(
+        server.messages().unwrap().len(),
+        count + 2,
+        "resume did not upload twice"
+    );
+    let after = second.reader().state().await.unwrap();
+    let cover = after.playlists[&playlist_id].artwork.as_ref().unwrap();
+    assert_eq!(cover.sha256, art.sha256);
+    assert_eq!(after.playlists[&playlist_id].title, edit.title);
+    let count = server.messages().unwrap().len();
+    assert!(
+        matches!(second.request(request, &cancel).await.unwrap(), VaultResponse::Command(c) if c.status == CommandStatus::Applied)
+    );
+    assert_eq!(server.messages().unwrap().len(), count);
+    assert!(
+        matches!(second.request(VaultRequest::InspectOrphanMedia, &cancel).await.unwrap(), VaultResponse::OrphanMedia(items) if items.is_empty())
+    );
+    assert_eq!(
+        second
+            .request(
+                VaultRequest::EditPlaylist {
+                    op_id: Uuid::new_v4(),
+                    playlist_id,
+                    edit
+                },
+                &cancel
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::EditNotSent
+    );
+    assert_eq!(
+        server.messages().unwrap().len(),
+        count,
+        "stale editor has no side effects"
+    );
+    second
+        .request(
+            VaultRequest::AssignGcCoordinator {
+                op_id: Uuid::new_v4(),
+                target: CoordinatorTarget::ThisDevice,
+                expected_previous: None,
+                force_confirmed: false,
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    second
+        .request(VaultRequest::Snapshot, &cancel)
+        .await
+        .unwrap();
+    let cold = service(&server, binding, EventBus::default());
+    ready(&cold).await;
+    assert_eq!(
+        cold.reader().state().await.unwrap().playlists,
+        after.playlists
+    );
+    cold.shutdown().await.unwrap();
+    // Full archive works without contacting the original vault during restore.
+    let cover_path = dir.path().join("cover.png");
+    std::fs::write(&cover_path, &art.bytes).unwrap();
+    let archive = dir.path().join("playlist.tar");
+    assert!(
+        vault_snapshot::backup::export_with_attachments(
+            &archive,
+            &after,
+            binding.owner_id,
+            None,
+            vault_snapshot::backup::BackupKind::Full,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Default::default()
+        )
+        .is_err(),
+        "full export cannot silently omit a playlist cover"
+    );
+    vault_snapshot::backup::export_with_playlist_artwork(
+        &archive,
+        &after,
+        binding.owner_id,
+        None,
+        vault_snapshot::backup::BackupKind::Full,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::from([(playlist_id, cover_path)]),
+        Default::default(),
+    )
+    .unwrap();
+    let verified = vault_snapshot::backup::inspect(&archive, Default::default()).unwrap();
+    assert_eq!(
+        std::fs::read(verified.playlist_artwork_path(playlist_id).unwrap()).unwrap(),
+        art.bytes
+    );
+    let (target, target_binding) = fixture().await;
+    let restored = service(&target, target_binding, EventBus::default());
+    ready(&restored).await;
+    assert!(
+        vault_snapshot::backup::plan_new_vault(
+            &verified,
+            target_binding.vault_id,
+            target_binding.chat_id,
+            &BTreeMap::new()
+        )
+        .is_err(),
+        "new vault plan must require a confirmed rebound attachment"
+    );
+    let restore = VaultRequest::ImportBackup {
+        path: archive.to_string_lossy().into_owned(),
+    };
+    target
+        .set_faults(Faults {
+            lost_ack: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(restored.request(restore.clone(), &cancel).await.is_err());
+    assert!(
+        restored
+            .reader()
+            .state()
+            .await
+            .unwrap()
+            .playlists
+            .is_empty()
+    );
+    let restore_media = target
+        .messages()
+        .unwrap()
+        .into_iter()
+        .filter(|m| matches!(m.record().unwrap(), Some(Record::Media(_))))
+        .map(|m| m.id)
+        .collect::<Vec<_>>();
+    assert_eq!(restore_media.len(), 1);
+    target.set_faults(Faults::default()).unwrap();
+    restored.request(VaultRequest::Sync, &cancel).await.unwrap();
+    restored.request(restore, &cancel).await.unwrap();
+    assert_eq!(
+        target
+            .messages()
+            .unwrap()
+            .into_iter()
+            .filter(|m| matches!(m.record().unwrap(), Some(Record::Media(_))))
+            .map(|m| m.id)
+            .collect::<Vec<_>>(),
+        restore_media,
+        "restore must reuse the single confirmed cover after a lost acknowledgement"
+    );
+    let state = restored.reader().state().await.unwrap();
+    let playlist = state.playlists.values().next().unwrap();
+    assert_ne!(playlist.playlist_id, playlist_id);
+    assert_eq!(playlist.title, after.playlists[&playlist_id].title);
+    assert_eq!(playlist.artwork.as_ref().unwrap().sha256, art.sha256);
+    let source = playlist.artwork.as_ref().unwrap().source.as_ref().unwrap();
+    assert_ne!(source.source_id, cover.source.as_ref().unwrap().source_id);
+    assert!(target.messages().unwrap().iter().any(|m| m.id == source.message_id &&
+        matches!(m.record().unwrap(), Some(Record::Media(marker)) if marker.vault_id == target_binding.vault_id)));
+    // Clearing only the custom cover returns to the mosaic, retaining the object.
+    second
+        .request(
+            VaultRequest::EditPlaylist {
+                op_id: Uuid::new_v4(),
+                playlist_id,
+                edit: PlaylistEdit {
+                    title: after.playlists[&playlist_id].title.clone(),
+                    artwork: None,
+                    clear_artwork: true,
+                    expected_order: after.playlists[&playlist_id].updated_order,
+                },
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(
+        second.reader().state().await.unwrap().playlists[&playlist_id]
+            .artwork
+            .is_none()
+    );
+    assert!(
+        server
+            .messages()
+            .unwrap()
+            .iter()
+            .any(|m| m.id == cover.source.as_ref().unwrap().message_id),
+        "no eager media deletion"
+    );
+    restored.shutdown().await.unwrap();
+    second.shutdown().await.unwrap();
+}

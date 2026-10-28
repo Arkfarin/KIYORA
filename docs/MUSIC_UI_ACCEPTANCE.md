@@ -4,6 +4,9 @@ Updated 2026-10-28. Release status: **RELEASE_BLOCKED**. This report describes t
 current working tree, including work already present when implementation resumed.
 It does not turn earlier backend/platform reports into acceptance of this UI.
 
+The latest increment adds synchronized custom playlist covers and durable playlist
+editor/create drafts. Details and changed modules: [playlist artwork implementation](PLAYLIST_ARTWORK_IMPLEMENTATION.md).
+
 ## Implemented paths
 
 - Native bootstrap and profile/session/Vault recovery; welcome, QR/phone/code/2FA
@@ -31,6 +34,11 @@ It does not turn earlier backend/platform reports into acceptance of this UI.
   snapshots, so another device can fetch them without downloading audio. Full
   backups now carry bounded `lyrics/<track_id>` documents; new-vault restore checks
   them and uploads/rebinds references before publishing catalog operations.
+- Playlist cover upload/crop/removal, atomically versioned title/cover edits,
+  persistent offline drafts and exact retries after lost acknowledgements. Covers
+  appear in playlist cards, the home page and sidebar; the default remains a mosaic.
+  Full backups contain verified `playlist-artwork/<playlist_id>` documents; restore
+  rebinds them to the target Vault before publishing playlist operations.
 - Downloads, cancellation/retry, pinned cache, cache quota/cleanup, session and
   Vault settings, redacted diagnostics, snapshot/backup controls, logical deletion
   with tombstones and playlist-only/local-cache-only removal.
@@ -54,10 +62,13 @@ stable markers and journals. Retagging legacy embedded-only covers now preserves
 and separately publishes their artwork. Backup export chooses the preferred audio
 version, rather than silently archiving a retired version.
 
-New read IPC includes `downloads`, `listening_history` and local
+New read IPC includes `playlist_artwork`, `downloads`, `listening_history` and local
 `playlist_search`. Playlist items include original `position`, `move_up_after` and
 `next_entry_id`. `EDIT_NOT_SENT` is a definitive fresh-editor preflight rejection;
 it permits correction of a draft. Network/timeouts/unknown outcomes do not.
+`edit_playlist` accepts local artwork bytes and an expected playlist version;
+`playlist.metadata.update` applies the name/cover patch atomically. Playlist cover
+references are retained by GC protection and orphan analysis.
 Checked-in request/response/event schemas are generated from Rust and compared by
 the backend gate. Existing commands retain their names.
 
@@ -98,7 +109,9 @@ never silently accepted into a new-vault restore plan.
 
 ## Automated evidence
 
-The final results are recorded below after running the working-tree gates.
+Latest working-tree results: frontend build/format passed; 17 Chromium tests passed;
+backend gate passed with 220 tests and 2 opt-in tests ignored. Detailed evidence for
+the latest increment is in [playlist artwork implementation](PLAYLIST_ARTWORK_IMPLEMENTATION.md).
 Tests use temporary SQLite/files and the existing deterministic test transport.
 The isolated browser entry in `tests/ui` never enters the production app build;
 its mutation transport rejects sends and proves request/draft behavior only.
@@ -144,9 +157,10 @@ Historical Android/Linux packaging evidence does not validate this final UI.
 Physical deletion of Telegram audio is not exposed: the current GC coordinator's
 supported scope must be respected; no direct-delete shortcut was introduced.
 Local removal, playlist removal and shared tombstone deletion are separate paths.
-Custom synchronized playlist artwork, output-device selection and download pause
-are not shown where their backend contracts do not exist; playlist covers are
-mosaics. Uncertain attachment sends can remain blocked until reconciliation can
+Output-device selection and download pause are not shown where their backend
+contracts do not exist. Custom playlist covers now synchronize; removal returns
+to the default mosaic. Cover selection is available in the existing playlist editor
+after creating a playlist. Uncertain attachment sends can remain blocked until reconciliation can
 prove their outcome; the UI does not automatically resend them.
 
 Before distribution: test installed Linux/Windows/Android builds, keychain/session
@@ -179,6 +193,9 @@ python3 scripts/package-desktop.py --debug
 export ANDROID_HOME=/absolute/path/to/android-sdk
 export NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
 bash scripts/package-android.sh --debug
+# Install/run on a selected development device (commands not executed here):
+adb install -r gen/android/app/build/outputs/apk/universal/debug/*.apk
+adb shell am start -n io.github.arkfarin.kiyora/.MainActivity
 ```
 
 These commands build locally; they do not publish a release. Android physical-device

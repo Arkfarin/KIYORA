@@ -92,10 +92,10 @@ pub(crate) async fn rewrite<T: Telegram + Clone + 'static>(
     } else {
         ErrorCode::Conflict
     };
-    if let Some(saved) = &saved {
-        if saved != &fingerprint {
-            return Err(ApiError::new(ErrorCode::Conflict));
-        }
+    if let Some(saved) = &saved
+        && saved != &fingerprint
+    {
+        return Err(ApiError::new(ErrorCode::Conflict));
     }
     if pending(engine, op_id).await? {
         return resume(engine, storage, op_id, cancel, context, events).await;

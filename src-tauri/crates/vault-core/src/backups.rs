@@ -315,3 +315,78 @@ pub(crate) async fn restore_lyrics<T: Telegram>(
         size_bytes: Some(sum.bytes),
     }))
 }
+
+/// Portable playlist covers are validated before being rebound to a new vault.
+pub(crate) async fn restore_playlist_artwork<T: Telegram>(
+    engine: &mut vault_sync::SyncEngine<T>,
+    backup: &vault_snapshot::backup::VerifiedBackup,
+    playlist: &vault_domain::Playlist,
+    cache: &vault_media::CacheManager,
+    import_id: uuid::Uuid,
+    cancel: &CancellationToken,
+) -> Result<Option<vault_domain::Source>, ApiError> {
+    let Some(art) = &playlist.artwork else {
+        return Ok(None);
+    };
+    let downloaded;
+    let path = if let Some(path) = backup.playlist_artwork_path(playlist.playlist_id) {
+        path.to_owned()
+    } else {
+        let source = art
+            .source
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::Integrity))?;
+        let transport = engine.transport();
+        transport
+            .verify_channel(source.chat_id, engine.binding().owner_id, cancel)
+            .await?;
+        let file = transport
+            .message(source.chat_id, source.message_id, cancel)
+            .await?
+            .and_then(|m| m.file)
+            .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
+        if file.size <= 0
+            || file.size > vault_media::MAX_ARTWORK_BYTES as i64
+            || source.size_bytes != Some(file.size as u64)
+        {
+            return Err(ApiError::new(ErrorCode::Integrity));
+        }
+        downloaded = vault_media::download_to_cache(
+            transport,
+            &file,
+            cache,
+            vault_media::DownloadOptions {
+                cache_key: format!("restore:playlist-artwork:{}", art.sha256),
+                expected_sha256: Some(art.sha256.clone()),
+                pinned: false,
+            },
+            cancel,
+            &|_, _| {},
+        )
+        .await?;
+        downloaded.path.clone()
+    };
+    let checked = path.clone();
+    let expected = art.sha256.clone();
+    let bytes = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(checked)?
+            .take(vault_media::MAX_ARTWORK_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.is_empty()
+            || bytes.len() > vault_media::MAX_ARTWORK_BYTES
+            || vault_snapshot::digest(&bytes) != expected
+        {
+            return Err(ApiError::new(ErrorCode::Integrity));
+        }
+        // Check actual container and decoded dimensions; publish the verified original bytes.
+        vault_media::artwork(&bytes, None)?;
+        Ok(bytes)
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal))??;
+    Ok(Some(
+        crate::attachments::publish(engine, import_id, bytes, cancel).await?,
+    ))
+}

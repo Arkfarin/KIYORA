@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         state.playlists.insert(
             playlist,
             Playlist {
+                artwork: None,
                 playlist_id: playlist,
                 title: format!("Playlist {i}"),
                 created_order: order,

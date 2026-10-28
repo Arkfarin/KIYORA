@@ -72,6 +72,29 @@ pub fn valid_metadata(metadata: &Metadata) -> bool {
         })
 }
 
+pub fn valid_playlist_artwork(art: &Artwork) -> bool {
+    valid_digest(&art.sha256)
+        && matches!(
+            art.mime_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp"
+        )
+        && art.source.as_ref().is_some_and(|source| {
+            valid_source(source)
+                && source.sha256.as_ref() == Some(&art.sha256)
+                && source
+                    .size_bytes
+                    .is_some_and(|size| size > 0 && size <= 4 * 1024 * 1024)
+        })
+}
+pub fn valid_playlist_patch(patch: &PlaylistPatch) -> bool {
+    patch
+        .title
+        .as_ref()
+        .is_none_or(|title| valid_text(title, 4096, true))
+        && !(patch.clear_artwork && patch.artwork.is_some())
+        && patch.artwork.as_ref().is_none_or(valid_playlist_artwork)
+}
+
 impl State {
     /// Replay one final server event. A protocol/order error leaves state untouched.
     /// A duplicate returns its original outcome without changing any state field.
@@ -221,6 +244,7 @@ impl State {
                     self.playlists.insert(
                         id,
                         Playlist {
+                            artwork: None,
                             playlist_id: id,
                             title: title.clone(),
                             created_order: mid,
@@ -237,6 +261,29 @@ impl State {
                         return Err(MissingEntity);
                     };
                     playlist.title.clone_from(title);
+                    playlist.updated_order = mid;
+                }
+                PlaylistMetadataUpdate { patch } => {
+                    self.require_playlist(id)?;
+                    if !valid_playlist_patch(patch) {
+                        return Err(InvalidPayload);
+                    }
+                    let playlist = self.playlists.get_mut(&id).ok_or(MissingEntity)?;
+                    if patch
+                        .expected_order
+                        .is_some_and(|order| order != playlist.updated_order)
+                    {
+                        return Err(VersionConflict);
+                    }
+                    if let Some(title) = &patch.title {
+                        playlist.title.clone_from(title);
+                    }
+                    if patch.clear_artwork {
+                        playlist.artwork = None;
+                    }
+                    if let Some(artwork) = &patch.artwork {
+                        playlist.artwork = Some(artwork.clone());
+                    }
                     playlist.updated_order = mid;
                 }
                 PlaylistDelete {} => {
@@ -502,6 +549,10 @@ impl State {
                 || *id != playlist.playlist_id
                 || self.tombstones.playlists.contains(id)
                 || !valid_text(&playlist.title, 4096, true)
+                || playlist
+                    .artwork
+                    .as_ref()
+                    .is_some_and(|art| !valid_playlist_artwork(art))
             {
                 return Err(invalid("playlist"));
             }

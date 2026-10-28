@@ -75,6 +75,7 @@ export async function acquireArtwork(
   session: string,
   track: string,
   sha: string,
+  kind: "track" | "playlist" = "track",
 ) {
   const key = `${session}:${sha}`;
   let cached = entries.get(key);
@@ -82,10 +83,13 @@ export async function acquireArtwork(
     let request = pending.get(key);
     if (!request) {
       request = limited(async () => {
-        const art = await call("artwork", {
-          session_id: session,
-          track_id: track,
-        });
+        const art =
+          kind === "playlist"
+            ? await call("playlist_artwork", {
+                session_id: session,
+                playlist_id: track,
+              })
+            : await call("artwork", { session_id: session, track_id: track });
         if (!art || art.sha256 !== sha) return null;
         const value = { url: artworkUrl(art), users: 0, touched: Date.now() };
         entries.set(key, value);

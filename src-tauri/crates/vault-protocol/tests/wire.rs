@@ -57,12 +57,18 @@ fn checked_in_wire_fixture_matches_canonical_event_and_schema_contract() {
             .unwrap()
             .contains(&serde_json::json!("track.media.replace"))
     );
+    assert!(
+        schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("playlist.metadata.update"))
+    );
     assert_eq!(
         schema["properties"]["action"]["enum"]
             .as_array()
             .unwrap()
             .len(),
-        13
+        14
     );
 }
 

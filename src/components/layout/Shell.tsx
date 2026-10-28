@@ -19,6 +19,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import type { Runtime } from "../../useBackend";
 import type { Navigate, Route } from "../../app/navigation";
+import { Cover } from "../music/Cover";
 import { IconButton } from "../ui/Primitives";
 const destinations = [
   { kind: "home", label: "Главная", Icon: Home },
@@ -118,7 +119,14 @@ export function Shell({
                     : undefined
                 }
               >
-                <ListMusic />
+                {p.artwork ? (
+                  <Cover
+                    session={model.status!.context.session_id}
+                    playlist={p}
+                  />
+                ) : (
+                  <ListMusic />
+                )}
                 <span>{p.title}</span>
               </button>
             ))}
