@@ -1,10 +1,45 @@
 import { call } from "../backend";
 import type { Artwork } from "../backend";
-type Cached = { url: string; users: number; touched: number };
+type Cached = {
+  url: string;
+  users: number;
+  touched: number;
+  tone?: Promise<string | undefined>;
+};
 const entries = new Map<string, Cached>();
 const pending = new Map<string, Promise<Cached | null>>();
 let running = 0;
 const waiting: (() => void)[] = [];
+function toneFor(asset: Cached) {
+  // One small sample per cached cover, requested only by Now Playing.
+  // Browser image decoding is asynchronous; no full-size pixel buffer in React.
+  asset.tone ??= (async () => {
+    const picture = new Image();
+    picture.src = asset.url;
+    await picture.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 24;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return undefined;
+    ctx.drawImage(picture, 0, 0, 24, 24);
+    const pixels = ctx.getImageData(0, 0, 24, 24).data;
+    let red = 0,
+      green = 0,
+      blue = 0,
+      weight = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const alpha = pixels[i + 3] / 255;
+      red += pixels[i] * alpha;
+      green += pixels[i + 1] * alpha;
+      blue += pixels[i + 2] * alpha;
+      weight += alpha;
+    }
+    return weight
+      ? `rgb(${Math.round(red / weight)} ${Math.round(green / weight)} ${Math.round(blue / weight)})`
+      : undefined;
+  })().catch(() => undefined);
+  return asset.tone;
+}
 async function limited<T>(fn: () => Promise<T>): Promise<T> {
   if (running >= 4) await new Promise<void>((resolve) => waiting.push(resolve));
   running++;
@@ -67,6 +102,7 @@ export async function acquireArtwork(
   const held = cached;
   return {
     url: held.url,
+    tone: () => toneFor(held),
     release: () => {
       held.users = Math.max(0, held.users - 1);
       trim();

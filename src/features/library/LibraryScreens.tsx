@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Heart, ListMusic, Play, Plus, Search } from "lucide-react";
+import {
+  ArrowRight,
+  Heart,
+  ListMusic,
+  Play,
+  Plus,
+  Search,
+  Shuffle,
+} from "lucide-react";
+import { ListeningHistory } from "./ListeningHistory";
 import type { Runtime } from "../../useBackend";
 import { call, duration, errorOf } from "../../backend";
 import type { Track } from "../../backend";
@@ -77,6 +86,38 @@ export function HomeScreen(props: Props) {
         title="Ваша музыка"
         subtitle="Всё, что хочется слушать. Всегда с вами."
       >
+        {!!tracks.length && (
+          <button
+            onClick={() =>
+              void run(
+                "Случайная подборка",
+                () => {
+                  const ids = tracks.map((t) => t.track_id);
+                  const random = new Uint32Array(ids.length);
+                  // WebCrypto limits each call to 65,536 bytes.
+                  for (let start = 0; start < random.length; start += 16384)
+                    crypto.getRandomValues(
+                      random.subarray(start, start + 16384),
+                    );
+                  for (let i = ids.length - 1; i > 0; i--) {
+                    const j = random[i] % (i + 1);
+                    [ids[i], ids[j]] = [ids[j], ids[i]];
+                  }
+                  return call("set_queue", {
+                    session_id,
+                    track_ids: ids,
+                    position: 0,
+                    autoplay: true,
+                  });
+                },
+                false,
+              )
+            }
+          >
+            <Shuffle />
+            Перемешать коллекцию
+          </button>
+        )}
         <button
           className="primary"
           disabled={model.status?.mode !== "ONLINE_READY"}
@@ -208,6 +249,7 @@ export function HomeScreen(props: Props) {
           )}
         </>
       )}
+      <ListeningHistory {...props} />
       <section>
         <div className="section-heading">
           <h2>Ваши плейлисты</h2>

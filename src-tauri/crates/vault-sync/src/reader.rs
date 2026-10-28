@@ -11,6 +11,27 @@ pub struct ProjectionReader {
     pub(crate) binding: Binding,
 }
 impl ProjectionReader {
+    pub async fn listening_history(&self) -> Result<Vec<vault_db::ListeningEntry>, SyncError> {
+        self.read(Database::listening_history).await
+    }
+    /// A local preference write under the same SQLite mutex as projection reads.
+    /// This does not enqueue or mutate any shared library event.
+    pub async fn record_completed_play(
+        &self,
+        track: Uuid,
+        playback: Uuid,
+        at_ms: u64,
+    ) -> Result<(), SyncError> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            db.lock()
+                .map_err(|_| SyncError::Worker)?
+                .record_completed_play(track, playback, at_ms)
+                .map_err(SyncError::Database)
+        })
+        .await
+        .map_err(|_| SyncError::Worker)?
+    }
     pub fn new(database: Database) -> Self {
         Self {
             binding: database.binding(),
@@ -84,6 +105,16 @@ impl ProjectionReader {
     }
     pub async fn shared_settings(&self) -> Result<vault_domain::SharedSettings, SyncError> {
         self.read(Database::shared_settings).await
+    }
+    pub async fn playlist_search(
+        &self,
+        id: Uuid,
+        query: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Option<vault_db::PlaylistDetail>, SyncError> {
+        self.read(move |db| db.playlist_search(id, &query, offset, limit))
+            .await
     }
     pub async fn favorite_sets(&self, offset: u32, limit: u32) -> Result<Vec<String>, SyncError> {
         self.read(move |db| db.favorite_sets(offset, limit)).await

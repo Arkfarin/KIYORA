@@ -24,6 +24,8 @@ pub enum ErrorCode {
     NativeUnavailable,
     InvalidInput,
     Conflict,
+    /// Editor preflight rejected a fresh operation before any remote side effect.
+    EditNotSent,
     Readonly,
     Integrity,
     UnsafeVault,
@@ -84,6 +86,9 @@ impl ApiError {
             NativeUnavailable => "pinned TDLib native library is unavailable",
             InvalidInput => "invalid request",
             Conflict => "request conflicts with persisted state",
+            EditNotSent => {
+                "edit was not sent; review the current version and the supplied metadata"
+            }
             Readonly => "shared changes require ONLINE_READY",
             Integrity => "vault integrity or compatibility check failed",
             UnsafeVault => "vault must be a private channel owned only by this account",
@@ -309,6 +314,12 @@ pub enum LocalQuery {
     },
     Playlist {
         playlist_id: Uuid,
+        offset: u32,
+        limit: u32,
+    },
+    PlaylistSearch {
+        playlist_id: Uuid,
+        query: String,
         offset: u32,
         limit: u32,
     },

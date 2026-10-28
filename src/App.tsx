@@ -59,9 +59,15 @@ export default function App() {
     !!model.projection &&
     model.projection.context.vault_id === model.status.context.vault_id &&
     !model.info?.repair_required &&
-    (model.status.mode === "ONLINE_READY" || allowLocal || openedSession === session ||
-      (model.projection.cursor !== "0" && !model.info?.creation && model.status.mode !== "AUTH_REQUIRED"));
-  useEffect(() => { if (usable) setOpenedSession(session); }, [usable, session]);
+    (model.status.mode === "ONLINE_READY" ||
+      allowLocal ||
+      openedSession === session ||
+      (model.projection.cursor !== "0" &&
+        !model.info?.creation &&
+        model.status.mode !== "AUTH_REQUIRED"));
+  useEffect(() => {
+    if (usable) setOpenedSession(session);
+  }, [usable, session]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (

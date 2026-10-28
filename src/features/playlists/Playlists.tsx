@@ -201,19 +201,30 @@ export function PlaylistScreen({
   const [remove, setRemove] = useState(false);
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(query.trim());
+      setOffset(0);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [query]);
   useEffect(() => {
     setOffset(0);
     setQuery("");
+    setSearch("");
     setDetail(null);
   }, [id]);
   useEffect(() => {
     let active = true;
     setError("");
+    setLoading(true);
     void call("query", {
       session_id,
       query: {
-        kind: "playlist",
-        payload: { playlist_id: id, offset, limit: 100 },
+        kind: "playlist_search",
+        payload: { playlist_id: id, query: search, offset, limit: 100 },
       },
     })
       .then((r) => {
@@ -221,11 +232,14 @@ export function PlaylistScreen({
       })
       .catch((e) => {
         if (active) setError(errorOf(e).message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [id, offset, session_id, model.projection]);
+  }, [id, offset, search, session_id, model.projection]);
   if (error) return <p role="alert">{error}</p>;
   if (!model.projection?.state.playlists[id])
     return (
@@ -234,11 +248,7 @@ export function PlaylistScreen({
       </Empty>
     );
   if (!detail) return <Loading />;
-  const items = detail.items.filter((i) =>
-    `${i.track.metadata.title} ${i.track.metadata.performer}`
-      .toLocaleLowerCase()
-      .includes(query.toLocaleLowerCase()),
-  );
+  const items = detail.items;
   const change = (entry_id: string, after_entry_id: string | null) =>
     void run("Порядок плейлиста", () =>
       mutate(session_id, id, {
@@ -301,18 +311,19 @@ export function PlaylistScreen({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Поиск на этой странице плейлиста"
-          aria-label="Поиск на странице плейлиста"
+          placeholder="Поиск по всему плейлисту"
+          aria-label="Поиск в плейлисте"
         />
       </label>
-      {!items.length ? (
+      {loading ? (
+        <Loading label="Поиск в плейлисте…" />
+      ) : !items.length ? (
         <Empty title={query ? "Совпадений нет" : "Пока пусто"}>
           Добавьте треки через меню композиции в медиатеке.
         </Empty>
       ) : (
         <ol className="playlist-entries">
           {items.map((item) => {
-            const index = detail.items.indexOf(item);
             return (
               <li
                 key={item.entry.entry_id}
@@ -348,7 +359,7 @@ export function PlaylistScreen({
                         call("queue_playlist", {
                           session_id,
                           playlist_id: id,
-                          position: offset + index,
+                          position: item.position,
                           autoplay: true,
                         }),
                       false,
@@ -364,28 +375,18 @@ export function PlaylistScreen({
                 <div className="queue-actions">
                   <IconButton
                     label="Выше в плейлисте"
-                    disabled={!online || index < 1 || !!query}
+                    disabled={!online || item.position === 0 || !!query}
                     onClick={() =>
-                      change(
-                        item.entry.entry_id,
-                        index > 1
-                          ? detail.items[index - 2].entry.entry_id
-                          : null,
-                      )
+                      change(item.entry.entry_id, item.move_up_after)
                     }
                   >
                     <ArrowUp />
                   </IconButton>
                   <IconButton
                     label="Ниже в плейлисте"
-                    disabled={
-                      !online || index + 1 >= detail.items.length || !!query
-                    }
+                    disabled={!online || !item.next_entry_id || !!query}
                     onClick={() =>
-                      change(
-                        item.entry.entry_id,
-                        detail.items[index + 1].entry.entry_id,
-                      )
+                      change(item.entry.entry_id, item.next_entry_id)
                     }
                   >
                     <ArrowDown />

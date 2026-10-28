@@ -51,9 +51,14 @@ impl Backend {
     /// Rehydrate transfers after a WebView reload without starting any downloads.
     pub async fn downloads(&self, session_id: Uuid) -> Result<Vec<DownloadInfo>, ApiError> {
         let guard = self.session.lock().await;
-        let session = guard.as_ref().ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
         check_session(session, session_id)?;
-        session.service.as_ref().map_or(Ok(Vec::new()), VaultService::downloads)
+        session
+            .service
+            .as_ref()
+            .map_or(Ok(Vec::new()), VaultService::downloads)
     }
     pub async fn cached_media(
         &self,

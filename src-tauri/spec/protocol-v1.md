@@ -24,7 +24,8 @@ Payloads:
 | action | entity_id | payload |
 |---|---|---|
 | track.register | track UUID | metadata, source |
-| track.metadata.update | track UUID | patch |
+| track.metadata.update | track UUID | patch (optional expected_order CAS) |
+| track.media.replace | track UUID | metadata, source, expected_order |
 | track.delete | track UUID | {} |
 | playlist.create / playlist.rename | playlist UUID | title |
 | playlist.delete | playlist UUID | {} |
@@ -54,3 +55,25 @@ SQLite can advance past a later duplicate server message without reapplying it.
 
 This document describes implemented core encoding. Transport, snapshot and API
 acceptance remain tracked separately in `docs/implementation-status.md`.
+
+## Metadata and source extension (2026-10-28)
+
+Optional `composer`, `comment`, `copyright`, `lyrics` and `preferred_source_id`
+fields deserialize with defaults for earlier data. A lyrics reference contains a
+SHA-256 and a source for a separate bounded version-1 LyricsDocument; snapshots
+and GC reference analysis retain it independently of audio. Lyrics text is never
+inline HTML. `clear_lyrics` explicitly removes that reference.
+
+`expected_order` is compared to the track's last server update during reducer
+replay. A mismatch rejects the entire edit. `track.media.replace` adds a confirmed
+new source and switches the preferred source plus metadata atomically, retaining
+old references, track identity and playlist/favorite relationships. Telegram
+message bytes are not overwritten. The durable media journal handles lost ACKs.
+
+This decoder reads earlier data, but older strict decoders reject these new fields
+or actions. Upgrade every participating client before enabling these features;
+protocol number 1 does not imply old-client support for this extension. No
+existing event, snapshot or user database is rewritten in place by UI startup.
+Portable full backups additionally carry checked `lyrics/<track_id>` files. A
+new-vault restore must rebind them to confirmed uploads in the target channel;
+missing or foreign references are not silently copied or discarded.

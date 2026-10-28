@@ -367,7 +367,10 @@ impl VaultService {
     }
 
     pub fn downloads(&self) -> Result<Vec<DownloadInfo>, ApiError> {
-        let jobs = self.downloads.lock().map_err(|_| ApiError::new(ErrorCode::Internal))?;
+        let jobs = self
+            .downloads
+            .lock()
+            .map_err(|_| ApiError::new(ErrorCode::Internal))?;
         let mut entries: Vec<_> = jobs.values().collect();
         entries.sort_by_key(|job| job.updated);
         Ok(entries.into_iter().map(|job| job.info.clone()).collect())
@@ -1407,6 +1410,7 @@ async fn handle<T: Telegram + Clone + 'static>(
                     vault_media::MAX_IMPORT_BYTES,
                 )?;
                 let mut artworks = std::collections::BTreeMap::new();
+                let mut lyrics = std::collections::BTreeMap::new();
                 for (old_track_id, track) in &backup.state.tracks {
                     let downloaded;
                     let (media_path, entry) = if let Some(path) = backup.media_path(*old_track_id) {
@@ -1474,6 +1478,19 @@ async fn handle<T: Telegram + Clone + 'static>(
                             size_bytes: Some(entry.bytes),
                         },
                     );
+                    if let Some(source) = crate::backups::restore_lyrics(
+                        engine,
+                        &backup,
+                        track,
+                        &download_cache,
+                        &existing,
+                        restore_uuid(target_vault, &fingerprint, *old_track_id, b"lyrics"),
+                        cancel,
+                    )
+                    .await?
+                    {
+                        lyrics.insert(*old_track_id, source);
+                    }
                     events.emit(
                         context,
                         EventData::BackupRestore {
@@ -1491,11 +1508,12 @@ async fn handle<T: Telegram + Clone + 'static>(
                         return Err(ApiError::new(ErrorCode::Integrity));
                     }
                 }
-                let mut plan = vault_snapshot::backup::plan_new_vault(
+                let mut plan = vault_snapshot::backup::plan_new_vault_with_lyrics(
                     &backup,
                     target_vault,
                     target_chat,
                     &sources,
+                    &lyrics,
                 )
                 .map_err(|_| ApiError::new(ErrorCode::Integrity))?;
                 for operation in &mut plan.operations {

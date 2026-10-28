@@ -204,7 +204,8 @@ impl Backend {
         .await
         .map_err(|_| ApiError::new(ErrorCode::Internal))??;
         if let Some(preferred) = track.preferred_source_id
-            && let Some(index) = sources.iter().position(|id| *id == preferred) {
+            && let Some(index) = sources.iter().position(|id| *id == preferred)
+        {
             sources.remove(index);
             sources.insert(0, preferred);
         }
@@ -302,8 +303,10 @@ fn next_position(
     if n == 0 {
         return None;
     }
-    if ended && queue.repeat == RepeatMode::Track
-        && let Some(i) = queue.position.filter(|i| exists(&queue.tracks[*i])) {
+    if ended
+        && queue.repeat == RepeatMode::Track
+        && let Some(i) = queue.position.filter(|i| exists(&queue.tracks[*i]))
+    {
         return Some(i);
     }
     let current = queue.position.unwrap_or(if forward { n - 1 } else { 0 });

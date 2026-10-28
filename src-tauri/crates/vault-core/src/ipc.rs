@@ -54,7 +54,12 @@ pub struct BackendRequest {
     deny_unknown_fields
 )]
 pub enum BackendCommand {
-    Downloads { session_id: Uuid },
+    ListeningHistory {
+        session_id: Uuid,
+    },
+    Downloads {
+        session_id: Uuid,
+    },
     CachedMedia {
         session_id: Uuid,
     },
@@ -237,6 +242,7 @@ pub struct BackendResponse {
     deny_unknown_fields
 )]
 pub enum BackendReply {
+    ListeningHistory(Vec<vault_db::ListeningEntry>),
     Downloads(Vec<DownloadInfo>),
     CachedMedia(Vec<vault_media::CacheEntry>),
     Lyrics(Option<vault_domain::LyricsDocument>),
@@ -283,6 +289,12 @@ impl Backend {
     ) -> Result<BackendReply, ApiError> {
         use BackendCommand::*;
         Ok(match command {
+            ListeningHistory { session_id } => BackendReply::ListeningHistory(
+                self.local_reader(session_id)
+                    .await?
+                    .listening_history()
+                    .await?,
+            ),
             Downloads { session_id } => BackendReply::Downloads(self.downloads(session_id).await?),
             CachedMedia { session_id } => {
                 BackendReply::CachedMedia(self.cached_media(session_id).await?)

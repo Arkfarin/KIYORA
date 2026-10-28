@@ -78,7 +78,12 @@ export function DownloadsScreen({ runtime }: { runtime: Runtime }) {
           <h2>Активность</h2>
           {downloads.map((d) => {
             const track = model.projection?.state.tracks[d.track_id];
-            const source = track && ((track.preferred_source_id ? track.sources[track.preferred_source_id] : undefined) ?? Object.values(track.sources)[0]);
+            const source =
+              track &&
+              ((track.preferred_source_id
+                ? track.sources[track.preferred_source_id]
+                : undefined) ??
+                Object.values(track.sources)[0]);
             return (
               <div className="download-row" key={d.download_id}>
                 <Cover session={session_id} track={track} />
@@ -121,7 +126,36 @@ export function DownloadsScreen({ runtime }: { runtime: Runtime }) {
                     <X />
                   </IconButton>
                 )}
-                {source && ["cancelled", "failed_retryable", "partially_cached"].includes(d.state) && <button disabled={model.status?.mode !== "ONLINE_READY" || !!runtime.busy} onClick={() => void run("Продолжить скачивание", () => call("vault", { session_id, request: { kind: "download_for_offline", payload: { download_id: uuid(), track_id: d.track_id, source_id: source.source_id, pinned: d.pinned } } }))}>Продолжить</button>}
+                {source &&
+                  [
+                    "cancelled",
+                    "failed_retryable",
+                    "partially_cached",
+                  ].includes(d.state) && (
+                    <button
+                      disabled={
+                        model.status?.mode !== "ONLINE_READY" || !!runtime.busy
+                      }
+                      onClick={() =>
+                        void run("Продолжить скачивание", () =>
+                          call("vault", {
+                            session_id,
+                            request: {
+                              kind: "download_for_offline",
+                              payload: {
+                                download_id: uuid(),
+                                track_id: d.track_id,
+                                source_id: source.source_id,
+                                pinned: d.pinned,
+                              },
+                            },
+                          }),
+                        )
+                      }
+                    >
+                      Продолжить
+                    </button>
+                  )}
               </div>
             );
           })}

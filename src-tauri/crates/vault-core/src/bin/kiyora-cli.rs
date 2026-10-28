@@ -331,13 +331,13 @@ async fn vault(
             .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?;
             print_status(
                 &backend
-                    .attach_vault(status.context.session_id, chat, &token)
+                    .attach_vault(status.context.session_id, chat, token)
                     .await?,
             );
         }
         Some("create") => print_status(
             &backend
-                .create_vault(status.context.session_id, &token)
+                .create_vault(status.context.session_id, token)
                 .await?,
         ),
         Some("resume") => {
@@ -347,7 +347,7 @@ async fn vault(
                 .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?;
             print_status(
                 &backend
-                    .resume_vault_creation(status.context.session_id, chat, &token)
+                    .resume_vault_creation(status.context.session_id, chat, token)
                     .await?,
             );
         }

@@ -107,6 +107,9 @@ export interface PlaylistDetail {
   total: number;
   offset: number;
   items: {
+    position: number;
+    move_up_after: string | null;
+    next_entry_id: string | null;
     entry: {
       entry_id: string;
       track_id: string;
@@ -370,6 +373,10 @@ export type PlaybackAction =
   | { kind: "seek" | "set_volume"; value: number };
 type Session = { session_id: string };
 interface Commands {
+  listening_history: [
+    { session_id: string },
+    { track_id: string; completed_plays: number; last_played_ms: number }[],
+  ];
   downloads: [{ session_id: string }, Download[]];
   cached_media: [
     Session,

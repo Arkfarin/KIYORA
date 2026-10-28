@@ -249,7 +249,8 @@ export function TrackList({
                 model.playback.track_id === track.track_id &&
                 model.playback.state === "playing";
               const cache = model.downloads[track.track_id];
-              const source = track.preferred_source_id ?? Object.keys(track.sources)[0];
+              const source =
+                track.preferred_source_id ?? Object.keys(track.sources)[0];
               const cached = !!model.cached[`${track.track_id}:${source}`];
               return (
                 <div

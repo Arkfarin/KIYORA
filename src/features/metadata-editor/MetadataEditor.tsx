@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Save } from "lucide-react";
-import { assertApplied, call, uuid } from "../../backend";
+import { assertApplied, call, errorOf, uuid } from "../../backend";
 import type {
   ImportPreview,
   MediaEdit,
@@ -176,26 +176,43 @@ export function MetadataEditor({
     const attempt = d.attempt ?? { edit, writeTags };
     const pending = { ...d, attempt, writeTags: attempt.writeTags };
     await runtime.run("Сохранение метаданных", async () => {
-      await writeDraft(key, pending);
-      current.current = pending;
-      setDraft(pending);
-      setLockedAttempt(true);
-      if (track) {
-        const reply = await call("vault", {
-          session_id: context.session_id,
-          request: {
-            kind: attempt.writeTags ? "rewrite_track" : "edit_metadata",
-            payload: { op_id: d.opId, track_id: track.track_id, edit },
-          },
-        });
-        assertApplied(reply);
-      } else {
-        if (!onImport) throw new Error("Missing import callback");
-        await onImport(edit, attempt.writeTags);
+      try {
+        await writeDraft(key, pending);
+        current.current = pending;
+        setDraft(pending);
+        setLockedAttempt(true);
+        if (track) {
+          const reply = await call("vault", {
+            session_id: context.session_id,
+            request: {
+              kind: attempt.writeTags ? "rewrite_track" : "edit_metadata",
+              payload: { op_id: d.opId, track_id: track.track_id, edit },
+            },
+          });
+          assertApplied(reply);
+        } else {
+          if (!onImport) throw new Error("Missing import callback");
+          await onImport(edit, attempt.writeTags);
+        }
+        completed.current = true;
+        await writeDraft(key);
+        onClose();
+      } catch (error) {
+        const failure = errorOf(error);
+        if (failure.code === "EDIT_NOT_SENT") {
+          // Only this explicit backend guarantee permits a new operation ID.
+          // NETWORK/TIMEOUT and unknown acknowledgements retain the exact intent.
+          const revised = { ...pending, attempt: undefined, opId: uuid() };
+          await writeDraft(key, revised);
+          current.current = revised;
+          setDraft(revised);
+          setLockedAttempt(false);
+          setDraftError(
+            "Изменение не отправлено. Проверьте актуальную версию и данные. Ваш черновик сохранён и доступен для редактирования.",
+          );
+        } else setDraftError(failure.message);
+        throw error;
       }
-      completed.current = true;
-      await writeDraft(key);
-      onClose();
     });
     sending.current = false;
     setSaving(false);

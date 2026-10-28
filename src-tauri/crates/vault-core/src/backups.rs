@@ -11,7 +11,11 @@ pub(crate) async fn download_source<T: Telegram>(
     cache: &vault_media::CacheManager,
     cancel: &CancellationToken,
 ) -> Result<(vault_media::CacheLease, vault_snapshot::backup::Checksum), ApiError> {
-    for source in track.sources.values() {
+    for source in track
+        .sources
+        .values()
+        .filter(|s| track.preferred_source_id.is_none_or(|id| id == s.source_id))
+    {
         if cancel.is_cancelled() {
             return Err(ApiError::new(ErrorCode::Cancelled));
         }
@@ -165,6 +169,7 @@ pub(crate) async fn restore_artwork<T: Telegram>(
     } else if let Some(source) = &art.source {
         let mut only = track.clone();
         only.sources = std::collections::BTreeMap::from([(source.source_id, source.clone())]);
+        only.preferred_source_id = Some(source.source_id);
         downloaded = download_source(
             engine.transport(),
             &only,
@@ -206,6 +211,92 @@ pub(crate) async fn restore_artwork<T: Telegram>(
             || bytes.len() > vault_media::MAX_ARTWORK_BYTES
             || vault_snapshot::digest(&bytes) != expected
         {
+            return Err(ApiError::new(ErrorCode::Integrity));
+        }
+        Ok(vault_snapshot::backup::Checksum {
+            bytes: bytes.len() as u64,
+            sha256: expected,
+        })
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal))??;
+    let message = upload_restore(engine, existing, import_id, path, &sum, cancel).await?;
+    Ok(Some(vault_domain::Source {
+        source_id: import_id,
+        chat_id: engine.binding().chat_id,
+        message_id: message.id,
+        sha256: Some(sum.sha256),
+        size_bytes: Some(sum.bytes),
+    }))
+}
+
+/// Rebind a verified small lyrics document before publishing any catalogue
+/// operation in the new vault. Lost upload acknowledgements use the same marker.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn restore_lyrics<T: Telegram>(
+    engine: &mut vault_sync::SyncEngine<T>,
+    backup: &vault_snapshot::backup::VerifiedBackup,
+    track: &vault_domain::Track,
+    cache: &vault_media::CacheManager,
+    existing: &std::collections::BTreeMap<uuid::Uuid, vault_telegram::RemoteMessage>,
+    import_id: uuid::Uuid,
+    cancel: &CancellationToken,
+) -> Result<Option<vault_domain::Source>, ApiError> {
+    let Some(reference) = &track.metadata.lyrics else {
+        return Ok(None);
+    };
+    let downloaded;
+    let path = if let Some(path) = backup.lyrics_path(track.track_id) {
+        path.to_owned()
+    } else {
+        let source = &reference.source;
+        let transport = engine.transport();
+        transport
+            .verify_channel(source.chat_id, engine.binding().owner_id, cancel)
+            .await?;
+        let file = transport
+            .message(source.chat_id, source.message_id, cancel)
+            .await?
+            .and_then(|m| m.file)
+            .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
+        if file.size <= 0
+            || file.size > 512 * 1024
+            || source.size_bytes.is_some_and(|n| n != file.size as u64)
+        {
+            return Err(ApiError::new(ErrorCode::Integrity));
+        }
+        downloaded = vault_media::download_to_cache(
+            transport,
+            &file,
+            cache,
+            vault_media::DownloadOptions {
+                cache_key: format!("restore:lyrics:{}", reference.sha256),
+                expected_sha256: Some(reference.sha256.clone()),
+                pinned: false,
+            },
+            cancel,
+            &|_, _| {},
+        )
+        .await?;
+        downloaded.path.clone()
+    };
+    let checked = path.clone();
+    let expected = reference.sha256.clone();
+    let sum = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(checked)?
+            .take(512 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.is_empty()
+            || bytes.len() > 512 * 1024
+            || vault_snapshot::digest(&bytes) != expected
+        {
+            return Err(ApiError::new(ErrorCode::Integrity));
+        }
+        let document: vault_domain::LyricsDocument =
+            serde_json::from_slice(&bytes).map_err(|_| ApiError::new(ErrorCode::Integrity))?;
+        if !document.valid() {
             return Err(ApiError::new(ErrorCode::Integrity));
         }
         Ok(vault_snapshot::backup::Checksum {

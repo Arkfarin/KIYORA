@@ -21,6 +21,8 @@ import { call, duration, mutate } from "../../backend";
 import type { PlaybackAction, QueueAction, Track } from "../../backend";
 import type { Runtime } from "../../useBackend";
 import { resumePlayback } from "../../services/playback";
+import { acquireArtwork } from "../../services/artwork";
+import type { CSSProperties } from "react";
 import { Cover } from "../../components/music/Cover";
 import { IconButton, Modal } from "../../components/ui/Primitives";
 import { QueuePanel } from "./QueuePanel";
@@ -37,6 +39,7 @@ export function Player({
   const { model, run } = runtime;
   const session_id = model.status!.context.session_id;
   const [full, setFull] = useState(false);
+  const [tone, setTone] = useState<string>();
   const [panel, setPanel] = useState<"queue" | "lyrics" | null>(null);
   const [seek, setSeek] = useState<number | null>(null);
   const [volume, setVolume] = useState(model.info?.playback_volume ?? 1);
@@ -51,6 +54,27 @@ export function Player({
   const liked =
     !!track &&
     !!model.projection?.state.favorites.liked?.includes(track.track_id);
+  useEffect(() => {
+    let active = true;
+    setTone(undefined);
+    const sha = track?.metadata.artwork?.sha256;
+    if (full && track && sha) {
+      void acquireArtwork(session_id, track.track_id, sha)
+        .then(async (asset) => {
+          if (!asset) return;
+          try {
+            const color = await asset.tone();
+            if (active) setTone(color);
+          } finally {
+            asset.release();
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      active = false;
+    };
+  }, [full, session_id, track?.track_id, track?.metadata.artwork?.sha256]);
   const active = ["playing", "paused", "buffering"].includes(playback.state);
   const control = (action: PlaybackAction) =>
     void run(
@@ -334,8 +358,13 @@ export function Player({
         </Modal>
       )}
       {full && (
-        <Modal title="Сейчас играет" wide onClose={() => setFull(false)}>
-          <div className="now-playing-full">
+        <Modal title="Сейчас играет" fullScreen onClose={() => setFull(false)}>
+          <div
+            className="now-playing-full"
+            style={
+              { "--artwork-tone": tone ?? "var(--surface)" } as CSSProperties
+            }
+          >
             <div className="now-artwork">
               <Cover track={track} session={session_id} />
             </div>

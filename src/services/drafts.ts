@@ -23,6 +23,8 @@ function database() {
 export async function readDraft(
   key: string,
 ): Promise<MetadataDraft | undefined> {
+  // Closing and immediately reopening an editor must see its final queued write.
+  await writes.get(key)?.catch(() => {});
   const db = await database();
   try {
     return await new Promise((resolve, reject) => {

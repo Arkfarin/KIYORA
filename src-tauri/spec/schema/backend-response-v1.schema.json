@@ -91,6 +91,42 @@
             "action": {
               "type": "string",
               "enum": [
+                "track.media.replace"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "expected_order",
+                "metadata",
+                "source"
+              ],
+              "properties": {
+                "expected_order": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "$ref": "#/definitions/Metadata"
+                },
+                "source": {
+                  "$ref": "#/definitions/Source"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "action",
+            "payload"
+          ],
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
                 "track.delete"
               ]
             },
@@ -795,6 +831,98 @@
             "kind": {
               "type": "string",
               "enum": [
+                "listening_history"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ListeningEntry"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "downloads"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DownloadInfo"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "cached_media"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CacheEntry"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "lyrics"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LyricsDocument"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
                 "state_snapshot"
               ]
             },
@@ -1208,6 +1336,43 @@
         }
       }
     },
+    "CacheEntry": {
+      "type": "object",
+      "required": [
+        "file_id",
+        "key",
+        "last_access_unix",
+        "pinned",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "file_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "key": {
+          "type": "string"
+        },
+        "last_access_unix": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "CacheStats": {
       "type": "object",
       "required": [
@@ -1483,40 +1648,51 @@
       ]
     },
     "ErrorCode": {
-      "type": "string",
-      "enum": [
-        "AUTH_REQUIRED",
-        "INVALID_CODE",
-        "CODE_EXPIRED",
-        "INVALID_PASSWORD",
-        "AUTH_STATE_MISMATCH",
-        "RESEND_UNAVAILABLE",
-        "RESEND_TOO_EARLY",
-        "TELEGRAM_REJECTED",
-        "NO_PROFILE",
-        "NO_VAULT",
-        "PROFILE_BUSY",
-        "SECURE_STORAGE_UNAVAILABLE",
-        "NATIVE_UNAVAILABLE",
-        "INVALID_INPUT",
-        "CONFLICT",
-        "READONLY",
-        "INTEGRITY",
-        "UNSAFE_VAULT",
-        "PROTOCOL_UNSUPPORTED",
-        "SNAPSHOT_UNAVAILABLE",
-        "BACKPRESSURE",
-        "CANCELLED",
-        "TIMEOUT",
-        "RATE_LIMITED",
-        "NETWORK",
-        "STORAGE",
-        "DATABASE_CORRUPT",
-        "MEDIA_UNAVAILABLE",
-        "MEDIA_SOURCE_MISSING",
-        "PLAYBACK_UNAVAILABLE",
-        "CLOSED",
-        "INTERNAL"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "AUTH_REQUIRED",
+            "INVALID_CODE",
+            "CODE_EXPIRED",
+            "INVALID_PASSWORD",
+            "AUTH_STATE_MISMATCH",
+            "RESEND_UNAVAILABLE",
+            "RESEND_TOO_EARLY",
+            "TELEGRAM_REJECTED",
+            "NO_PROFILE",
+            "NO_VAULT",
+            "PROFILE_BUSY",
+            "SECURE_STORAGE_UNAVAILABLE",
+            "NATIVE_UNAVAILABLE",
+            "INVALID_INPUT",
+            "CONFLICT",
+            "READONLY",
+            "INTEGRITY",
+            "UNSAFE_VAULT",
+            "PROTOCOL_UNSUPPORTED",
+            "SNAPSHOT_UNAVAILABLE",
+            "BACKPRESSURE",
+            "CANCELLED",
+            "TIMEOUT",
+            "RATE_LIMITED",
+            "NETWORK",
+            "STORAGE",
+            "DATABASE_CORRUPT",
+            "MEDIA_UNAVAILABLE",
+            "MEDIA_SOURCE_MISSING",
+            "PLAYBACK_UNAVAILABLE",
+            "CLOSED",
+            "INTERNAL"
+          ]
+        },
+        {
+          "description": "Editor preflight rejected a fresh operation before any remote side effect.",
+          "type": "string",
+          "enum": [
+            "EDIT_NOT_SENT"
+          ]
+        }
       ]
     },
     "Event": {
@@ -1698,6 +1874,64 @@
       },
       "additionalProperties": false
     },
+    "ImportPreview": {
+      "type": "object",
+      "required": [
+        "filename",
+        "metadata",
+        "preview_id",
+        "sha256",
+        "size_bytes",
+        "warnings"
+      ],
+      "properties": {
+        "artwork": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ArtworkData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "filename": {
+          "type": "string"
+        },
+        "lyrics": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsDocument"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "preview_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "ImportStage": {
       "type": "string",
       "enum": [
@@ -1849,6 +2083,36 @@
         "cancelled",
         "interrupted"
       ]
+    },
+    "ListeningEntry": {
+      "type": "object",
+      "required": [
+        "completed_plays",
+        "last_playback_id",
+        "last_played_ms",
+        "track_id"
+      ],
+      "properties": {
+        "completed_plays": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "last_playback_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "last_played_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "track_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false
     },
     "LocalResponse": {
       "oneOf": [
@@ -2073,6 +2337,78 @@
         }
       ]
     },
+    "LyricLine": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "end_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "start_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LyricsDocument": {
+      "type": "object",
+      "required": [
+        "lines",
+        "version"
+      ],
+      "properties": {
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LyricLine"
+          }
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "LyricsReference": {
+      "description": "A small document in the vault, fetched independently of the audio bytes.",
+      "type": "object",
+      "required": [
+        "sha256",
+        "source"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/Source"
+        }
+      },
+      "additionalProperties": false
+    },
     "MaintenanceConfig": {
       "type": "object",
       "required": [
@@ -2224,6 +2560,15 @@
           "default": "",
           "type": "string"
         },
+        "comment": {
+          "type": "string"
+        },
+        "composer": {
+          "type": "string"
+        },
+        "copyright": {
+          "type": "string"
+        },
         "disc_number": {
           "default": 0,
           "type": "integer",
@@ -2239,6 +2584,16 @@
         "genre": {
           "default": "",
           "type": "string"
+        },
+        "lyrics": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "performer": {
           "default": "",
@@ -2294,6 +2649,27 @@
           "default": false,
           "type": "boolean"
         },
+        "clear_lyrics": {
+          "type": "boolean"
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "composer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "copyright": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "disc_number": {
           "default": null,
           "type": [
@@ -2312,11 +2688,28 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "expected_order": {
+          "description": "Optimistic concurrency is enforced during server-ordered replay on every device.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "genre": {
           "default": null,
           "type": [
             "string",
             "null"
+          ]
+        },
+        "lyrics": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsReference"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "performer": {
@@ -2710,6 +3103,29 @@
         "entry": {
           "$ref": "#/definitions/PlaylistEntry"
         },
+        "move_up_after": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "next_entry_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "position": {
+          "description": "Position in the complete playlist, including when results are filtered.",
+          "default": 0,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
         "track": {
           "$ref": "#/definitions/Track"
         }
@@ -2833,6 +3249,9 @@
       "type": "object",
       "required": [
         "queue_id",
+        "repeat",
+        "revision",
+        "shuffle",
         "total"
       ],
       "properties": {
@@ -2854,6 +3273,17 @@
         "queue_id": {
           "type": "string",
           "format": "uuid"
+        },
+        "repeat": {
+          "$ref": "#/definitions/RepeatMode"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "shuffle": {
+          "type": "boolean"
         },
         "total": {
           "type": "integer",
@@ -2918,6 +3348,7 @@
         "missing_entity",
         "invalid_anchor",
         "invalid_payload",
+        "version_conflict",
         "wrong_entity",
         "future_generation"
       ]
@@ -2946,6 +3377,14 @@
           "format": "int64"
         }
       }
+    },
+    "RepeatMode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "queue",
+        "track"
+      ]
     },
     "Result_of_BackendReply_or_ApiError": {
       "oneOf": [
@@ -3478,6 +3917,13 @@
         "metadata": {
           "$ref": "#/definitions/Metadata"
         },
+        "preferred_source_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
         "sources": {
           "type": "object",
           "additionalProperties": {
@@ -3665,6 +4111,59 @@
     },
     "VaultResponse": {
       "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "import_previews"
+              ]
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ImportPreview"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "result"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "import_preview"
+              ]
+            },
+            "result": {
+              "$ref": "#/definitions/ImportPreview"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "preview_discarded"
+              ]
+            }
+          }
+        },
         {
           "type": "object",
           "required": [

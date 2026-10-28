@@ -175,3 +175,129 @@ fn full_backup_verifies_media_and_restore_requires_new_references() {
             .all(|t| t.sources.values().all(|s| s.chat_id == new_chat))
     );
 }
+
+#[test]
+fn full_backup_carries_lyrics_and_new_vault_cannot_keep_old_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let audio = dir.path().join("audio");
+    let lyrics_path = dir.path().join("lyrics.json");
+    std::fs::write(&audio, b"audio").unwrap();
+    let document = LyricsDocument {
+        version: 1,
+        language: Some("ru".into()),
+        lines: vec![LyricLine {
+            start_ms: Some(1234),
+            end_ms: Some(2400),
+            text: "Строка с таймингом".into(),
+        }],
+    };
+    let bytes = serde_json::to_vec(&document).unwrap();
+    std::fs::write(&lyrics_path, &bytes).unwrap();
+    let old_chat = ChatId::new(-100).unwrap();
+    let track = Uuid::new_v4();
+    let source = Source {
+        source_id: Uuid::new_v4(),
+        chat_id: old_chat,
+        message_id: MessageId::new(1).unwrap(),
+        sha256: Some(vault_snapshot::digest(b"audio")),
+        size_bytes: Some(5),
+    };
+    let reference = LyricsReference {
+        sha256: vault_snapshot::digest(&bytes),
+        source: Source {
+            source_id: Uuid::new_v4(),
+            chat_id: old_chat,
+            message_id: MessageId::new(2).unwrap(),
+            sha256: Some(vault_snapshot::digest(&bytes)),
+            size_bytes: Some(bytes.len() as u64),
+        },
+    };
+    let mut state = State::new(Uuid::new_v4());
+    state
+        .apply(
+            MessageId::new(3).unwrap(),
+            &Event {
+                vault_id: state.vault_id,
+                op_id: Uuid::new_v4(),
+                device_id: "test".into(),
+                base_generation: 0,
+                entity_id: track,
+                action: Action::TrackRegister {
+                    metadata: Metadata {
+                        title: "Трек".into(),
+                        lyrics: Some(reference.clone()),
+                        ..Default::default()
+                    },
+                    source: source.clone(),
+                },
+            },
+        )
+        .unwrap();
+    let archive = dir.path().join("complete.tmv-backup");
+    assert!(
+        export(
+            &archive,
+            &state,
+            UserId::new(42).unwrap(),
+            None,
+            BackupKind::Full,
+            &BTreeMap::from([(track, audio.clone())]),
+            Limits::default()
+        )
+        .is_err()
+    );
+    export_with_attachments(
+        &archive,
+        &state,
+        UserId::new(42).unwrap(),
+        None,
+        BackupKind::Full,
+        &BTreeMap::from([(track, audio)]),
+        &BTreeMap::new(),
+        &BTreeMap::from([(track, lyrics_path)]),
+        Limits::default(),
+    )
+    .unwrap();
+    let backup = inspect(&archive, Limits::default()).unwrap();
+    assert_eq!(
+        std::fs::read(backup.lyrics_path(track).unwrap()).unwrap(),
+        bytes
+    );
+    let new_vault = Uuid::new_v4();
+    let new_chat = ChatId::new(-200).unwrap();
+    let new_source = Source {
+        source_id: Uuid::new_v4(),
+        chat_id: new_chat,
+        ..source
+    };
+    let sources = BTreeMap::from([(track, new_source)]);
+    assert!(plan_new_vault(&backup, new_vault, new_chat, &sources).is_err());
+    assert!(
+        plan_new_vault_with_lyrics(
+            &backup,
+            new_vault,
+            new_chat,
+            &sources,
+            &BTreeMap::from([(track, reference.source.clone())])
+        )
+        .is_err()
+    );
+    let new_lyrics = Source {
+        source_id: Uuid::new_v4(),
+        chat_id: new_chat,
+        message_id: MessageId::new(9).unwrap(),
+        ..reference.source
+    };
+    let plan = plan_new_vault_with_lyrics(
+        &backup,
+        new_vault,
+        new_chat,
+        &sources,
+        &BTreeMap::from([(track, new_lyrics.clone())]),
+    )
+    .unwrap();
+    let Action::TrackRegister { metadata, .. } = &plan.operations[0].action else {
+        panic!("expected registration")
+    };
+    assert_eq!(metadata.lyrics.as_ref().unwrap().source, new_lyrics);
+}

@@ -2429,13 +2429,21 @@ async fn preview_original_upload_and_logical_edit_roundtrip_through_snapshot() {
     };
     assert_eq!(
         service.request(stale, &token).await.unwrap_err().code,
-        ErrorCode::Conflict
+        ErrorCode::EditNotSent
     );
     assert_eq!(server.messages().unwrap().len(), before);
-    service.request(VaultRequest::AssignGcCoordinator {
-        op_id: Uuid::new_v4(), target: CoordinatorTarget::ThisDevice,
-        expected_previous: None, force_confirmed: false,
-    }, &token).await.unwrap();
+    service
+        .request(
+            VaultRequest::AssignGcCoordinator {
+                op_id: Uuid::new_v4(),
+                target: CoordinatorTarget::ThisDevice,
+                expected_previous: None,
+                force_confirmed: false,
+            },
+            &token,
+        )
+        .await
+        .unwrap();
     service
         .request(VaultRequest::Snapshot, &token)
         .await
@@ -2567,5 +2575,98 @@ async fn explicit_tag_rewrite_keeps_identity_old_source_and_playlist_after_lost_
     );
     assert_eq!(server.messages().unwrap().len(), count);
     assert_eq!(server.delete_calls().unwrap(), 0);
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retagging_legacy_embedded_cover_preserves_artwork_and_publishes_reference() {
+    let (server, binding) = fixture().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cache =
+        vault_media::CacheManager::open(dir.path().join("cache"), 32 * 1024 * 1024).unwrap();
+    let service = service_with_cache(&server, binding, EventBus::default(), cache);
+    ready(&service).await;
+    let token = CancellationToken::new();
+    let original = dir.path().join("legacy.flac");
+    std::fs::write(
+        &original,
+        include_bytes!("../../../spec/test-vectors/audio/tone.flac"),
+    )
+    .unwrap();
+    // Generated 2x2 RGB PNG, with no external asset or account dependency.
+    let png = hex::decode("89504e470d0a1a0a0000000d4948445200000002000000020802000000fdd49a730000001249444154789c63f8afe2f15fc583014201002a9e05ada6985abb0000000049454e44ae426082").unwrap();
+    let art = vault_media::artwork(&png, None).unwrap();
+    vault_media::write_tags(
+        &original,
+        &Metadata {
+            title: "Legacy".into(),
+            ..Default::default()
+        },
+        Some(&art),
+        None,
+    )
+    .unwrap();
+    let original_bytes = std::fs::read(&original).unwrap();
+    let track_id = Uuid::new_v4();
+    service
+        .request(
+            VaultRequest::Import {
+                path: original.to_string_lossy().into_owned(),
+                track_id,
+                source_id: Uuid::new_v4(),
+                op_id: Uuid::new_v4(),
+                allow_duplicate: false,
+            },
+            &token,
+        )
+        .await
+        .unwrap();
+    service
+        .request(
+            VaultRequest::Mutate(Box::new(Mutation {
+                op_id: Uuid::new_v4(),
+                entity_id: track_id,
+                action: Action::TrackMetadataUpdate {
+                    patch: MetadataPatch {
+                        artwork: Some(Artwork {
+                            sha256: art.sha256.clone(),
+                            mime_type: art.mime_type.clone(),
+                            source: None,
+                        }),
+                        ..Default::default()
+                    },
+                },
+            })),
+            &token,
+        )
+        .await
+        .unwrap();
+    let before = service.reader().state().await.unwrap();
+    let result = service
+        .request(
+            VaultRequest::RewriteTrack {
+                op_id: Uuid::new_v4(),
+                track_id,
+                edit: Box::new(MediaEdit {
+                    patch: MetadataPatch {
+                        title: Some("Retagged".into()),
+                        expected_order: Some(before.tracks[&track_id].updated_order),
+                        ..Default::default()
+                    },
+                    artwork: None,
+                    lyrics: None,
+                }),
+            },
+            &token,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, VaultResponse::Command(c) if c.status == CommandStatus::Applied));
+    let after = service.reader().state().await.unwrap();
+    let cover = after.tracks[&track_id].metadata.artwork.as_ref().unwrap();
+    assert_eq!(cover.sha256, art.sha256);
+    assert_eq!(cover.source.as_ref().unwrap().chat_id, binding.chat_id);
+    assert_eq!(after.tracks[&track_id].sources.len(), 2);
+    assert_eq!(std::fs::read(original).unwrap(), original_bytes);
     service.shutdown().await.unwrap();
 }

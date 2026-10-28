@@ -95,3 +95,19 @@ This contract describes implemented commands. Download jobs are cancellable whil
 the process is running; completed ranged chunks resume after process exit and are
 reported as `partially_cached` until the full file passes integrity verification.
 Native Android playback/session commands are not part of v1 yet.
+
+## Music UI additions
+
+The generated schemas are authoritative for `import_preview` / `import_prepared`,
+`edit_metadata`, `rewrite_track`, artwork preparation, normalized lyrics and queue
+editing. They reuse the version-1 request/response envelope. Local `downloads`
+rehydrates current transfers without starting work. `listening_history` reports
+bounded device-only completed plays. Local `playlist_search` searches the entire
+playlist through SQLite FTS before paging, preserving duplicate entry IDs and
+original playback positions; returned move anchors work across page boundaries.
+
+`EDIT_NOT_SENT` is an explicit fresh-edit preflight rejection before remote
+publication. A frontend may unlock its draft and allocate a new operation ID only
+for that definite outcome, or a separately confirmed rejected command. A generic
+CONFLICT, NETWORK, TIMEOUT or absent response is not this guarantee. Unknown
+outcomes keep the original operation ID, write-tags mode and exact payload.

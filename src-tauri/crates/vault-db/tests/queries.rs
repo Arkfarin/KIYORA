@@ -113,6 +113,24 @@ fn local_queries_preserve_forest_order_and_page_catalogues() {
     );
     assert_eq!(detail.total, 3);
     assert_eq!(detail.items[0].track.metadata.title, "Song");
+    assert_eq!(detail.items[2].position, 2);
+    assert_eq!(detail.items[2].move_up_after, Some(a));
+    assert_eq!(detail.items[2].next_entry_id, None);
+    let filtered = db
+        .playlist_search(playlist, "Singer", 1, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(filtered.total, 3); // Duplicate occurrences are not collapsed.
+    assert_eq!(filtered.items[0].entry.entry_id, c);
+    assert_eq!(filtered.items[0].position, 1);
+    assert_eq!(filtered.items[0].next_entry_id, Some(b));
+    assert_eq!(
+        db.playlist_search(playlist, "\" OR *", 0, 10)
+            .unwrap()
+            .unwrap()
+            .total,
+        0
+    );
     assert_eq!(
         db.playlist_detail(playlist, 1, 1).unwrap().unwrap().items[0]
             .entry
@@ -136,4 +154,55 @@ fn local_queries_preserve_forest_order_and_page_catalogues() {
         db.shared_settings().unwrap().gc_device_id.as_deref(),
         Some("device")
     );
+    // The matching entry is outside the first page. Searching before paging
+    // must still find it and retain its position for queue_playlist.
+    let other = Uuid::new_v4();
+    for (i, entity_id, action) in [
+        (
+            30,
+            other,
+            Action::TrackRegister {
+                metadata: Metadata {
+                    title: "Далёкая композиция".into(),
+                    ..Default::default()
+                },
+                source: Source {
+                    source_id: Uuid::new_v4(),
+                    chat_id: binding.chat_id,
+                    message_id: MessageId::new(29).unwrap(),
+                    sha256: None,
+                    size_bytes: None,
+                },
+            },
+        ),
+        (
+            31,
+            playlist,
+            Action::PlaylistTrackAdd {
+                track_id: other,
+                entry_id: Uuid::new_v4(),
+                after_entry_id: Some(b),
+            },
+        ),
+    ] {
+        db.apply_record(
+            MessageId::new(i).unwrap(),
+            &Record::Event(Box::new(Event {
+                vault_id: binding.vault_id,
+                op_id: Uuid::new_v4(),
+                device_id: "device".into(),
+                base_generation: 0,
+                entity_id,
+                action,
+            })),
+        )
+        .unwrap();
+    }
+    let searched = db
+        .playlist_search(playlist, "Далёкая", 0, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.items[0].track.track_id, other);
+    assert_eq!(searched.items[0].position, 3);
 }

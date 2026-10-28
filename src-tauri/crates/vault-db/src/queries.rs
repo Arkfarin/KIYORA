@@ -9,6 +9,13 @@ use vault_domain::{Playlist, PlaylistEntry, SharedSettings, State, Track};
 pub struct PlaylistItem {
     pub entry: PlaylistEntry,
     pub track: Track,
+    /// Position in the complete playlist, including when results are filtered.
+    #[serde(default)]
+    pub position: u32,
+    #[serde(default)]
+    pub move_up_after: Option<Uuid>,
+    #[serde(default)]
+    pub next_entry_id: Option<Uuid>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +75,15 @@ impl Database {
         offset: u32,
         limit: u32,
     ) -> Result<Option<PlaylistDetail>, DbError> {
+        self.playlist_search(id, "", offset, limit)
+    }
+    pub fn playlist_search(
+        &self,
+        id: Uuid,
+        query: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Option<PlaylistDetail>, DbError> {
         let tx = self.connection.unchecked_transaction()?;
         let vault = self.binding.vault_id.to_string();
         let raw: Option<String> = tx
@@ -90,17 +106,44 @@ impl Database {
         }
         drop(statement);
         let order = order_state.playlist_order(id)?;
-        let total = order.len() as u64;
+        let query = query.trim();
+        let matches = if query.is_empty() {
+            None
+        } else {
+            // User text is a literal FTS phrase, never query syntax. Search all
+            // entries before paging; duplicates keep their distinct entry IDs.
+            let literal = format!("\"{}\"", query.replace('"', "\"\""));
+            let mut stmt = tx.prepare(
+                "SELECT track_id FROM track_fts WHERE vault_id=?1 AND track_fts MATCH ?2",
+            )?;
+            let ids = stmt
+                .query_map(params![vault, literal], |r| r.get::<_, String>(0))?
+                .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+            Some(ids)
+        };
+        let filtered: Vec<_> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, entry_id)| {
+                matches.as_ref().is_none_or(|ids| {
+                    order_state
+                        .entries
+                        .get(entry_id)
+                        .is_some_and(|entry| ids.contains(&entry.track_id.to_string()))
+                })
+            })
+            .collect();
+        let total = filtered.len() as u64;
         let mut items = Vec::new();
         let mut tracks = std::collections::BTreeMap::new();
-        for entry_id in order
+        for (position, entry_id) in filtered
             .into_iter()
             .skip(offset as usize)
             .take(limit.clamp(1, 500) as usize)
         {
             let entry = order_state
                 .entries
-                .remove(&entry_id)
+                .remove(entry_id)
                 .ok_or(DbError::Schema)?;
             let track = if let Some(track) = tracks.get(&entry.track_id) {
                 track
@@ -117,6 +160,9 @@ impl Database {
             items.push(PlaylistItem {
                 entry,
                 track: track.clone(),
+                position: u32::try_from(position).map_err(|_| DbError::Schema)?,
+                move_up_after: position.checked_sub(2).and_then(|i| order.get(i)).copied(),
+                next_entry_id: order.get(position + 1).copied(),
             });
         }
         tx.commit()?;

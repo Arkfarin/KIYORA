@@ -72,7 +72,7 @@ pub(crate) async fn rewrite<T: Telegram + Clone + 'static>(
     cache: &CacheManager,
     track_id: Uuid,
     op_id: Uuid,
-    edit: MediaEdit,
+    mut edit: MediaEdit,
     cancel: &CancellationToken,
     context: &Context,
     events: &EventBus,
@@ -86,12 +86,16 @@ pub(crate) async fn rewrite<T: Telegram + Clone + 'static>(
         &serde_json::to_vec(&(track_id, &edit))
             .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?,
     );
-    if let Some(saved) = engine.local_setting(key.clone()).await? {
-        if saved != fingerprint {
+    let saved = engine.local_setting(key.clone()).await?;
+    let preflight = if saved.is_none() {
+        ErrorCode::EditNotSent
+    } else {
+        ErrorCode::Conflict
+    };
+    if let Some(saved) = &saved {
+        if saved != &fingerprint {
             return Err(ApiError::new(ErrorCode::Conflict));
         }
-    } else {
-        engine.set_local_setting(key, fingerprint).await?;
     }
     if pending(engine, op_id).await? {
         return resume(engine, storage, op_id, cancel, context, events).await;
@@ -100,9 +104,26 @@ pub(crate) async fn rewrite<T: Telegram + Clone + 'static>(
     let track = state
         .tracks
         .get(&track_id)
-        .ok_or_else(|| ApiError::new(ErrorCode::Conflict))?;
+        .ok_or_else(|| ApiError::new(preflight))?;
     if Some(track.updated_order) != edit.patch.expected_order {
-        return Err(ApiError::new(ErrorCode::Conflict));
+        return Err(ApiError::new(preflight));
+    }
+    let mut candidate = track.metadata.clone();
+    edit.patch.apply_to(&mut candidate);
+    let codec = candidate.codec.to_ascii_lowercase();
+    if !vault_domain::valid_metadata(&candidate)
+        || !matches!(
+            codec.as_str(),
+            "mp3" | "flac" | "ogg" | "opus" | "m4a" | "mp4" | "wav" | "aiff" | "aif"
+        )
+    {
+        return Err(ApiError::diagnostic(
+            preflight,
+            "embedded tagging is unsupported or metadata is invalid; use Kiyora metadata mode",
+        ));
+    }
+    if saved.is_none() {
+        engine.set_local_setting(key, fingerprint).await?;
     }
     let source = track
         .preferred_source_id
@@ -130,7 +151,21 @@ pub(crate) async fn rewrite<T: Telegram + Clone + 'static>(
                 )
                 .await?,
             ),
-            None => None,
+            None => {
+                let path = audio.path.clone();
+                let expected = art.sha256.clone();
+                Some(
+                    blocking(move || {
+                        let cover = vault_media::embedded_artwork(&path)?
+                            .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
+                        if cover.sha256 != expected {
+                            return Err(ApiError::new(ErrorCode::Integrity));
+                        }
+                        Ok(cover.bytes)
+                    })
+                    .await?,
+                )
+            }
         }
     } else {
         None
@@ -152,6 +187,17 @@ pub(crate) async fn rewrite<T: Telegram + Clone + 'static>(
         return Err(ApiError::new(ErrorCode::InvalidInput));
     }
     let expected_order = track.updated_order;
+    // Legacy embedded-only artwork must survive retagging and become available
+    // independently of the audio on another device.
+    if !edit.patch.clear_artwork
+        && edit.artwork.is_none()
+        && metadata
+            .artwork
+            .as_ref()
+            .is_some_and(|art| art.source.is_none())
+    {
+        edit.artwork = cover_bytes.clone();
+    }
     let patch = crate::metadata::prepare_patch(engine, op_id, edit, cancel).await?;
     patch.apply_to(&mut metadata);
     if !vault_domain::valid_metadata(&metadata) {

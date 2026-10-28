@@ -2,9 +2,11 @@
 
 #[cfg(test)]
 mod fault_tests;
+mod listening;
 mod migrations;
 mod projection;
 mod queries;
+pub use listening::ListeningEntry;
 pub use migrations::SCHEMA_VERSION;
 pub use queries::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};

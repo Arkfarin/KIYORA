@@ -65,11 +65,15 @@ pub struct VerifiedBackup {
     pub state: State,
     media: BTreeMap<Uuid, PathBuf>,
     artwork: BTreeMap<Uuid, PathBuf>,
+    lyrics: BTreeMap<Uuid, PathBuf>,
     _staging: tempfile::TempDir,
 }
 impl VerifiedBackup {
     pub fn media_path(&self, track: Uuid) -> Option<&Path> {
         self.media.get(&track).map(PathBuf::as_path)
+    }
+    pub fn lyrics_path(&self, track: Uuid) -> Option<&Path> {
+        self.lyrics.get(&track).map(PathBuf::as_path)
     }
     pub fn artwork_path(&self, track: Uuid) -> Option<&Path> {
         self.artwork.get(&track).map(PathBuf::as_path)
@@ -151,18 +155,47 @@ pub fn export_with_artwork(
     artwork: &BTreeMap<Uuid, PathBuf>,
     limits: Limits,
 ) -> Result<Manifest, SnapshotError> {
+    export_with_attachments(
+        destination,
+        state,
+        owner,
+        barrier,
+        kind,
+        media,
+        artwork,
+        &BTreeMap::new(),
+        limits,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn export_with_attachments(
+    destination: &Path,
+    state: &State,
+    owner: UserId,
+    barrier: Option<MessageId>,
+    kind: BackupKind,
+    media: &BTreeMap<Uuid, PathBuf>,
+    artwork: &BTreeMap<Uuid, PathBuf>,
+    lyrics: &BTreeMap<Uuid, PathBuf>,
+    limits: Limits,
+) -> Result<Manifest, SnapshotError> {
     state.validate().map_err(|_| SnapshotError::Corrupt)?;
     if destination.exists()
-        || (kind == BackupKind::Metadata && (!media.is_empty() || !artwork.is_empty()))
+        || (kind == BackupKind::Metadata
+            && (!media.is_empty() || !artwork.is_empty() || !lyrics.is_empty()))
         || (kind == BackupKind::Full
             && (media.len() != state.tracks.len()
-                || media.keys().any(|id| !state.tracks.contains_key(id))))
+                || media.keys().any(|id| !state.tracks.contains_key(id))
+                || state.tracks.values().any(|track| {
+                    track.metadata.lyrics.is_some() && !lyrics.contains_key(&track.track_id)
+                })))
     {
         return Err(SnapshotError::Conflict);
     }
     if media
         .len()
         .checked_add(artwork.len())
+        .and_then(|n| n.checked_add(lyrics.len()))
         .and_then(|n| n.checked_add(4))
         .is_none_or(|n| n > limits.entries)
     {
@@ -246,6 +279,29 @@ pub fn export_with_artwork(
         }
         entries.insert(name, sum);
     }
+    for (track, path) in lyrics {
+        let reference = state
+            .tracks
+            .get(track)
+            .and_then(|t| t.metadata.lyrics.as_ref())
+            .ok_or(SnapshotError::Corrupt)?;
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take(512 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        validate_lyrics(&bytes, &reference.sha256)?;
+        total = total
+            .checked_add(bytes.len() as u64)
+            .ok_or(SnapshotError::Limit)?;
+        if total > limits.total_bytes {
+            return Err(SnapshotError::Limit);
+        }
+        let name = format!("lyrics/{track}");
+        entries.insert(
+            name.clone(),
+            append(&mut builder, &name, bytes.len() as u64, bytes.as_slice())?,
+        );
+    }
     let manifest = Manifest {
         format: "kiyora.tmv-backup".into(),
         protocol: 1,
@@ -299,19 +355,40 @@ fn checksums_text(entries: &BTreeMap<String, Checksum>, manifest: &Checksum) -> 
         .map(|(name, sum)| format!("{}  {name}\n", sum.sha256))
         .collect()
 }
-fn validate_name(name: &str) -> Result<Option<(bool, Uuid)>, SnapshotError> {
+fn validate_lyrics(bytes: &[u8], expected: &str) -> Result<(), SnapshotError> {
+    if bytes.is_empty() || bytes.len() > 512 * 1024 {
+        return Err(SnapshotError::Limit);
+    }
+    let document: vault_domain::LyricsDocument =
+        serde_json::from_slice(bytes).map_err(|_| SnapshotError::Corrupt)?;
+    if digest(bytes) != expected || !document.valid() {
+        return Err(SnapshotError::Corrupt);
+    }
+    Ok(())
+}
+#[derive(Clone, Copy)]
+enum AttachmentKind {
+    Audio,
+    Artwork,
+    Lyrics,
+}
+fn validate_name(name: &str) -> Result<Option<(AttachmentKind, Uuid)>, SnapshotError> {
     match name {
         "manifest.json" | "state.json.zst" | "checksums.sha256" | "README.txt" => Ok(None),
         _ => {
-            let is_artwork = name.starts_with("artwork/");
-            let suffix = name
-                .strip_prefix(if is_artwork { "artwork/" } else { "media/" })
-                .ok_or(SnapshotError::Corrupt)?;
+            let (prefix, kind) = if name.starts_with("artwork/") {
+                ("artwork/", AttachmentKind::Artwork)
+            } else if name.starts_with("lyrics/") {
+                ("lyrics/", AttachmentKind::Lyrics)
+            } else {
+                ("media/", AttachmentKind::Audio)
+            };
+            let suffix = name.strip_prefix(prefix).ok_or(SnapshotError::Corrupt)?;
             let uuid: Uuid = suffix.parse().map_err(|_| SnapshotError::Corrupt)?;
             if uuid.is_nil() || suffix != uuid.to_string() {
                 return Err(SnapshotError::Corrupt);
             }
-            Ok(Some((is_artwork, uuid)))
+            Ok(Some((kind, uuid)))
         }
     }
 }
@@ -326,6 +403,7 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
     let mut metadata = BTreeMap::new();
     let mut media = BTreeMap::new();
     let mut artwork = BTreeMap::new();
+    let mut lyrics = BTreeMap::new();
     let mut total = 0u64;
     for (index, entry) in archive.entries()?.raw(true).enumerate() {
         if index >= limits.entries {
@@ -357,18 +435,29 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
             hasher: Sha256::new(),
             bytes: 0,
         };
-        if let Some((is_artwork, track)) = track {
-            if is_artwork && size > 4 * 1024 * 1024 {
+        if let Some((kind, track)) = track {
+            let cap = match kind {
+                AttachmentKind::Artwork => 4 * 1024 * 1024,
+                AttachmentKind::Lyrics => 512 * 1024,
+                AttachmentKind::Audio => limits.media_file_bytes,
+            };
+            if size > cap {
                 return Err(SnapshotError::Limit);
             }
             let destination = staging.path().join(index.to_string());
             let mut output = File::create(&destination)?;
             std::io::copy(&mut hashing, &mut output)?;
             output.sync_all()?;
-            if is_artwork {
-                artwork.insert(track, destination);
-            } else {
-                media.insert(track, destination);
+            match kind {
+                AttachmentKind::Artwork => {
+                    artwork.insert(track, destination);
+                }
+                AttachmentKind::Lyrics => {
+                    lyrics.insert(track, destination);
+                }
+                AttachmentKind::Audio => {
+                    media.insert(track, destination);
+                }
             }
         } else {
             let mut bytes = Vec::new();
@@ -438,7 +527,7 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
         return Err(SnapshotError::Corrupt);
     }
     match manifest.kind {
-        BackupKind::Metadata if !media.is_empty() || !artwork.is_empty() => {
+        BackupKind::Metadata if !media.is_empty() || !artwork.is_empty() || !lyrics.is_empty() => {
             return Err(SnapshotError::Corrupt);
         }
         BackupKind::Full => {
@@ -473,11 +562,20 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<VerifiedBackup, SnapshotEr
             return Err(SnapshotError::Corrupt);
         }
     }
+    for (track, path) in &lyrics {
+        let reference = state
+            .tracks
+            .get(track)
+            .and_then(|t| t.metadata.lyrics.as_ref())
+            .ok_or(SnapshotError::Corrupt)?;
+        validate_lyrics(&std::fs::read(path)?, &reference.sha256)?;
+    }
     Ok(VerifiedBackup {
         manifest,
         state,
         media,
         artwork,
+        lyrics,
         _staging: staging,
     })
 }
@@ -511,6 +609,15 @@ pub fn plan_new_vault(
     new_chat: ChatId,
     sources: &BTreeMap<Uuid, Source>,
 ) -> Result<RestorePlan, SnapshotError> {
+    plan_new_vault_with_lyrics(backup, new_vault, new_chat, sources, &BTreeMap::new())
+}
+pub fn plan_new_vault_with_lyrics(
+    backup: &VerifiedBackup,
+    new_vault: Uuid,
+    new_chat: ChatId,
+    sources: &BTreeMap<Uuid, Source>,
+    lyrics: &BTreeMap<Uuid, Source>,
+) -> Result<RestorePlan, SnapshotError> {
     if new_vault.is_nil()
         || new_vault == backup.state.vault_id
         || sources.len() != backup.state.tracks.len()
@@ -539,6 +646,16 @@ pub fn plan_new_vault(
         let new_id = Uuid::new_v4();
         tracks.insert(*id, new_id);
         let mut metadata = track.metadata.clone();
+        if let Some(reference) = metadata.lyrics.as_mut() {
+            let source = lyrics.get(id).ok_or(SnapshotError::Conflict)?;
+            if source.chat_id != new_chat
+                || source.sha256.as_ref() != Some(&reference.sha256)
+                || source.source_id.is_nil()
+            {
+                return Err(SnapshotError::Conflict);
+            }
+            reference.source = source.clone();
+        }
         // Artwork remote references also belong to the old vault; keep its digest
         // but require the media service to attach a new reference separately.
         if let Some(artwork) = metadata.artwork.as_mut() {

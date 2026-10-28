@@ -516,7 +516,7 @@ kbd {
   white-space: nowrap;
 }
 .profile-switch small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   font-weight: 450;
 }
@@ -1113,7 +1113,7 @@ main > section {
   opacity: 1;
 }
 .track-format {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   display: flex;
   gap: 6px;
@@ -1298,7 +1298,7 @@ main > section {
   align-items: center;
   gap: 12px;
   width: 100%;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -1334,6 +1334,12 @@ main > section {
   display: none;
 }
 .now-playing-full {
+  background: color-mix(
+    in srgb,
+    var(--artwork-tone, var(--surface)) 12%,
+    var(--surface)
+  );
+  border-radius: 8px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 36px;
@@ -2029,7 +2035,7 @@ main > section {
   margin-bottom: 12px;
 }
 .badge {
-  font-size: 10px;
+  font-size: 11px;
   padding: 4px 6px;
   background: var(--background);
   border-radius: 4px;
@@ -2590,7 +2596,7 @@ main > section {
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 550;
     color: var(--text-secondary);
     padding: 7px 4px;
@@ -2959,7 +2965,7 @@ main > section {
     font-size: 12px;
   }
   .lyric-edit-lines button {
-    font-size: 10px;
+    font-size: 11px;
     padding: 6px;
   }
   .lyrics-editor .inline-form {
@@ -3153,7 +3159,7 @@ main > section {
     font-size: 13px;
   }
   .badge {
-    font-size: 9px;
+    font-size: 11px;
   }
   .candidate {
     flex-direction: column;
@@ -3182,7 +3188,7 @@ main > section {
 }
 @media (max-width: 360px) {
   main {
-    padding-inline: 14px;
+    padding-inline: 16px;
   }
   .topbar {
     padding-inline: 16px;
@@ -3207,7 +3213,7 @@ main > section {
   }
   .modal,
   .modal-wide {
-    padding-inline: 14px;
+    padding-inline: 16px;
   }
   .form-grid {
     grid-template-columns: 1fr;
@@ -3263,4 +3269,46 @@ main > section {
   animation: none !important;
   transition: none !important;
   scroll-behavior: auto !important;
+}
+
+/* Now Playing owns the viewport; context menus and editors remain sheets. */
+.modal.modal-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: max(24px, env(safe-area-inset-top))
+    max(32px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom))
+    max(32px, env(safe-area-inset-left));
+}
+.modal-fullscreen .modal-heading,
+.modal-fullscreen .now-playing-full {
+  width: 100%;
+  max-width: 1140px;
+  margin-inline: auto;
+}
+.modal-fullscreen .now-playing-full {
+  min-height: min(72dvh, 760px);
+  padding: 24px;
+}
+@media (max-width: 640px) {
+  .modal.modal-fullscreen {
+    padding: max(12px, env(safe-area-inset-top))
+      max(16px, env(safe-area-inset-right))
+      max(20px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+  .modal-fullscreen .now-playing-full {
+    min-height: 0;
+    padding: 16px 0;
+  }
+  .modal-fullscreen .now-artwork {
+    width: min(100%, 38dvh);
+    margin-inline: auto;
+  }
 }

@@ -51,12 +51,18 @@ fn checked_in_wire_fixture_matches_canonical_event_and_schema_contract() {
     assert_eq!(schema["properties"]["magic"]["const"], "TMV");
     assert_eq!(schema["properties"]["protocol"]["const"], 1);
     assert_eq!(schema["properties"]["type"]["const"], "EVT");
+    assert!(
+        schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("track.media.replace"))
+    );
     assert_eq!(
         schema["properties"]["action"]["enum"]
             .as_array()
             .unwrap()
             .len(),
-        12
+        13
     );
 }
 

@@ -232,8 +232,17 @@ export function useBackend() {
           again = true;
           return;
         }
-        const [info, auth, playback, queue, jobs, projection, imports, downloads, cached] =
-          results;
+        const [
+          info,
+          auth,
+          playback,
+          queue,
+          jobs,
+          projection,
+          imports,
+          downloads,
+          cached,
+        ] = results;
         const baseline = BigInt(infoSnapshot.event_sequence);
         if (baseline > lastSequence) lastSequence = baseline;
         if (projection.status === "fulfilled")
@@ -269,17 +278,26 @@ export function useBackend() {
           jobs: jobs.status === "fulfilled" ? jobs.value : m.jobs,
           projection:
             projection.status === "fulfilled"
-              ? (m.projection?.cursor === projection.value.cursor &&
-                 m.projection.context.vault_id === projection.value.context.vault_id
-                  ? m.projection : projection.value) : m.projection,
+              ? m.projection?.cursor === projection.value.cursor &&
+                m.projection.context.vault_id ===
+                  projection.value.context.vault_id
+                ? m.projection
+                : projection.value
+              : m.projection,
           imports:
             imports.status === "fulfilled"
               ? (imports.value.result as ImportInfo[])
               : m.imports,
-          downloads: downloads.status === "fulfilled"
-            ? Object.fromEntries(downloads.value.map(d => [d.track_id, d])) : m.downloads,
-          cached: cached.status === "fulfilled"
-            ? Object.fromEntries(cached.value.map(entry => [entry.key, entry])) : m.cached,
+          downloads:
+            downloads.status === "fulfilled"
+              ? Object.fromEntries(downloads.value.map((d) => [d.track_id, d]))
+              : m.downloads,
+          cached:
+            cached.status === "fulfilled"
+              ? Object.fromEntries(
+                  cached.value.map((entry) => [entry.key, entry]),
+                )
+              : m.cached,
           error:
             failure?.status === "rejected"
               ? errorOf(failure.reason)

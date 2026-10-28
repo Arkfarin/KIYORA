@@ -91,6 +91,42 @@
             "action": {
               "type": "string",
               "enum": [
+                "track.media.replace"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "expected_order",
+                "metadata",
+                "source"
+              ],
+              "properties": {
+                "expected_order": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "$ref": "#/definitions/Metadata"
+                },
+                "source": {
+                  "$ref": "#/definitions/Source"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "action",
+            "payload"
+          ],
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
                 "track.delete"
               ]
             },
@@ -424,6 +460,202 @@
             "command": {
               "type": "string",
               "enum": [
+                "listening_history"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "downloads"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "cached_media"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id",
+                "track_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "lyrics"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "format",
+                "text"
+              ],
+              "properties": {
+                "format": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "parse_lyrics"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "bytes"
+              ],
+              "properties": {
+                "bytes": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint8",
+                    "minimum": 0.0
+                  }
+                },
+                "crop": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/Crop"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "prepare_artwork"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
                 "state_snapshot"
               ]
             }
@@ -556,6 +788,79 @@
               "type": "string",
               "enum": [
                 "artwork"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "action",
+                "queue_id",
+                "revision",
+                "session_id"
+              ],
+              "properties": {
+                "action": {
+                  "$ref": "#/definitions/QueueAction"
+                },
+                "queue_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0.0
+                },
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "edit_queue"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "args",
+            "command"
+          ],
+          "properties": {
+            "args": {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            },
+            "command": {
+              "type": "string",
+              "enum": [
+                "discover_vaults_deep"
               ]
             }
           },
@@ -1631,6 +1936,32 @@
         }
       ]
     },
+    "Crop": {
+      "type": "object",
+      "required": [
+        "size",
+        "x",
+        "y"
+      ],
+      "properties": {
+        "size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "x": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "ImportFile": {
       "type": "object",
       "required": [
@@ -1892,6 +2223,51 @@
                 "playlist_id": {
                   "type": "string",
                   "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "playlist_search"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "limit",
+                "offset",
+                "playlist_id",
+                "query"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "offset": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                },
+                "playlist_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "query": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false
@@ -2245,6 +2621,78 @@
         }
       ]
     },
+    "LyricLine": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "end_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "start_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LyricsDocument": {
+      "type": "object",
+      "required": [
+        "lines",
+        "version"
+      ],
+      "properties": {
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LyricLine"
+          }
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "LyricsReference": {
+      "description": "A small document in the vault, fetched independently of the audio bytes.",
+      "type": "object",
+      "required": [
+        "sha256",
+        "source"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/Source"
+        }
+      },
+      "additionalProperties": false
+    },
     "MaintenanceConfig": {
       "type": "object",
       "required": [
@@ -2287,6 +2735,39 @@
       },
       "additionalProperties": false
     },
+    "MediaEdit": {
+      "type": "object",
+      "required": [
+        "patch"
+      ],
+      "properties": {
+        "artwork": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0.0
+          }
+        },
+        "lyrics": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsDocument"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "patch": {
+          "$ref": "#/definitions/MetadataPatch"
+        }
+      },
+      "additionalProperties": false
+    },
     "Metadata": {
       "type": "object",
       "required": [
@@ -2322,6 +2803,15 @@
           "default": "",
           "type": "string"
         },
+        "comment": {
+          "type": "string"
+        },
+        "composer": {
+          "type": "string"
+        },
+        "copyright": {
+          "type": "string"
+        },
         "disc_number": {
           "default": 0,
           "type": "integer",
@@ -2337,6 +2827,16 @@
         "genre": {
           "default": "",
           "type": "string"
+        },
+        "lyrics": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "performer": {
           "default": "",
@@ -2392,6 +2892,27 @@
           "default": false,
           "type": "boolean"
         },
+        "clear_lyrics": {
+          "type": "boolean"
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "composer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "copyright": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "disc_number": {
           "default": null,
           "type": [
@@ -2410,11 +2931,28 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "expected_order": {
+          "description": "Optimistic concurrency is enforced during server-ordered replay on every device.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "genre": {
           "default": null,
           "type": [
             "string",
             "null"
+          ]
+        },
+        "lyrics": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsReference"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "performer": {
@@ -2594,6 +3132,152 @@
         }
       ]
     },
+    "QueueAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "next",
+            "track_ids"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "append"
+              ]
+            },
+            "next": {
+              "type": "boolean"
+            },
+            "track_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "index",
+            "kind"
+          ],
+          "properties": {
+            "index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "remove"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "from",
+            "kind",
+            "to"
+          ],
+          "properties": {
+            "from": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "move"
+              ]
+            },
+            "to": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "index",
+            "kind"
+          ],
+          "properties": {
+            "index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "jump"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "mode"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "repeat"
+              ]
+            },
+            "mode": {
+              "$ref": "#/definitions/RepeatMode"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "enabled",
+            "kind"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "shuffle"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RepeatMode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "queue",
+        "track"
+      ]
+    },
     "SharedSettings": {
       "type": "object",
       "required": [
@@ -2649,6 +3333,250 @@
     },
     "VaultRequest": {
       "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "rewrite_track"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "edit",
+                "op_id",
+                "track_id"
+              ],
+              "properties": {
+                "edit": {
+                  "$ref": "#/definitions/MediaEdit"
+                },
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "remove_cached_media"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "source_id",
+                "track_id"
+              ],
+              "properties": {
+                "source_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "list_import_previews"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "preview_import"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "path",
+                "preview_id"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "preview_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "discard_import_preview"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "preview_id"
+              ],
+              "properties": {
+                "preview_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "import_prepared"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "allow_duplicate",
+                "preview_id",
+                "source_id",
+                "track_id",
+                "write_tags"
+              ],
+              "properties": {
+                "allow_duplicate": {
+                  "type": "boolean"
+                },
+                "edit": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/MediaEdit"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "preview_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "source_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "write_tags": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "payload"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "edit_metadata"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "edit",
+                "op_id",
+                "track_id"
+              ],
+              "properties": {
+                "edit": {
+                  "$ref": "#/definitions/MediaEdit"
+                },
+                "op_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "track_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         {
           "type": "object",
           "required": [

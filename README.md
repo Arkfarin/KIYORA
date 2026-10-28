@@ -3,6 +3,14 @@
 Kiyora is a Tauri application with a Rust backend for a personal Telegram music
 vault. The active Rust workspace is in `src-tauri`.
 
+The React interface includes profile-aware setup, a responsive library/player,
+imports, metadata/artwork/lyrics editing, playlists and offline cache controls.
+See [music UI implementation and acceptance](docs/MUSIC_UI_ACCEPTANCE.md) for
+current behavior, compatibility constraints, checks and Linux/Android commands.
+
+Run `pnpm build` for the production frontend and `pnpm test:ui` for isolated
+Chromium component checks. Test fixtures are not included in the application.
+
 Run `bash src-tauri/scripts/check-backend.sh` for the offline backend checks.
 Use the [native packaging instructions](src-tauri/docs/packaging.md) to build
 installers with TDLib for Linux, Windows and Android. A standalone Cargo build

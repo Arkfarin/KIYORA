@@ -85,7 +85,13 @@ pub(crate) async fn edit<T: Telegram>(
         &serde_json::to_vec(&(track_id, &edit))
             .map_err(|_| ApiError::new(ErrorCode::InvalidInput))?,
     );
-    if let Some(saved) = engine.local_setting(intent_key.clone()).await? {
+    let saved = engine.local_setting(intent_key.clone()).await?;
+    let preflight = if saved.is_none() {
+        ErrorCode::EditNotSent
+    } else {
+        ErrorCode::Conflict
+    };
+    if let Some(saved) = saved {
         if saved != fingerprint {
             return Err(ApiError::new(ErrorCode::Conflict));
         }
@@ -97,17 +103,17 @@ pub(crate) async fn edit<T: Telegram>(
     let track = state
         .tracks
         .get(&track_id)
-        .ok_or_else(|| ApiError::new(ErrorCode::Conflict))?;
+        .ok_or_else(|| ApiError::new(preflight))?;
     if Some(track.updated_order) != edit.patch.expected_order {
         return Err(ApiError::diagnostic(
-            ErrorCode::Conflict,
+            preflight,
             "track changed on another device; review the current version before saving",
         ));
     }
     let mut candidate = track.metadata.clone();
     edit.patch.apply_to(&mut candidate);
     if !vault_domain::valid_metadata(&candidate) {
-        return Err(ApiError::new(ErrorCode::InvalidInput));
+        return Err(ApiError::new(preflight));
     }
     engine.set_local_setting(intent_key, fingerprint).await?;
     let patch = prepare_patch(engine, op_id, edit, cancel).await?;

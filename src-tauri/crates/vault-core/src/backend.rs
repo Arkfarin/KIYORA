@@ -581,6 +581,21 @@ impl Backend {
                 offset,
                 limit,
             } => LocalResponse::Playlist(reader.playlist_detail(playlist_id, offset, limit).await?),
+            LocalQuery::PlaylistSearch {
+                playlist_id,
+                query,
+                offset,
+                limit,
+            } => {
+                if query.len() > 4096 {
+                    return Err(ApiError::new(ErrorCode::InvalidInput));
+                }
+                LocalResponse::Playlist(
+                    reader
+                        .playlist_search(playlist_id, query, offset, limit)
+                        .await?,
+                )
+            }
             LocalQuery::CommandStatus { op_id } => {
                 LocalResponse::CommandStatus(reader.command(op_id).await?.map(Box::new))
             }
@@ -711,7 +726,10 @@ impl Backend {
                 while changes.changed().await.is_ok() {
                     let value = changes.borrow_and_update().clone();
                     events.emit(&context, EventData::Playback(value.clone()));
-                    if let vault_media::PlaybackState::Ended { playback_id, .. } = value
+                    if let vault_media::PlaybackState::Ended {
+                        playback_id,
+                        track_id,
+                    } = value
                         && let Some(session) = weak_session.upgrade()
                     {
                         let backend = Backend {
@@ -725,6 +743,29 @@ impl Backend {
                             job_access: job_access.clone(),
                             import_resolver: import_resolver.clone(),
                         };
+                        let reader = {
+                            let guard = backend.session.lock().await;
+                            guard
+                                .as_ref()
+                                .filter(|s| {
+                                    s.context == context && s.playback_id == Some(playback_id)
+                                })
+                                .and_then(|s| s.reader.clone())
+                        };
+                        if let Some(reader) = reader {
+                            let at_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis()
+                                .min(u64::MAX as u128)
+                                as u64;
+                            if let Err(error) = reader
+                                .record_completed_play(track_id, playback_id, at_ms)
+                                .await
+                            {
+                                events.emit(&context, EventData::Warning(error.into()));
+                            }
+                        }
                         if let Err(error) = backend
                             .advance_queue(context.session_id, true, Some(playback_id))
                             .await
@@ -853,6 +894,7 @@ impl Backend {
         let mut leases = Vec::new();
         let mut media = std::collections::BTreeMap::new();
         let mut artwork = std::collections::BTreeMap::new();
+        let mut lyrics = std::collections::BTreeMap::new();
         let mut covers = Vec::new();
         if kind == vault_snapshot::backup::BackupKind::Full {
             for (track_id, track) in &state.tracks {
@@ -864,7 +906,11 @@ impl Backend {
                     return Err(ApiError::new(ErrorCode::Cancelled));
                 }
                 let mut found = None;
-                for source_id in track.sources.keys() {
+                for source_id in track.sources.keys().filter(|id| {
+                    track
+                        .preferred_source_id
+                        .is_none_or(|preferred| preferred == **id)
+                }) {
                     let key = format!("{track_id}:{source_id}");
                     if let Some(lease) = cache.acquire(&key).map_err(ApiError::from)? {
                         found = Some(lease);
@@ -890,6 +936,18 @@ impl Backend {
                     }
                 };
                 media.insert(*track_id, lease.path.clone());
+                if let Some(reference) = &track.metadata.lyrics {
+                    self.lyrics(session_id, *track_id, cancel)
+                        .await?
+                        .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
+                    // Keep the original validated document bytes, not a JSON
+                    // reserialization that could change its published digest.
+                    let document = cache
+                        .acquire(&format!("lyrics:{}", reference.sha256))?
+                        .ok_or_else(|| ApiError::new(ErrorCode::MediaSourceMissing))?;
+                    lyrics.insert(*track_id, document.path.clone());
+                    leases.push(document);
+                }
                 if let Some(art) = &track.metadata.artwork {
                     let bytes = if art.source.is_some() {
                         self.artwork(session_id, *track_id, cancel)
@@ -929,7 +987,7 @@ impl Backend {
         tokio::task::spawn_blocking(move || {
             let _leases = leases;
             let _covers = covers;
-            vault_snapshot::backup::export_with_artwork(
+            vault_snapshot::backup::export_with_attachments(
                 &destination,
                 &state,
                 owner,
@@ -937,6 +995,7 @@ impl Backend {
                 kind,
                 &media,
                 &artwork,
+                &lyrics,
                 Default::default(),
             )
         })
@@ -1410,7 +1469,8 @@ impl Backend {
         if let Err(error) = self
             .service_request(session_id, VaultRequest::Sync, cancel)
             .await
-            && error.code != ErrorCode::NoVault {
+            && error.code != ErrorCode::NoVault
+        {
             return Err(error);
         }
         self.runtime_status().await
