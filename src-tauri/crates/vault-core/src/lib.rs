@@ -28,3 +28,8 @@ pub use ipc::*;
 pub use jobs::{BulkItemResult, ImportFile, JobInfo, JobRequest, JobResult, JobState};
 pub use service::*;
 pub use vault_security::Profile;
+
+mod attachments;
+mod metadata;
+pub use imports::ImportPreview;
+pub use metadata::MediaEdit;

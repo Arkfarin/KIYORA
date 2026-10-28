@@ -141,7 +141,9 @@ impl VaultService {
         let mut status = self.status.borrow().clone();
         if self.is_closed() {
             status.mode = RuntimeMode::DegradedReadonly;
-            if let Some(vault) = &mut status.vault { vault.mode = status.mode; }
+            if let Some(vault) = &mut status.vault {
+                vault.mode = status.mode;
+            }
         }
         status
     }
@@ -362,6 +364,13 @@ impl VaultService {
             return Ok(job.info.clone());
         }
         cached_download_status(self.cache.as_ref(), id, track_id, source_id)
+    }
+
+    pub fn downloads(&self) -> Result<Vec<DownloadInfo>, ApiError> {
+        let jobs = self.downloads.lock().map_err(|_| ApiError::new(ErrorCode::Internal))?;
+        let mut entries: Vec<_> = jobs.values().collect();
+        entries.sort_by_key(|job| job.updated);
+        Ok(entries.into_iter().map(|job| job.info.clone()).collect())
     }
 }
 
@@ -830,6 +839,88 @@ async fn handle<T: Telegram + Clone + 'static>(
             engine.initialize(cancel).await?;
             VaultResponse::Initialized
         }
+        VaultRequest::RemoveCachedMedia {
+            track_id,
+            source_id,
+        } => VaultResponse::CacheCleared {
+            bytes_removed: cache
+                .ok_or_else(|| ApiError::new(ErrorCode::Storage))?
+                .remove_local(&media_cache_key(track_id, source_id))?,
+        },
+        VaultRequest::ListImportPreviews => VaultResponse::ImportPreviews(
+            crate::imports::preview::list(import_storage.as_ref().map_err(Clone::clone)?).await?,
+        ),
+        VaultRequest::PreviewImport { path, preview_id } => {
+            if path.len() > 4096 {
+                return Err(ApiError::new(ErrorCode::InvalidInput));
+            }
+            VaultResponse::ImportPreview(Box::new(
+                crate::imports::preview::inspect(
+                    import_storage.as_ref().map_err(Clone::clone)?,
+                    path.into(),
+                    preview_id,
+                    cancel,
+                )
+                .await?,
+            ))
+        }
+        VaultRequest::DiscardImportPreview { preview_id } => {
+            if crate::imports::pending(engine, preview_id).await? {
+                return Err(ApiError::new(ErrorCode::Conflict));
+            }
+            crate::imports::preview::discard(
+                import_storage.as_ref().map_err(Clone::clone)?,
+                preview_id,
+            )
+            .await?;
+            VaultResponse::PreviewDiscarded
+        }
+        VaultRequest::ImportPrepared {
+            preview_id,
+            track_id,
+            source_id,
+            edit,
+            write_tags,
+            allow_duplicate,
+        } => {
+            crate::imports::preview::commit(
+                engine,
+                import_storage.as_ref().map_err(Clone::clone)?,
+                preview_id,
+                track_id,
+                source_id,
+                edit.map(|e| *e),
+                write_tags,
+                allow_duplicate,
+                cancel,
+                context,
+                events,
+            )
+            .await?
+        }
+        VaultRequest::RewriteTrack {
+            op_id,
+            track_id,
+            edit,
+        } => {
+            crate::imports::rewrite::rewrite(
+                engine,
+                import_storage.as_ref().map_err(Clone::clone)?,
+                cache.ok_or_else(|| ApiError::new(ErrorCode::Storage))?,
+                track_id,
+                op_id,
+                *edit,
+                cancel,
+                context,
+                events,
+            )
+            .await?
+        }
+        VaultRequest::EditMetadata {
+            op_id,
+            track_id,
+            edit,
+        } => crate::metadata::edit(engine, op_id, track_id, *edit, cancel).await?,
         VaultRequest::Mutate(mutation) => {
             let command = engine
                 .execute(mutation.op_id, mutation.entity_id, mutation.action, cancel)
@@ -929,6 +1020,8 @@ async fn handle<T: Telegram + Clone + 'static>(
                 source_id,
                 op_id,
                 allow_duplicate,
+                None,
+                None,
                 cancel,
                 context,
                 events,
@@ -973,6 +1066,8 @@ async fn handle<T: Telegram + Clone + 'static>(
                     source_id,
                     op_id,
                     allow_duplicate,
+                    None,
+                    None,
                     cancel,
                     context,
                     events,
@@ -1037,6 +1132,8 @@ async fn handle<T: Telegram + Clone + 'static>(
                 source_id,
                 op_id,
                 allow_duplicate,
+                None,
+                None,
                 cancel,
                 context,
                 events,

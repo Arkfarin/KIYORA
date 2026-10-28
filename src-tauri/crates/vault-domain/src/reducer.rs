@@ -39,7 +39,7 @@ fn valid_source(source: &Source) -> bool {
         && source.size_bytes.is_none_or(|n| n <= i64::MAX as u64)
 }
 
-fn valid_metadata(metadata: &Metadata) -> bool {
+pub fn valid_metadata(metadata: &Metadata) -> bool {
     valid_text(&metadata.title, 4096, true)
         && [
             &metadata.performer,
@@ -47,9 +47,20 @@ fn valid_metadata(metadata: &Metadata) -> bool {
             &metadata.album_artist,
             &metadata.genre,
             &metadata.codec,
+            &metadata.composer,
+            &metadata.comment,
+            &metadata.copyright,
         ]
         .iter()
         .all(|s| valid_text(s, 4096, false))
+        && metadata.lyrics.as_ref().is_none_or(|l| {
+            valid_digest(&l.sha256)
+                && valid_source(&l.source)
+                && l.source.sha256.as_deref() == Some(&l.sha256)
+                && l.source
+                    .size_bytes
+                    .is_some_and(|n| n > 0 && n <= 512 * 1024)
+        })
         && metadata.duration_ms <= i64::MAX as u64
         && metadata.artwork.as_ref().is_none_or(|a| {
             valid_digest(&a.sha256)
@@ -130,6 +141,7 @@ impl State {
                             track_id: id,
                             metadata: metadata.clone(),
                             sources: BTreeMap::from([(source.source_id, source.clone())]),
+                            preferred_source_id: None,
                             updated_order: mid,
                         },
                     );
@@ -139,14 +151,42 @@ impl State {
                     let Some(track) = self.tracks.get_mut(&id) else {
                         return Err(MissingEntity);
                     };
+                    if patch
+                        .expected_order
+                        .is_some_and(|order| order != track.updated_order)
+                    {
+                        return Err(VersionConflict);
+                    }
                     let mut metadata = track.metadata.clone();
                     patch.apply_to(&mut metadata);
                     if !valid_metadata(&metadata)
                         || (patch.clear_artwork && patch.artwork.is_some())
+                        || (patch.clear_lyrics && patch.lyrics.is_some())
                     {
                         return Err(InvalidPayload);
                     }
                     track.metadata = metadata;
+                    track.updated_order = mid;
+                }
+                TrackMediaReplace {
+                    metadata,
+                    source,
+                    expected_order,
+                } => {
+                    self.require_track(id)?;
+                    if !valid_metadata(metadata) || !valid_source(source) {
+                        return Err(InvalidPayload);
+                    }
+                    let track = self.tracks.get_mut(&id).ok_or(MissingEntity)?;
+                    if track.updated_order != *expected_order {
+                        return Err(VersionConflict);
+                    }
+                    if track.sources.contains_key(&source.source_id) {
+                        return Err(InvalidPayload);
+                    }
+                    track.sources.insert(source.source_id, source.clone());
+                    track.preferred_source_id = Some(source.source_id);
+                    track.metadata = metadata.clone();
                     track.updated_order = mid;
                 }
                 TrackDelete {} => {
@@ -445,6 +485,9 @@ impl State {
                 || self.tombstones.tracks.contains(id)
                 || !valid_metadata(&track.metadata)
                 || track.sources.is_empty()
+                || track
+                    .preferred_source_id
+                    .is_some_and(|id| !track.sources.contains_key(&id))
             {
                 return Err(invalid("track"));
             }

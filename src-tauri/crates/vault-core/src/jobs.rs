@@ -190,8 +190,15 @@ impl Backend {
     /// generating a second import op_id after a process/WebView interruption.
     pub async fn resume_job(&self, session_id: Uuid, job_id: Uuid) -> Result<JobInfo, ApiError> {
         let registry = self.job_registry(session_id).await?;
-        let request = registry.entries.lock().await.get(&job_id)
-            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?.saved.request.clone();
+        let request = registry
+            .entries
+            .lock()
+            .await
+            .get(&job_id)
+            .ok_or_else(|| ApiError::new(ErrorCode::InvalidInput))?
+            .saved
+            .request
+            .clone();
         self.start_job(session_id, job_id, request, true).await
     }
     pub async fn list_jobs(&self, session_id: Uuid) -> Result<Vec<JobInfo>, ApiError> {

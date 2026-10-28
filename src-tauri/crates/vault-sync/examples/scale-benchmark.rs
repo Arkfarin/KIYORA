@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         state.tracks.insert(
             id,
             Track {
+                preferred_source_id: None,
                 track_id: id,
                 metadata: Metadata {
                     title: format!("Track {i}"),

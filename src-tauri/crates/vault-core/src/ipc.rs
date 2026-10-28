@@ -54,6 +54,22 @@ pub struct BackendRequest {
     deny_unknown_fields
 )]
 pub enum BackendCommand {
+    Downloads { session_id: Uuid },
+    CachedMedia {
+        session_id: Uuid,
+    },
+    Lyrics {
+        session_id: Uuid,
+        track_id: Uuid,
+    },
+    ParseLyrics {
+        text: String,
+        format: String,
+    },
+    PrepareArtwork {
+        bytes: Vec<u8>,
+        crop: Option<vault_media::Crop>,
+    },
     StateSnapshot {
         session_id: Uuid,
     },
@@ -71,6 +87,15 @@ pub enum BackendCommand {
     Artwork {
         session_id: Uuid,
         track_id: Uuid,
+    },
+    EditQueue {
+        session_id: Uuid,
+        queue_id: Uuid,
+        revision: u64,
+        action: QueueAction,
+    },
+    DiscoverVaultsDeep {
+        session_id: Uuid,
     },
     SetQueue {
         session_id: Uuid,
@@ -212,6 +237,9 @@ pub struct BackendResponse {
     deny_unknown_fields
 )]
 pub enum BackendReply {
+    Downloads(Vec<DownloadInfo>),
+    CachedMedia(Vec<vault_media::CacheEntry>),
+    Lyrics(Option<vault_domain::LyricsDocument>),
     StateSnapshot(Box<ProjectionSnapshot>),
     Storage(StorageUsage),
     Artwork(Option<ArtworkData>),
@@ -255,6 +283,30 @@ impl Backend {
     ) -> Result<BackendReply, ApiError> {
         use BackendCommand::*;
         Ok(match command {
+            Downloads { session_id } => BackendReply::Downloads(self.downloads(session_id).await?),
+            CachedMedia { session_id } => {
+                BackendReply::CachedMedia(self.cached_media(session_id).await?)
+            }
+            Lyrics {
+                session_id,
+                track_id,
+            } => BackendReply::Lyrics(self.lyrics(session_id, track_id, cancel).await?),
+            ParseLyrics { text, format } => {
+                BackendReply::Lyrics(Some(vault_media::parse_lyrics(&text, &format)?))
+            }
+            PrepareArtwork { bytes, crop } => {
+                if bytes.len() > 8 * 1024 * 1024 {
+                    return Err(ApiError::new(ErrorCode::InvalidInput));
+                }
+                let art = tokio::task::spawn_blocking(move || vault_media::artwork(&bytes, crop))
+                    .await
+                    .map_err(|_| ApiError::new(ErrorCode::Internal))??;
+                BackendReply::Artwork(Some(ArtworkData {
+                    bytes: art.bytes,
+                    sha256: art.sha256,
+                    mime_type: art.mime_type,
+                }))
+            }
             StateSnapshot { session_id } => {
                 BackendReply::StateSnapshot(Box::new(self.state_snapshot(session_id).await?))
             }
@@ -276,6 +328,20 @@ impl Backend {
                 session_id,
                 track_id,
             } => BackendReply::Artwork(self.artwork(session_id, track_id, cancel).await?),
+            EditQueue {
+                session_id,
+                queue_id,
+                revision,
+                action,
+            } => BackendReply::Queue(
+                self.edit_queue(session_id, queue_id, revision, action)
+                    .await?,
+            ),
+            DiscoverVaultsDeep { session_id } => BackendReply::Vaults(
+                self.discover_vaults_with_options(session_id, true, None, cancel)
+                    .await?
+                    .candidates,
+            ),
             SetQueue {
                 session_id,
                 track_ids,

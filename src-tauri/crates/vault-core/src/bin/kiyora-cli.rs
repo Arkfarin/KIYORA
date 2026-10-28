@@ -89,7 +89,9 @@ async fn run() -> Result<(), ApiError> {
             "auth" => auth(&backend, &args[1..], &auth_cancel).await?,
             "status" => {
                 let status = active(&backend).await?;
-                let status = backend.settled_status(status.context.session_id, &auth_cancel).await?;
+                let status = backend
+                    .settled_status(status.context.session_id, &auth_cancel)
+                    .await?;
                 if args.iter().any(|arg| arg == "--json") {
                     print_json(&status)?;
                 } else {
@@ -356,7 +358,11 @@ async fn vault(
 async fn sync(backend: &Backend, args: &[String]) -> Result<(), ApiError> {
     let status = active(backend).await?;
     match args.first().map(String::as_str) {
-        Some("status") => print_status(&backend.settled_status(status.context.session_id, &CancellationToken::new()).await?),
+        Some("status") => print_status(
+            &backend
+                .settled_status(status.context.session_id, &CancellationToken::new())
+                .await?,
+        ),
         Some("run") => {
             backend
                 .service_request(

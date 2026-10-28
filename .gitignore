@@ -24,3 +24,7 @@ dist-ssr
 *.sw?
 
 tmp_*
+
+.taste-skill/
+playwright-report/
+test-results/

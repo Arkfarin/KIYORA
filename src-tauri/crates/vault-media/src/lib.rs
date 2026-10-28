@@ -13,3 +13,8 @@ pub use import::*;
 pub use pcm::PlaybackInput;
 pub use playback::*;
 pub use stream::*;
+
+mod lyrics;
+pub use lyrics::*;
+mod edit;
+pub use edit::*;

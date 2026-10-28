@@ -104,6 +104,18 @@ pub fn inspect_with_cancel(
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| stem.to_owned().into())
             .into_owned();
+        normalized.composer = tag
+            .get_string(ItemKey::Composer)
+            .unwrap_or_default()
+            .to_owned();
+        normalized.comment = tag
+            .get_string(ItemKey::Comment)
+            .unwrap_or_default()
+            .to_owned();
+        normalized.copyright = tag
+            .get_string(ItemKey::CopyrightMessage)
+            .unwrap_or_default()
+            .to_owned();
         normalized.performer = tag.artist().unwrap_or_default().into_owned();
         normalized.album = tag.album().unwrap_or_default().into_owned();
         normalized.genre = tag.genre().unwrap_or_default().into_owned();

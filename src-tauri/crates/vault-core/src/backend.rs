@@ -14,12 +14,13 @@ use vault_telegram::{
 };
 use zeroize::Zeroizing;
 mod artwork;
+mod lyrics;
 mod queue;
-mod storage;
 mod runtime;
-pub use runtime::{SessionInfo, CreationInfo};
+mod storage;
 pub use artwork::ArtworkData;
-pub use queue::{QueueInfo, QueuePage};
+pub use queue::{QueueAction, QueueInfo, QueuePage, RepeatMode};
+pub use runtime::{CreationInfo, SessionInfo};
 pub use storage::StorageUsage;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -239,7 +240,11 @@ impl Backend {
         .map_err(|_| ApiError::new(ErrorCode::Internal))?
     }
     async fn switch_profile_inner(&self, id: Uuid) -> Result<Status, ApiError> {
-        if self.context().await.is_some_and(|context| context.profile_id == id) {
+        if self
+            .context()
+            .await
+            .is_some_and(|context| context.profile_id == id)
+        {
             return self.runtime_status().await;
         }
         // Acquire the new process lock and validate its durable binding before closing
@@ -374,7 +379,9 @@ impl Backend {
                 Some(id) => backend.switch_profile_inner(id).await.map(Some),
                 None => Ok(None),
             }
-        }).await.map_err(|_| ApiError::new(ErrorCode::Internal))?
+        })
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Internal))?
     }
     pub async fn runtime_status(&self) -> Result<Status, ApiError> {
         let guard = self.session.lock().await;
@@ -1059,7 +1066,10 @@ impl Backend {
             loop {
                 let update = changes.current();
                 let auth = update.status;
-                if retry || previous.as_ref() != Some(&auth) || previous_connection != Some(update.connected) {
+                if retry
+                    || previous.as_ref() != Some(&auth)
+                    || previous_connection != Some(update.connected)
+                {
                     previous_connection = Some(update.connected);
                     retry = false;
                     previous = Some(auth.clone());
@@ -1397,8 +1407,11 @@ impl Backend {
         self.start_service(s, context);
         drop(g);
         // CLI must not report an attachment and close before the first audit.
-        if let Err(error) = self.service_request(session_id, VaultRequest::Sync, cancel).await {
-            if error.code != ErrorCode::NoVault { return Err(error); }
+        if let Err(error) = self
+            .service_request(session_id, VaultRequest::Sync, cancel)
+            .await
+            && error.code != ErrorCode::NoVault {
+            return Err(error);
         }
         self.runtime_status().await
     }
@@ -1431,8 +1444,10 @@ impl Backend {
                 .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
             check_session(s, session_id)?;
             if s.config.creation.is_some() || s.config.binding.is_some() {
-                return Err(ApiError::diagnostic(ErrorCode::Conflict,
-                    "a vault binding or creation intent already exists; resume the existing channel instead of creating another"));
+                return Err(ApiError::diagnostic(
+                    ErrorCode::Conflict,
+                    "a vault binding or creation intent already exists; resume the existing channel instead of creating another",
+                ));
             }
             self.creation_progress(&s.context, vault_sync::Phase::CreatingChannel);
             let owner = s
@@ -1487,22 +1502,38 @@ impl Backend {
         self.ensure_authorized(session_id, cancel).await?;
         let has_intent = {
             let guard = self.session.lock().await;
-            let s = guard.as_ref().ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            let s = guard
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
             check_session(s, session_id)?;
-            if s.config.binding.is_some_and(|binding| binding.chat_id != chat_id) {
-                return Err(ApiError::diagnostic(ErrorCode::Conflict, "recovery chat differs from the saved vault binding"));
+            if s.config
+                .binding
+                .is_some_and(|binding| binding.chat_id != chat_id)
+            {
+                return Err(ApiError::diagnostic(
+                    ErrorCode::Conflict,
+                    "recovery chat differs from the saved vault binding",
+                ));
             }
             if s.config.creation.is_none() && s.config.binding.is_none() {
-                return Err(ApiError::diagnostic(ErrorCode::NoVault, "attach the existing channel before resuming its snapshot initialization"));
+                return Err(ApiError::diagnostic(
+                    ErrorCode::NoVault,
+                    "attach the existing channel before resuming its snapshot initialization",
+                ));
             }
             s.config.creation.is_some()
         };
         if has_intent {
-            let channel = self.require_transport(session_id).await?
-                .verify_channel(chat_id, self.owner(session_id).await?, cancel).await?;
-            self.resume_created_channel(session_id, channel, cancel).await?;
+            let channel = self
+                .require_transport(session_id)
+                .await?
+                .verify_channel(chat_id, self.owner(session_id).await?, cancel)
+                .await?;
+            self.resume_created_channel(session_id, channel, cancel)
+                .await?;
         }
-        self.service_request(session_id, VaultRequest::Initialize, cancel).await?;
+        self.service_request(session_id, VaultRequest::Initialize, cancel)
+            .await?;
         self.complete_vault_creation(session_id).await?;
         self.runtime_status().await
     }
@@ -1514,33 +1545,60 @@ impl Backend {
     ) -> Result<(), ApiError> {
         let (vault, init_unknown, transport) = {
             let mut guard = self.session.lock().await;
-            let s = guard.as_mut().ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            let s = guard
+                .as_mut()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
             check_session(s, session_id)?;
-            let intent = s.config.creation.as_mut().ok_or_else(|| ApiError::new(ErrorCode::Conflict))?;
+            let intent = s
+                .config
+                .creation
+                .as_mut()
+                .ok_or_else(|| ApiError::new(ErrorCode::Conflict))?;
             if intent.chat_id.is_some_and(|id| id != channel.chat_id) {
-                return Err(ApiError::diagnostic(ErrorCode::Conflict, "creation intent belongs to a different channel"));
+                return Err(ApiError::diagnostic(
+                    ErrorCode::Conflict,
+                    "creation intent belongs to a different channel",
+                ));
             }
             let unknown = matches!(intent.stage, CreateStage::InitUnknown);
             intent.chat_id = Some(channel.chat_id);
-            if matches!(intent.stage, CreateStage::CreatingUnknown) { intent.stage = CreateStage::ChannelCreated; }
+            if matches!(intent.stage, CreateStage::CreatingUnknown) {
+                intent.stage = CreateStage::ChannelCreated;
+            }
             let vault = intent.vault_id;
             // Journal the confirmed channel before any other I/O. Never create
             // another channel when marker/snapshot publication fails.
             save_config(&s.lease, &s.config)?;
-            (vault, unknown, s.native.as_ref().ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?.transport.clone())
+            (
+                vault,
+                unknown,
+                s.native
+                    .as_ref()
+                    .ok_or_else(|| ApiError::new(ErrorCode::AuthRequired))?
+                    .transport
+                    .clone(),
+            )
         };
-        let history = vault_telegram::scan_history(&transport, channel.chat_id, 0, None, 1_000_000, cancel).await?;
+        let history =
+            vault_telegram::scan_history(&transport, channel.chat_id, 0, None, 1_000_000, cancel)
+                .await?;
         let mut init_exists = None;
         let mut has_records = false;
         for message in history {
             if let Some(record) = message.record()? {
                 has_records = true;
                 if record.vault_id() != vault {
-                    return Err(ApiError::diagnostic(ErrorCode::Integrity, "channel records belong to a different vault than the saved creation intent"));
+                    return Err(ApiError::diagnostic(
+                        ErrorCode::Integrity,
+                        "channel records belong to a different vault than the saved creation intent",
+                    ));
                 }
                 if let Record::Init(marker) = record {
                     if marker.owner_telegram_user_id != channel.owner_id || init_exists.is_some() {
-                        return Err(ApiError::diagnostic(ErrorCode::Integrity, "VAULT_INIT is duplicated or has an unexpected owner"));
+                        return Err(ApiError::diagnostic(
+                            ErrorCode::Integrity,
+                            "VAULT_INIT is duplicated or has an unexpected owner",
+                        ));
                     }
                     init_exists = Some(message.id);
                 }
@@ -1548,31 +1606,62 @@ impl Backend {
                 // rejecting them here made every partial snapshot unrecoverable.
             }
         }
-        let init_id = if let Some(id) = init_exists { id } else {
+        let init_id = if let Some(id) = init_exists {
+            id
+        } else {
             if has_records {
-                return Err(ApiError::diagnostic(ErrorCode::Integrity, "channel has protocol records but no VAULT_INIT; publication is blocked"));
+                return Err(ApiError::diagnostic(
+                    ErrorCode::Integrity,
+                    "channel has protocol records but no VAULT_INIT; publication is blocked",
+                ));
             }
             if init_unknown {
-                return Err(ApiError::diagnostic(ErrorCode::Timeout, "VAULT_INIT send outcome is still unknown; retry recovery after history catches up; no duplicate was sent"));
+                return Err(ApiError::diagnostic(
+                    ErrorCode::Timeout,
+                    "VAULT_INIT send outcome is still unknown; retry recovery after history catches up; no duplicate was sent",
+                ));
             }
             let init = Record::Init(VaultInit {
-                vault_id: vault, owner_telegram_user_id: channel.owner_id,
-                created_by: "kiyora".into(), created_at_utc: utc_now(),
+                vault_id: vault,
+                owner_telegram_user_id: channel.owner_id,
+                created_by: "kiyora".into(),
+                created_at_utc: utc_now(),
             });
             {
                 let mut guard = self.session.lock().await;
-                let s = guard.as_mut().ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+                let s = guard
+                    .as_mut()
+                    .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
                 check_session(s, session_id)?;
-                if let Some(intent) = s.config.creation.as_mut() { intent.stage = CreateStage::InitUnknown; }
+                if let Some(intent) = s.config.creation.as_mut() {
+                    intent.stage = CreateStage::InitUnknown;
+                }
                 save_config(&s.lease, &s.config)?;
                 self.creation_progress(&s.context, vault_sync::Phase::PublishingInit);
             }
-            match transport.send_text(channel.chat_id, encode_text(&init).map_err(|_| ApiError::new(ErrorCode::Integrity))?, cancel).await {
+            match transport
+                .send_text(
+                    channel.chat_id,
+                    encode_text(&init).map_err(|_| ApiError::new(ErrorCode::Integrity))?,
+                    cancel,
+                )
+                .await
+            {
                 Ok(message) => {
-                    let read = transport.message(channel.chat_id, message.id, cancel).await?
-                        .ok_or_else(|| ApiError::diagnostic(ErrorCode::Integrity, "confirmed VAULT_INIT could not be read back"))?;
+                    let read = transport
+                        .message(channel.chat_id, message.id, cancel)
+                        .await?
+                        .ok_or_else(|| {
+                            ApiError::diagnostic(
+                                ErrorCode::Integrity,
+                                "confirmed VAULT_INIT could not be read back",
+                            )
+                        })?;
                     if read.record()? != Some(init) {
-                        return Err(ApiError::diagnostic(ErrorCode::Integrity, "VAULT_INIT read-back differs from creation intent"));
+                        return Err(ApiError::diagnostic(
+                            ErrorCode::Integrity,
+                            "VAULT_INIT read-back differs from creation intent",
+                        ));
                     }
                     message.id
                 }
@@ -1581,7 +1670,9 @@ impl Backend {
                         let mut guard = self.session.lock().await;
                         if let Some(s) = guard.as_mut() {
                             check_session(s, session_id)?;
-                            if let Some(intent) = s.config.creation.as_mut() { intent.stage = CreateStage::ChannelCreated; }
+                            if let Some(intent) = s.config.creation.as_mut() {
+                                intent.stage = CreateStage::ChannelCreated;
+                            }
                             save_config(&s.lease, &s.config)?;
                         }
                     }
@@ -1590,9 +1681,15 @@ impl Backend {
             }
         };
         let mut guard = self.session.lock().await;
-        let s = guard.as_mut().ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+        let s = guard
+            .as_mut()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
         check_session(s, session_id)?;
-        let binding = Binding { vault_id: vault, owner_id: channel.owner_id, chat_id: channel.chat_id };
+        let binding = Binding {
+            vault_id: vault,
+            owner_id: channel.owner_id,
+            chat_id: channel.chat_id,
+        };
         if s.config.binding.is_some_and(|saved| saved != binding) {
             return Err(ApiError::new(ErrorCode::Conflict));
         }
@@ -1600,7 +1697,10 @@ impl Backend {
         s.config.init_message_id = Some(init_id);
         save_config(&s.lease, &s.config)?;
         if s.reader.is_none() {
-            s.reader = Some(ProjectionReader::new(Database::open(s.lease.database_path(), binding)?));
+            s.reader = Some(ProjectionReader::new(Database::open(
+                s.lease.database_path(),
+                binding,
+            )?));
         }
         self.start_service(s, s.context.clone());
         Ok(())
@@ -1612,8 +1712,14 @@ impl Backend {
             .as_mut()
             .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
         check_session(s, session_id)?;
-        if s.service.as_ref().is_none_or(|service| service.status().mode != RuntimeMode::OnlineReady) {
-            return Err(ApiError::diagnostic(ErrorCode::Readonly, "creation cannot be completed until the snapshot and server head are verified"));
+        if s.service
+            .as_ref()
+            .is_none_or(|service| service.status().mode != RuntimeMode::OnlineReady)
+        {
+            return Err(ApiError::diagnostic(
+                ErrorCode::Readonly,
+                "creation cannot be completed until the snapshot and server head are verified",
+            ));
         }
         // Clear only after verified synchronization; failures keep the intent.
         s.config.creation = None;
@@ -1661,6 +1767,7 @@ impl Backend {
         if matches!(
             request,
             VaultRequest::GetCacheStats
+                | VaultRequest::RemoveCachedMedia { .. }
                 | VaultRequest::ClearLocalCache
                 | VaultRequest::PinCachedMedia { .. }
                 | VaultRequest::SetCacheQuota { .. }
@@ -1691,6 +1798,14 @@ impl Backend {
                     .as_mut()
                     .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
                 Ok(match request {
+                    VaultRequest::RemoveCachedMedia {
+                        track_id,
+                        source_id,
+                    } => VaultResponse::CacheCleared {
+                        bytes_removed: s
+                            .cache
+                            .remove_local(&media_cache_key(track_id, source_id))?,
+                    },
                     VaultRequest::GetCacheStats => VaultResponse::CacheStats(s.cache.stats()?),
                     VaultRequest::ClearLocalCache => VaultResponse::CacheCleared {
                         bytes_removed: s.cache.clear_unpinned()?,
@@ -1745,7 +1860,11 @@ impl Backend {
                     "vault binding exists but its runtime could not be started; inspect authorization and database diagnostics"))?
         };
         let mut document = None;
-        if let VaultRequest::Import { path, op_id, .. } = &mut request
+        if let VaultRequest::Import { path, op_id, .. }
+        | VaultRequest::PreviewImport {
+            path,
+            preview_id: op_id,
+        } = &mut request
             && path.starts_with("content://")
             && !crate::imports::has_durable_import(&service.reader(), *op_id).await?
         {
@@ -1768,8 +1887,10 @@ impl Backend {
             document = Some(*op_id);
         }
         let result = service.request(request, cancel).await;
-        let complete = matches!(&result, Ok(VaultResponse::ImportReview { .. }))
-            || matches!(&result,Ok(VaultResponse::Command(command)) if command.status==vault_db::CommandStatus::Applied);
+        let complete = matches!(
+            &result,
+            Ok(VaultResponse::ImportReview { .. } | VaultResponse::ImportPreview(_))
+        ) || matches!(&result,Ok(VaultResponse::Command(command)) if command.status==vault_db::CommandStatus::Applied);
         if let Some(op) = document
             && complete
             && let Some(resolver) = &self.import_resolver
@@ -1822,8 +1943,11 @@ impl Backend {
     pub async fn shutdown(&self) -> Result<(), ApiError> {
         // True application exit can interrupt a create/attach holding the
         // transition gate. Its journal must finish before the session is closed.
-        if let Some((_, jobs)) = self.job_access.lock()
-            .map_err(|_| ApiError::new(ErrorCode::Internal))?.as_ref()
+        if let Some((_, jobs)) = self
+            .job_access
+            .lock()
+            .map_err(|_| ApiError::new(ErrorCode::Internal))?
+            .as_ref()
         {
             jobs.cancel_all();
         }

@@ -24,6 +24,7 @@ tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 vault-telegram.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [dev-dependencies]
 vault-testkit.workspace = true

@@ -12,8 +12,11 @@ use vault_sync::{ProjectionReader, SyncEngine};
 use vault_telegram::{RemoteMessage, Telegram};
 mod artwork;
 mod incoming;
+pub(crate) mod preview;
+pub(crate) mod rewrite;
 mod storage;
 pub(crate) use incoming::try_start as try_incoming;
+pub use preview::ImportPreview;
 pub(crate) use storage::Storage;
 
 const PREFIX: &str = "import.v1:";
@@ -56,6 +59,8 @@ pub struct ImportInfo {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Journal {
+    #[serde(default)]
+    replacement_order: Option<vault_domain::MessageId>,
     info: ImportInfo,
     path: PathBuf,
     #[serde(default)]
@@ -209,6 +214,8 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
     source_id: Uuid,
     op_id: Uuid,
     allow_duplicate: bool,
+    metadata_override: Option<Metadata>,
+    replacement_order: Option<vault_domain::MessageId>,
     cancel: &CancellationToken,
     context: &Context,
     events: &EventBus,
@@ -273,12 +280,15 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
     }
     let inspect_path = path.clone();
     let token = cancel.clone();
-    let asset = tokio::task::spawn_blocking(move || {
+    let mut asset = tokio::task::spawn_blocking(move || {
         vault_media::inspect_with_cancel(&inspect_path, &token)
     })
     .await
     .map_err(|_| ApiError::new(ErrorCode::Internal))?
     .map_err(ApiError::from)?;
+    if let Some(metadata) = metadata_override {
+        asset.metadata = metadata;
+    }
     let state = engine.state().await?;
     let duplicate_track_ids = state
         .tracks
@@ -311,10 +321,19 @@ pub(crate) async fn start<T: Telegram + Clone + 'static>(
             possible_duplicate_track_ids,
         });
     }
-    if state.tracks.contains_key(&track_id) || state.tombstones.tracks.contains(&track_id) {
+    if (replacement_order.is_none() && state.tracks.contains_key(&track_id))
+        || state.tombstones.tracks.contains(&track_id)
+        || replacement_order.is_some_and(|order| {
+            state
+                .tracks
+                .get(&track_id)
+                .is_none_or(|t| t.updated_order != order)
+        })
+    {
         return Err(ApiError::new(ErrorCode::Conflict));
     }
     let journal = Journal {
+        replacement_order,
         incoming,
         artwork_upload_unknown: false,
         path,
@@ -496,9 +515,16 @@ pub(crate) async fn resume<T: Telegram + Clone + 'static>(
         .execute(
             op_id,
             journal.info.track_id,
-            Action::TrackRegister {
-                metadata: journal.info.metadata.clone(),
-                source,
+            match journal.replacement_order {
+                Some(expected_order) => Action::TrackMediaReplace {
+                    metadata: journal.info.metadata.clone(),
+                    source,
+                    expected_order,
+                },
+                None => Action::TrackRegister {
+                    metadata: journal.info.metadata.clone(),
+                    source,
+                },
             },
             cancel,
         )
@@ -521,10 +547,28 @@ fn validate_command(
     if command.intent.op_id != journal.info.op_id
         || command.intent.entity_id != journal.info.track_id
         || command.intent.vault_id != binding.vault_id
-        || !matches!(&command.intent.action, Action::TrackRegister { metadata, source }
-            if metadata == &journal.info.metadata && source.source_id == journal.info.source_id
-            && source.chat_id == binding.chat_id && Some(source.message_id) == journal.info.media_message_id
-            && source.sha256 == journal.info.sha256 && source.size_bytes == Some(journal.info.size_bytes))
+        || !match &command.intent.action {
+            Action::TrackRegister { metadata, source } if journal.replacement_order.is_none() => {
+                metadata == &journal.info.metadata
+                    && source.source_id == journal.info.source_id
+                    && Some(source.message_id) == journal.info.media_message_id
+                    && source.sha256 == journal.info.sha256
+                    && source.chat_id == binding.chat_id
+            }
+            Action::TrackMediaReplace {
+                metadata,
+                source,
+                expected_order,
+            } => {
+                Some(*expected_order) == journal.replacement_order
+                    && metadata == &journal.info.metadata
+                    && source.source_id == journal.info.source_id
+                    && Some(source.message_id) == journal.info.media_message_id
+                    && source.sha256 == journal.info.sha256
+                    && source.chat_id == binding.chat_id
+            }
+            _ => false,
+        }
     {
         return Err(ApiError::new(ErrorCode::Conflict));
     }
@@ -561,11 +605,7 @@ pub(crate) async fn orphans<T: Telegram>(
     let referenced = state
         .tracks
         .values()
-        .flat_map(|t| {
-            t.sources
-                .values()
-                .chain(t.metadata.artwork.as_ref().and_then(|a| a.source.as_ref()))
-        })
+        .flat_map(|t| t.media_sources())
         .map(|s| (s.chat_id, s.message_id))
         .collect::<std::collections::BTreeSet<_>>();
     let mut result = Vec::new();

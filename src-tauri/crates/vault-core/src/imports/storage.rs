@@ -70,7 +70,7 @@ impl Storage {
         Ok(store)
     }
 
-    pub(super) fn root(&self) -> PathBuf {
+    pub(crate) fn root(&self) -> PathBuf {
         self.root.clone()
     }
 
@@ -293,6 +293,7 @@ mod tests {
         fs::write(original, wav()).unwrap();
         let asset = vault_media::inspect(original).unwrap();
         Journal {
+            replacement_order: None,
             incoming: None,
             artwork_upload_unknown: false,
             path: original.to_owned(),

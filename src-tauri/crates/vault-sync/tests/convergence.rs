@@ -1150,6 +1150,7 @@ async fn gc_retains_audio_with_control_captions_and_all_live_source_references()
     linked.tracks.insert(
         track_id,
         Track {
+            preferred_source_id: None,
             track_id,
             metadata: Metadata {
                 title: "Reference".into(),

@@ -59,7 +59,10 @@ pub struct ApiError {
 impl ApiError {
     /// Only use application-owned diagnostics, never raw TDLib text or inputs.
     pub fn diagnostic(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self { message: message.into(), ..Self::new(code) }
+        Self {
+            message: message.into(),
+            ..Self::new(code)
+        }
     }
     pub fn new(code: ErrorCode) -> Self {
         use ErrorCode::*;
@@ -126,8 +129,10 @@ impl From<SyncError> for ApiError {
             }),
             Readonly => Self::new(ErrorCode::Readonly),
             CoordinatorConflict => Self::new(ErrorCode::Conflict),
-            InitializationRequired => Self::diagnostic(ErrorCode::NoVault,
-                "vault binding exists, but no committed snapshot was found; explicitly resume initialization in this channel"),
+            InitializationRequired => Self::diagnostic(
+                ErrorCode::NoVault,
+                "vault binding exists, but no committed snapshot was found; explicitly resume initialization in this channel",
+            ),
             Initialization(reason) => Self::diagnostic(ErrorCode::Integrity, reason),
             Worker => Self::new(ErrorCode::Internal),
             UnknownOutcome => Self::new(ErrorCode::Timeout),
@@ -136,11 +141,15 @@ impl From<SyncError> for ApiError {
                 Self::new(ErrorCode::SnapshotUnavailable)
             }
             Snapshot(vault_snapshot::SnapshotError::Telegram(error)) => error.into(),
-            Snapshot(vault_snapshot::SnapshotError::PublicationPending) => Self::diagnostic(ErrorCode::Timeout,
-                "snapshot send outcome is unknown; retry recovery after Telegram history catches up; no message was resent"),
+            Snapshot(vault_snapshot::SnapshotError::PublicationPending) => Self::diagnostic(
+                ErrorCode::Timeout,
+                "snapshot send outcome is unknown; retry recovery after Telegram history catches up; no message was resent",
+            ),
             Snapshot(error) => Self::diagnostic(ErrorCode::Integrity, error.to_string()),
-            Integrity => Self::diagnostic(ErrorCode::Integrity,
-                "vault history, snapshot context or stored receipts disagree; retain all data and inspect diagnostics"),
+            Integrity => Self::diagnostic(
+                ErrorCode::Integrity,
+                "vault history, snapshot context or stored receipts disagree; retain all data and inspect diagnostics",
+            ),
             MediaSourceMissing => Self::new(ErrorCode::MediaSourceMissing),
         }
     }
@@ -185,12 +194,24 @@ impl From<TelegramError> for ApiError {
             Unshareable => ErrorCode::Conflict,
             UnsafeChannel => ErrorCode::UnsafeVault,
             Protocol => ErrorCode::ProtocolUnsupported,
-            InvalidResponse => return Self::diagnostic(ErrorCode::Integrity,
-                "TDLib returned an unexpected response shape; verify the pinned native library version"),
-            InvalidVault => return Self::diagnostic(ErrorCode::Integrity,
-                "vault marker is missing, duplicated, edited, untrusted or belongs to another vault/account"),
-            IncompleteHistory => return Self::diagnostic(ErrorCode::Integrity,
-                "Telegram history could not be read completely; initialization is blocked to preserve existing records"),
+            InvalidResponse => {
+                return Self::diagnostic(
+                    ErrorCode::Integrity,
+                    "TDLib returned an unexpected response shape; verify the pinned native library version",
+                );
+            }
+            InvalidVault => {
+                return Self::diagnostic(
+                    ErrorCode::Integrity,
+                    "vault marker is missing, duplicated, edited, untrusted or belongs to another vault/account",
+                );
+            }
+            IncompleteHistory => {
+                return Self::diagnostic(
+                    ErrorCode::Integrity,
+                    "Telegram history could not be read completely; initialization is blocked to preserve existing records",
+                );
+            }
         });
         result.retry_after_seconds = retry_after_seconds;
         result
@@ -241,10 +262,14 @@ impl From<vault_media::PlaybackError> for ApiError {
             vault_media::PlaybackError::DeviceUnavailable => {
                 Self::new(ErrorCode::PlaybackUnavailable)
             }
-            vault_media::PlaybackError::Decode => Self::diagnostic(ErrorCode::InvalidInput,
-                "audio decoder rejected the selected file"),
-            vault_media::PlaybackError::Seek => Self::diagnostic(ErrorCode::InvalidInput,
-                "audio seek is unsupported or outside the stream"),
+            vault_media::PlaybackError::Decode => Self::diagnostic(
+                ErrorCode::InvalidInput,
+                "audio decoder rejected the selected file",
+            ),
+            vault_media::PlaybackError::Seek => Self::diagnostic(
+                ErrorCode::InvalidInput,
+                "audio seek is unsupported or outside the stream",
+            ),
             vault_media::PlaybackError::Closed => Self::new(ErrorCode::Closed),
             vault_media::PlaybackError::Media(error) => error.into(),
         }
@@ -372,6 +397,36 @@ pub enum PlaybackAction {
     deny_unknown_fields
 )]
 pub enum VaultRequest {
+    RewriteTrack {
+        op_id: Uuid,
+        track_id: Uuid,
+        edit: Box<crate::MediaEdit>,
+    },
+    RemoveCachedMedia {
+        track_id: Uuid,
+        source_id: Uuid,
+    },
+    ListImportPreviews,
+    PreviewImport {
+        path: String,
+        preview_id: Uuid,
+    },
+    DiscardImportPreview {
+        preview_id: Uuid,
+    },
+    ImportPrepared {
+        preview_id: Uuid,
+        track_id: Uuid,
+        source_id: Uuid,
+        edit: Option<Box<crate::MediaEdit>>,
+        write_tags: bool,
+        allow_duplicate: bool,
+    },
+    EditMetadata {
+        op_id: Uuid,
+        track_id: Uuid,
+        edit: Box<crate::MediaEdit>,
+    },
     GetMaintenanceConfig,
     SetMaintenanceConfig {
         config: crate::MaintenanceConfig,
@@ -532,6 +587,9 @@ impl From<Recovery> for SnapshotInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "result", rename_all = "snake_case")]
 pub enum VaultResponse {
+    ImportPreviews(Vec<crate::ImportPreview>),
+    ImportPreview(Box<crate::ImportPreview>),
+    PreviewDiscarded,
     MaintenanceConfig(crate::MaintenanceConfig),
     AudioInfo(Option<vault_telegram::AudioInfo>),
     Diagnostics(vault_sync::VaultDiagnostics),

@@ -2309,3 +2309,263 @@ async fn imported_embedded_artwork_is_published_verified_and_referenced() {
     restored.shutdown().await.unwrap();
     service.shutdown().await.unwrap();
 }
+
+// UI management uses the real service, SQLite, reducer and media pipeline. Only
+// the Telegram transport is account-free; no production IPC is replaced.
+#[tokio::test]
+async fn preview_original_upload_and_logical_edit_roundtrip_through_snapshot() {
+    let (server, binding) = fixture().await;
+    let service = service(&server, binding, EventBus::default());
+    ready(&service).await;
+    let token = CancellationToken::new();
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("original.wav");
+    let bytes = wav_fixture();
+    std::fs::write(&original, &bytes).unwrap();
+    let id = Uuid::new_v4();
+    let before = server.messages().unwrap().len();
+    let preview = service
+        .request(
+            VaultRequest::PreviewImport {
+                path: original.to_string_lossy().into_owned(),
+                preview_id: id,
+            },
+            &token,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(preview, VaultResponse::ImportPreview(p) if p.sha256 == vault_snapshot::digest(&bytes))
+    );
+    assert_eq!(
+        server.messages().unwrap().len(),
+        before,
+        "preview must be local only"
+    );
+    let upload = VaultRequest::ImportPrepared {
+        preview_id: id,
+        track_id: id,
+        source_id: id,
+        edit: None,
+        write_tags: false,
+        allow_duplicate: false,
+    };
+    let result = service.request(upload.clone(), &token).await.unwrap();
+    assert!(matches!(result, VaultResponse::Command(c) if c.status == CommandStatus::Applied));
+    assert_eq!(std::fs::read(&original).unwrap(), bytes);
+    let before = server.messages().unwrap().len();
+    let result = service.request(upload, &token).await.unwrap();
+    assert!(matches!(result, VaultResponse::Command(c) if c.status == CommandStatus::Applied));
+    assert_eq!(
+        server.messages().unwrap().len(),
+        before,
+        "double Import cannot upload twice"
+    );
+    let state = service.reader().state().await.unwrap();
+    assert_eq!(
+        state.tracks[&id].sources[&id].sha256,
+        Some(vault_snapshot::digest(&bytes))
+    );
+    let order = state.tracks[&id].updated_order;
+    let lyrics =
+        vault_media::parse_lyrics("[00:01.00]Новая строка\n[00:03.00]次の行", "lrc").unwrap();
+    let op = Uuid::new_v4();
+    let request = VaultRequest::EditMetadata {
+        op_id: op,
+        track_id: id,
+        edit: Box::new(MediaEdit {
+            patch: MetadataPatch {
+                title: Some("Обновлённая композиция".into()),
+                expected_order: Some(order),
+                ..Default::default()
+            },
+            artwork: None,
+            lyrics: Some(lyrics.clone()),
+        }),
+    };
+    assert!(
+        matches!(service.request(request.clone(), &token).await.unwrap(), VaultResponse::Command(c) if c.status == CommandStatus::Applied)
+    );
+    let after = service.reader().state().await.unwrap();
+    assert_eq!(
+        after.tracks[&id].sources, state.tracks[&id].sources,
+        "logical edits leave audio unchanged"
+    );
+    let reference = after.tracks[&id].metadata.lyrics.as_ref().unwrap();
+    let transport = server.client().unwrap();
+    let file = transport
+        .message(binding.chat_id, reference.source.message_id, &token)
+        .await
+        .unwrap()
+        .unwrap()
+        .file
+        .unwrap();
+    let document = transport.download(file, 0, 0, &token).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<LyricsDocument>(&std::fs::read(document.path).unwrap()).unwrap(),
+        lyrics
+    );
+    let before = server.messages().unwrap().len();
+    assert!(
+        matches!(service.request(request, &token).await.unwrap(), VaultResponse::Command(c) if c.status == CommandStatus::Applied)
+    );
+    assert_eq!(
+        server.messages().unwrap().len(),
+        before,
+        "retry reuses the attachment and event"
+    );
+    let stale = VaultRequest::EditMetadata {
+        op_id: Uuid::new_v4(),
+        track_id: id,
+        edit: Box::new(MediaEdit {
+            patch: MetadataPatch {
+                title: Some("Stale editor".into()),
+                expected_order: Some(order),
+                ..Default::default()
+            },
+            artwork: None,
+            lyrics: None,
+        }),
+    };
+    assert_eq!(
+        service.request(stale, &token).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(server.messages().unwrap().len(), before);
+    service.request(VaultRequest::AssignGcCoordinator {
+        op_id: Uuid::new_v4(), target: CoordinatorTarget::ThisDevice,
+        expected_previous: None, force_confirmed: false,
+    }, &token).await.unwrap();
+    service
+        .request(VaultRequest::Snapshot, &token)
+        .await
+        .unwrap();
+    let restored = self::service(&server, binding, EventBus::default());
+    ready(&restored).await;
+    assert_eq!(
+        restored.reader().state().await.unwrap().tracks[&id],
+        after.tracks[&id]
+    );
+    restored.shutdown().await.unwrap();
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn explicit_tag_rewrite_keeps_identity_old_source_and_playlist_after_lost_ack() {
+    let (server, binding) = fixture().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cache =
+        vault_media::CacheManager::open(dir.path().join("cache"), 32 * 1024 * 1024).unwrap();
+    let service = service_with_cache(&server, binding, EventBus::default(), cache);
+    ready(&service).await;
+    let token = CancellationToken::new();
+    let original = dir.path().join("original.flac");
+    let bytes = include_bytes!("../../../spec/test-vectors/audio/tone.flac");
+    std::fs::write(&original, bytes).unwrap();
+    let track_id = Uuid::new_v4();
+    let source_id = Uuid::new_v4();
+    service
+        .request(
+            VaultRequest::Import {
+                path: original.to_string_lossy().into_owned(),
+                track_id,
+                source_id,
+                op_id: Uuid::new_v4(),
+                allow_duplicate: false,
+            },
+            &token,
+        )
+        .await
+        .unwrap();
+    let playlist_id = Uuid::new_v4();
+    let entry_id = Uuid::new_v4();
+    for (entity_id, action) in [
+        (
+            playlist_id,
+            Action::PlaylistCreate {
+                title: "Keep".into(),
+            },
+        ),
+        (
+            playlist_id,
+            Action::PlaylistTrackAdd {
+                track_id,
+                entry_id,
+                after_entry_id: None,
+            },
+        ),
+        (
+            track_id,
+            Action::FavoriteSet {
+                set_name: "liked".into(),
+                value: true,
+            },
+        ),
+    ] {
+        service
+            .request(
+                VaultRequest::Mutate(Box::new(Mutation {
+                    op_id: Uuid::new_v4(),
+                    entity_id,
+                    action,
+                })),
+                &token,
+            )
+            .await
+            .unwrap();
+    }
+    let before = service.reader().state().await.unwrap();
+    let op_id = Uuid::new_v4();
+    let rewrite = VaultRequest::RewriteTrack {
+        op_id,
+        track_id,
+        edit: Box::new(MediaEdit {
+            patch: MetadataPatch {
+                title: Some("New file tags".into()),
+                expected_order: Some(before.tracks[&track_id].updated_order),
+                ..Default::default()
+            },
+            artwork: None,
+            lyrics: None,
+        }),
+    };
+    server
+        .set_faults(Faults {
+            lost_ack: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(service.request(rewrite.clone(), &token).await.is_err());
+    assert_eq!(
+        service.reader().state().await.unwrap().tracks[&track_id],
+        before.tracks[&track_id]
+    );
+    server.set_faults(Faults::default()).unwrap();
+    service.request(VaultRequest::Sync, &token).await.unwrap();
+    let count = server.messages().unwrap().len();
+    let result = service.request(rewrite.clone(), &token).await.unwrap();
+    assert!(matches!(result, VaultResponse::Command(c) if c.status == CommandStatus::Applied));
+    assert_eq!(
+        server.messages().unwrap().len(),
+        count + 1,
+        "only the metadata/source event remains"
+    );
+    let after = service.reader().state().await.unwrap();
+    let track = &after.tracks[&track_id];
+    assert_eq!(track.sources.len(), 2);
+    assert_eq!(
+        track.sources[&source_id],
+        before.tracks[&track_id].sources[&source_id]
+    );
+    assert_ne!(track.preferred_source_id, Some(source_id));
+    assert_eq!(after.entries[&entry_id], before.entries[&entry_id]);
+    assert_eq!(after.favorites, before.favorites);
+    assert_eq!(std::fs::read(original).unwrap(), bytes);
+    let count = server.messages().unwrap().len();
+    assert!(
+        matches!(service.request(rewrite, &token).await.unwrap(), VaultResponse::Command(c) if c.status == CommandStatus::Applied)
+    );
+    assert_eq!(server.messages().unwrap().len(), count);
+    assert_eq!(server.delete_calls().unwrap(), 0);
+    service.shutdown().await.unwrap();
+}

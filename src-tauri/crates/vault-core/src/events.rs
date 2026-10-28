@@ -118,8 +118,16 @@ impl Default for EventBus {
 }
 impl EventBus {
     pub fn diagnostics(&self, session_id: Uuid) -> Vec<DiagnosticEvent> {
-        self.diagnostics.lock().map(|items| items.iter()
-            .filter(|item| item.context.session_id == session_id).cloned().collect()).unwrap_or_default()
+        self.diagnostics
+            .lock()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| item.context.session_id == session_id)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     pub fn subscribe_reliable(&self) -> EventSubscription {
         EventSubscription {
@@ -150,18 +158,33 @@ impl EventBus {
                 EventData::Auth(auth) => auth.name().to_owned(),
                 EventData::Warning(error) => format!("{:?}: {}", error.code, error.message),
                 EventData::Runtime(status) => format!("{:?}", status.mode),
-                EventData::Operation(progress) => format!("{:?}: {:?} ({})", progress.operation, progress.phase, progress.completed),
+                EventData::Operation(progress) => format!(
+                    "{:?}: {:?} ({})",
+                    progress.operation, progress.phase, progress.completed
+                ),
                 EventData::Job(job) => format!("job {}: {:?}", job.job_id, job.state),
                 EventData::Import(import) => format!("import {}: {:?}", import.op_id, import.stage),
                 _ => String::new(),
             };
-            if !detail.is_empty() && let Ok(mut history) = self.diagnostics.lock() {
+            if !detail.is_empty()
+                && let Ok(mut history) = self.diagnostics.lock()
+            {
                 history.push_back(DiagnosticEvent {
-                    sequence: next.to_string(), context: context.clone(), detail,
-                    error: match &data { EventData::Warning(error) => Some(error.clone()), _ => None },
-                    progress: match &data { EventData::Operation(progress) => Some(progress.clone()), _ => None },
+                    sequence: next.to_string(),
+                    context: context.clone(),
+                    detail,
+                    error: match &data {
+                        EventData::Warning(error) => Some(error.clone()),
+                        _ => None,
+                    },
+                    progress: match &data {
+                        EventData::Operation(progress) => Some(progress.clone()),
+                        _ => None,
+                    },
                 });
-                while history.len() > 100 { history.pop_front(); }
+                while history.len() > 100 {
+                    history.pop_front();
+                }
             }
             let _ = self.sender.send(BackendEvent {
                 sequence: next.to_string(),

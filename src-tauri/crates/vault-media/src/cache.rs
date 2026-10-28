@@ -22,7 +22,7 @@ struct PartialDownload {
     expected_sha256: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CacheEntry {
     pub key: String,
@@ -578,6 +578,40 @@ impl CacheManager {
             return Err(error);
         }
         Ok(())
+    }
+    /// Explicitly remove one local copy, including a pinned one. A decoder or
+    /// downloader lease always wins over the user's cleanup request.
+    pub fn remove_local(&self, key: &str) -> Result<u64, MediaError> {
+        let mut state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;
+        let partial = hex::encode(Sha256::digest(key.as_bytes()));
+        if state.partial_leases.contains_key(&partial) {
+            return Err(MediaError::CacheBusy);
+        }
+        let entry = state.index.entries.get(key).cloned();
+        if entry
+            .as_ref()
+            .is_some_and(|e| state.leases.get(&e.file_id).copied().unwrap_or(0) > 0)
+        {
+            return Err(MediaError::CacheBusy);
+        }
+        let previous = state.index.clone();
+        state.index.entries.remove(key);
+        if let Err(error) = persist(&state) {
+            state.index = previous;
+            return Err(error);
+        }
+        let mut bytes = 0;
+        if let Some(entry) = entry {
+            bytes = entry.size_bytes;
+            remove_if_regular_or_missing(&cache_path(&state.root, entry.file_id))?;
+        }
+        let data = state.root.join(format!("partial-{partial}.data"));
+        if let Ok(meta) = fs::symlink_metadata(&data) {
+            bytes = bytes.saturating_add(meta.len());
+        }
+        remove_if_regular_or_missing(&data)?;
+        remove_if_regular_or_missing(&state.root.join(format!("partial-{partial}.json")))?;
+        Ok(bytes)
     }
     pub fn clear_unpinned(&self) -> Result<u64, MediaError> {
         let mut state = self.0.lock().map_err(|_| MediaError::CacheIndex)?;

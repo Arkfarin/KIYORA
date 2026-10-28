@@ -253,15 +253,7 @@ impl<T: Telegram> SyncEngine<T> {
         let live_sources: BTreeSet<_> = state
             .tracks
             .values()
-            .flat_map(|track| {
-                track.sources.values().chain(
-                    track
-                        .metadata
-                        .artwork
-                        .as_ref()
-                        .and_then(|art| art.source.as_ref()),
-                )
-            })
+            .flat_map(|track| track.media_sources())
             .map(|source| source.message_id)
             .collect();
         let mut retained_copy_references = BTreeSet::new();
@@ -362,8 +354,13 @@ impl<T: Telegram> SyncEngine<T> {
                             {
                                 return Err(SyncError::CoordinatorConflict);
                             }
-                            Action::TrackRegister { source, metadata } => {
+                            Action::TrackRegister { source, metadata }
+                            | Action::TrackMediaReplace {
+                                source, metadata, ..
+                            } => {
                                 references.push(source.message_id);
+                                references
+                                    .extend(metadata.lyrics.as_ref().map(|l| l.source.message_id));
                                 references.extend(
                                     metadata
                                         .artwork
@@ -373,13 +370,17 @@ impl<T: Telegram> SyncEngine<T> {
                                 );
                             }
                             Action::SourceRelink { source } => references.push(source.message_id),
-                            Action::TrackMetadataUpdate { patch } => references.extend(
-                                patch
-                                    .artwork
-                                    .as_ref()
-                                    .and_then(|art| art.source.as_ref())
-                                    .map(|source| source.message_id),
-                            ),
+                            Action::TrackMetadataUpdate { patch } => {
+                                references
+                                    .extend(patch.lyrics.as_ref().map(|l| l.source.message_id));
+                                references.extend(
+                                    patch
+                                        .artwork
+                                        .as_ref()
+                                        .and_then(|art| art.source.as_ref())
+                                        .map(|source| source.message_id),
+                                );
+                            }
                             _ => {}
                         }
                         if references

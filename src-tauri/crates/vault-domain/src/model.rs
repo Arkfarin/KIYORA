@@ -29,6 +29,14 @@ pub struct Metadata {
     pub codec: String,
     #[serde(default)]
     pub artwork: Option<Artwork>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub composer: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub copyright: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lyrics: Option<LyricsReference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -53,6 +61,20 @@ pub struct MetadataPatch {
     pub disc_number: Option<u32>,
     pub artwork: Option<Artwork>,
     pub clear_artwork: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lyrics: Option<LyricsReference>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clear_lyrics: bool,
+    /// Optimistic concurrency is enforced during server-ordered replay on every device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub expected_order: Option<MessageId>,
 }
 
 impl MetadataPatch {
@@ -69,8 +91,17 @@ impl MetadataPatch {
             year,
             genre,
             track_number,
-            disc_number
+            disc_number,
+            composer,
+            comment,
+            copyright
         );
+        if self.clear_lyrics {
+            metadata.lyrics = None;
+        }
+        if let Some(lyrics) = &self.lyrics {
+            metadata.lyrics = Some(lyrics.clone());
+        }
         if self.clear_artwork {
             metadata.artwork = None;
         }
@@ -99,6 +130,13 @@ pub enum Action {
     TrackRegister { metadata: Metadata, source: Source },
     #[serde(rename = "track.metadata.update")]
     TrackMetadataUpdate { patch: MetadataPatch },
+    #[serde(rename = "track.media.replace")]
+    TrackMediaReplace {
+        metadata: Metadata,
+        source: Source,
+        #[schemars(with = "String")]
+        expected_order: MessageId,
+    },
     #[serde(rename = "track.delete")]
     TrackDelete {},
     #[serde(rename = "playlist.create")]
@@ -133,6 +171,7 @@ impl Action {
         match self {
             Self::TrackRegister { .. } => "track.register",
             Self::TrackMetadataUpdate { .. } => "track.metadata.update",
+            Self::TrackMediaReplace { .. } => "track.media.replace",
             Self::TrackDelete {} => "track.delete",
             Self::PlaylistCreate { .. } => "playlist.create",
             Self::PlaylistRename { .. } => "playlist.rename",
@@ -171,6 +210,8 @@ pub struct Track {
     pub track_id: Uuid,
     pub metadata: Metadata,
     pub sources: BTreeMap<Uuid, Source>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_source_id: Option<Uuid>,
     #[schemars(with = "String")]
     pub updated_order: MessageId,
 }
@@ -220,6 +261,7 @@ pub enum RejectReason {
     MissingEntity,
     InvalidAnchor,
     InvalidPayload,
+    VersionConflict,
     WrongEntity,
     FutureGeneration,
 }
@@ -271,5 +313,66 @@ impl State {
             settings: SharedSettings::default(),
             applied: BTreeMap::new(),
         }
+    }
+}
+
+/// A small document in the vault, fetched independently of the audio bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LyricsReference {
+    pub sha256: String,
+    pub source: Source,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LyricLine {
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
+    pub text: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LyricsDocument {
+    pub version: u32,
+    pub language: Option<String>,
+    pub lines: Vec<LyricLine>,
+}
+impl LyricsDocument {
+    pub fn valid(&self) -> bool {
+        self.version == 1
+            && self.lines.len() <= 2000
+            && self
+                .language
+                .as_ref()
+                .is_none_or(|s| s.len() <= 32 && !s.contains('\0'))
+            && self.lines.iter().map(|l| l.text.len()).sum::<usize>() <= 128 * 1024
+            && self.lines.iter().all(|l| {
+                l.text.len() <= 4096
+                    && !l.text.contains('\0')
+                    && l.start_ms.is_none_or(|n| n <= 7 * 24 * 3600 * 1000)
+                    && l.end_ms.is_none_or(|end| {
+                        l.start_ms.is_some_and(|start| end >= start) && end <= 7 * 24 * 3600 * 1000
+                    })
+            })
+            && (self.lines.iter().all(|l| l.start_ms.is_none())
+                || self.lines.iter().all(|l| l.start_ms.is_some()))
+            && self
+                .lines
+                .windows(2)
+                .all(|w| w[0].start_ms <= w[1].start_ms)
+    }
+}
+
+impl Track {
+    pub fn media_sources(&self) -> impl Iterator<Item = &Source> {
+        self.sources
+            .values()
+            .chain(
+                self.metadata
+                    .artwork
+                    .as_ref()
+                    .and_then(|a| a.source.as_ref()),
+            )
+            .chain(self.metadata.lyrics.as_ref().map(|l| &l.source))
     }
 }

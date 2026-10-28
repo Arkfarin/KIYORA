@@ -89,13 +89,7 @@ pub fn plan(
         current.snapshot_b_message_id,
     ]);
     for track in state.tracks.values() {
-        for source in track.sources.values().chain(
-            track
-                .metadata
-                .artwork
-                .as_ref()
-                .and_then(|a| a.source.as_ref()),
-        ) {
+        for source in track.media_sources() {
             protected.insert(source.message_id);
         }
     }
