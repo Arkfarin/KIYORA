@@ -14,6 +14,24 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Load the private key and credentials from outside the checkout.
+val signingPropertiesPath = providers.environmentVariable("KIYORA_ANDROID_SIGNING_PROPERTIES")
+val signingPropertiesFile = file(signingPropertiesPath.orElse(
+    "${System.getProperty("user.home")}/.local/share/kiyora/android-signing/keystore.properties"
+).get())
+check(!signingPropertiesPath.isPresent || signingPropertiesFile.isFile) {
+    "KIYORA_ANDROID_SIGNING_PROPERTIES must point to an existing keystore.properties file"
+}
+val releaseSigningProperties = Properties().apply {
+    if (signingPropertiesFile.isFile) {
+        signingPropertiesFile.inputStream().use { load(it) }
+    }
+}
+fun signingProperty(name: String): String =
+    requireNotNull(releaseSigningProperties.getProperty(name)?.takeIf { it.isNotBlank() }) {
+        "Missing Android release signing property: $name"
+    }
+
 android {
     compileSdk = 36
     buildToolsVersion = "36.0.0"
@@ -27,6 +45,17 @@ android {
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["waitForActivitiesToComplete"] = "false"
+    }
+    signingConfigs {
+        if (signingPropertiesFile.isFile) {
+            create("release") {
+                storeFile = signingPropertiesFile.parentFile.resolve(signingProperty("storeFile"))
+                storePassword = signingProperty("storePassword")
+                keyAlias = signingProperty("keyAlias")
+                keyPassword = signingProperty("keyPassword")
+                storeType = releaseSigningProperties.getProperty("storeType", "PKCS12")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -42,6 +71,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") {

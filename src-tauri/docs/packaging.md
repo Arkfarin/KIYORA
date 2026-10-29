@@ -73,6 +73,47 @@ Install Rust's `aarch64-linux-android` target through rustup, JDK 17+, Android S
 platform 36/build-tools 36.0.0 and NDK r28c (28.2.13676358). The host also needs
 CMake, a C/C++ compiler, make, Perl, gperf, curl and Python 3.12+.
 
+From the repository root, the following commands check the toolchain and build
+an installable development APK:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm android:doctor
+pnpm android:apk
+```
+
+`scripts/android-env.sh` uses `~/Android/Sdk`, NDK
+`~/Android/Sdk/ndk/28.2.13676358`, and a JDK at
+`~/.local/share/kiyora/jdk-17` (or a conventional system JDK 17 location).
+Existing `JAVA_HOME`, `ANDROID_HOME` and `NDK_HOME` values override these defaults.
+The packaging commands load this environment automatically. To use `adb`,
+`sdkmanager` or the Tauri CLI directly in Bash, run
+`source src-tauri/scripts/android-env.sh` from the repository root. In Fish, use
+`set -gx` for the same variables and `fish_add_path` for their `bin` directories.
+
+For a fresh Linux setup, install Android command-line tools in
+`$ANDROID_HOME/cmdline-tools/latest`, choose JDK 17, and install these components:
+
+```sh
+sdkmanager --licenses
+sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+rustup target add aarch64-linux-android x86_64-linux-android
+```
+
+On Arch/CachyOS the host packages are `base-devel cmake gperf perl python curl
+unzip jdk17-openjdk`; a user-local JDK 17 also works. A separate Gradle install
+is unnecessary: the checked-in wrapper downloads and verifies Gradle 8.14.3.
+Keep SDK/NDK/JDK installations outside `src-tauri/target` so `cargo clean` does
+not remove the toolchain. Native compilation defaults to two parallel jobs;
+override `KIYORA_BUILD_JOBS` and `CARGO_BUILD_JOBS` if needed.
+
+The debug artifact is
+`src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
+and is signed with the local Android debug key. Install it on a connected device
+with USB debugging enabled using `adb install -r <path-to-apk>`.
+
+From `src-tauri`, the underlying release command remains:
+
 ```sh
 export ANDROID_HOME=/absolute/path/to/android-sdk
 export NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
@@ -82,6 +123,38 @@ bash scripts/package-android.sh
 The default is a release ARM64 APK. Use `--debug` for a locally signed development
 APK. For an x86_64 emulator, install Rust's `x86_64-linux-android` target and set
 `KIYORA_ANDROID_ABI=x86_64`. ARMv7 and x86 are not release targets.
+
+From the repository root, `pnpm android:apk:release` requires the private release
+signing configuration and produces
+`src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`.
+Gradle reads `~/.local/share/kiyora/android-signing/keystore.properties`, or the
+file specified by `KIYORA_ANDROID_SIGNING_PROPERTIES`. The properties are
+`storeFile`, `storeType`, `keyAlias`, `storePassword` and `keyPassword`;
+`storeFile` is resolved relative to that properties file (absolute paths also work).
+An explicitly configured missing file or incomplete credentials fail the build.
+
+The local signing directory contains the encrypted RSA 3072-bit PKCS12 private
+key `kiyora-release.p12`, credentials in `keystore.properties`, the public
+`release-certificate.pem` and its SHA-256 fingerprint. The directory is mode 700
+and private files are mode 600. Passwords are generated randomly and are not
+stored in the repository or printed by the build commands. Keep a secure backup
+of the **entire directory on a separate device**. Restore it to the same location
+on another builder, or set `KIYORA_ANDROID_SIGNING_PROPERTIES` to the restored
+properties file. Reuse this key for subsequent releases instead of generating
+another signing identity.
+
+The package script verifies the APK signature with `apksigner`, ZIP alignment
+and native payloads, then writes `SHA256SUMS` beside the APK. It selects the
+current APK from Gradle output metadata, so an older unsigned artifact cannot
+be mistaken for the signed result. Direct `bash scripts/package-android.sh`
+still allows unsigned release builds on CI when no signing configuration exists;
+the `pnpm android:apk:release` command requires signing.
+
+Debug and release use different signing certificates. An installed debug app
+cannot be updated in place with a release APK. Back up any app data before
+uninstalling a debug build to switch to release. See
+[Android app signing and updates](https://developer.android.com/studio/publish/app-signing)
+and [Tauri signing configuration](https://v2.tauri.app/distribute/sign/android/).
 
 Host TDLib TL generators are built separately; cross compilation does not need
 a complete host TDLib. TDLib statically includes OpenSSL, zlib and libc++, while

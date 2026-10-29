@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Android private signing material must stay outside version control.
+*.jks
+*.keystore
+*.p12
+keystore.properties
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

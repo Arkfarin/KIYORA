@@ -19,6 +19,13 @@ does not bundle TDLib. Current verification and remaining work are recorded in
 [completion report](docs/BACKEND_COMPLETION_REPORT.md). Readiness remains
 `RELEASE_BLOCKED` until Windows, physical-device and live-account acceptance pass.
 
+For Android, run `pnpm android:doctor` to check the local toolchain, then
+`pnpm android:apk` to build a signed ARM64 debug APK with bundled TDLib.
+The APK is written to
+`src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`.
+`pnpm android:apk:release` builds a signed release APK using the local private key; see
+[Android setup and signing](src-tauri/docs/packaging.md#android-arm64).
+
 Use `kiyora-cli vault discover` for bounded lookup of a saved or named vault,
 or `kiyora-cli vault discover --deep` to recover renamed/legacy channels.
 See [Vault discovery](src-tauri/docs/vault-discovery.md) for limits, JSON output,

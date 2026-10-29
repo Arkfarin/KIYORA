@@ -8,6 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "android:doctor": "bash src-tauri/scripts/check-android-env.sh",
+    "android:apk": "bash src-tauri/scripts/package-android.sh --debug",
+    "android:apk:release": "KIYORA_ANDROID_REQUIRE_SIGNING=1 bash src-tauri/scripts/package-android.sh",
     "test:ui": "playwright test",
     "format:check": "prettier --check src tests/ui playwright.config.ts"
   },

@@ -79,7 +79,7 @@ tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 zeroize = "1"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = "2.8.3"
 
 
 
