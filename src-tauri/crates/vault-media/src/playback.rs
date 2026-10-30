@@ -76,13 +76,30 @@ pub trait PlatformPlaybackSession: Send {
     fn resume(&mut self) -> Result<(), PlaybackError>;
     fn update(&mut self, state: &PlaybackState) -> Result<(), PlaybackError>;
     fn stop(&mut self);
+    /// Optional bounded thumbnail; callers fence late completion by track.
+    fn artwork(&mut self, _track_id: Uuid, _bytes: &[u8]) -> Result<(), PlaybackError> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
 pub struct PlaybackControls {
+    navigation: tokio::sync::mpsc::Sender<bool>,
     commands: std::sync::mpsc::SyncSender<Command>,
 }
 impl PlaybackControls {
+    /// Queue navigation is handled by the owning backend, never by the decoder.
+    pub fn next(&self) -> Result<(), PlaybackError> {
+        self.navigation
+            .try_send(true)
+            .map_err(|_| PlaybackError::Closed)
+    }
+    pub fn previous(&self) -> Result<(), PlaybackError> {
+        self.navigation
+            .try_send(false)
+            .map_err(|_| PlaybackError::Closed)
+    }
+
     pub fn pause(&self) -> Result<(), PlaybackError> {
         self.send(Command::Pause)
     }
@@ -104,6 +121,7 @@ impl PlaybackControls {
 
 /// Opens a real OS output device and keeps the cache lease while its decoder reads.
 pub struct PlaybackEngine {
+    navigation: Option<tokio::sync::mpsc::Receiver<bool>>,
     commands: std::sync::mpsc::SyncSender<Command>,
     state: watch::Receiver<PlaybackState>,
     closing: Arc<AtomicBool>,
@@ -120,6 +138,10 @@ enum Command {
     Stop,
     Seek(u64),
     Volume(f32),
+    Artwork {
+        track_id: Uuid,
+        bytes: Vec<u8>,
+    },
     Shutdown,
     #[cfg(test)]
     DeviceFailure,
@@ -161,7 +183,9 @@ impl PlaybackEngine {
     }
     fn open_inner(platform: Option<Arc<dyn PlaybackPlatform>>) -> Result<Self, PlaybackError> {
         let (tx, rx) = std::sync::mpsc::sync_channel(32);
+        let (navigation_tx, navigation_rx) = tokio::sync::mpsc::channel(16);
         let controls = PlaybackControls {
+            navigation: navigation_tx,
             commands: tx.clone(),
         };
         let (state_tx, state) = watch::channel(PlaybackState::Idle);
@@ -315,6 +339,14 @@ impl PlaybackEngine {
                                 }
                             }
                         }
+                        Ok(Command::Artwork { track_id, bytes }) => {
+                            if active.as_ref().is_some_and(|(id, ..)| *id == track_id)
+                                && let Some(native) = &mut platform
+                            {
+                                // Artwork failure never interrupts audio.
+                                let _ = native.artwork(track_id, &bytes);
+                            }
+                        }
                         Ok(Command::Volume(value)) => {
                             volume = value;
                             if let Some(current) = &sink {
@@ -428,6 +460,7 @@ impl PlaybackEngine {
             return Err(PlaybackError::DeviceUnavailable);
         }
         Ok(Self {
+            navigation: Some(navigation_rx),
             commands: tx,
             state,
             closing,
@@ -440,6 +473,15 @@ impl PlaybackEngine {
     }
     pub fn state(&self) -> PlaybackState {
         self.state.borrow().clone()
+    }
+    pub fn take_navigation(&mut self) -> Option<tokio::sync::mpsc::Receiver<bool>> {
+        self.navigation.take()
+    }
+    pub fn set_artwork(&self, track_id: Uuid, bytes: Vec<u8>) -> Result<(), PlaybackError> {
+        if bytes.len() > 256 * 1024 {
+            return Err(PlaybackError::Media(MediaError::Artwork));
+        }
+        self.send(Command::Artwork { track_id, bytes })
     }
     pub fn state_changes(&self) -> watch::Receiver<PlaybackState> {
         self.state.clone()

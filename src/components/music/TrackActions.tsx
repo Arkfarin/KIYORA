@@ -74,7 +74,7 @@ export function TrackActions({
             ? "Поделиться композицией"
             : "Композиция"
       }
-      onClose={onClose}
+      onClose={() => (view === "menu" ? onClose() : setView("menu"))}
     >
       <div className="menu-track">
         <Cover track={track} session={session_id} />

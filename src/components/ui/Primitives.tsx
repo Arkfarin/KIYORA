@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef } from "react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { X, LoaderCircle, Music2 } from "lucide-react";
+import { useBack } from "../../app/back";
+import { X, ChevronDown, LoaderCircle, Music2 } from "lucide-react";
 
 export function IconButton({
   label,
@@ -26,17 +27,25 @@ export function Modal({
   onClose,
   wide = false,
   fullScreen = false,
+  className = "",
+  headingAction,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
   fullScreen?: boolean;
+  className?: string;
+  headingAction?: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const close = useRef(onClose);
   close.current = onClose;
+  useBack(() => {
+    close.current();
+    return true;
+  });
   useEffect(() => {
     const node = ref.current;
     node?.showModal();
@@ -45,7 +54,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      className={`modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""}`}
+      className={`modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""} ${className}`}
       aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
@@ -65,10 +74,18 @@ export function Modal({
       }}
     >
       <div className="modal-heading">
+        {fullScreen && (
+          <IconButton label="Свернуть плеер" onClick={onClose}>
+            <ChevronDown />
+          </IconButton>
+        )}
         <h2 id={titleId}>{title}</h2>
-        <IconButton label="Закрыть" onClick={onClose}>
-          <X />
-        </IconButton>
+        {headingAction}
+        {!fullScreen && (
+          <IconButton label="Закрыть" onClick={onClose}>
+            <X />
+          </IconButton>
+        )}
       </div>
       {children}
     </dialog>

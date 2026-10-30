@@ -150,7 +150,7 @@ export function Authorization({ runtime }: { runtime: Runtime }) {
       {auth?.state === "READY" ? (
         <p className="muted">
           Сессия авторизована. Готовность облачных изменений определяется
-          состоянием Vault.
+          состоянием библиотеки.
         </p>
       ) : (
         <>
@@ -176,7 +176,7 @@ export function Authorization({ runtime }: { runtime: Runtime }) {
                   event.preventDefault();
                   const secret = apiHash;
                   setApiHash("");
-                  void run("Подключение TDLib", () =>
+                  void run("Подключение Telegram", () =>
                     call("connect_telegram", {
                       session_id,
                       api_id: Number(apiId),
@@ -299,9 +299,7 @@ export function Authorization({ runtime }: { runtime: Runtime }) {
               <button disabled={!!busy} onClick={() => send("qr")}>
                 Обновить QR
               </button>
-              <p className="muted small">
-                Новые QR поступают от TDLib автоматически.
-              </p>
+              <p className="muted small">QR-код обновляется автоматически.</p>
             </div>
           )}
           {auth &&
@@ -312,7 +310,7 @@ export function Authorization({ runtime }: { runtime: Runtime }) {
             ].includes(auth.state) && (
               <p>
                 Telegram требует дополнительный шаг ({auth.state}). Текущий
-                backend не поддерживает его ввод; завершите требование в
+                приложение пока не поддерживает его ввод; завершите требование в
                 официальном клиенте и повторите вход.
               </p>
             )}
@@ -324,7 +322,7 @@ export function Authorization({ runtime }: { runtime: Runtime }) {
 
 export const phaseNames: Record<string, string> = {
   creating_channel: "Создаём приватный канал",
-  publishing_init: "Инициализируем Vault",
+  publishing_init: "Готовим библиотеку",
   barrier: "Фиксируем границу синхронизации",
   encode: "Готовим снимок библиотеки",
   publish_copies: "Сохраняем две копии снимка",
@@ -352,7 +350,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
     )
       return;
     discovered.current = session_id;
-    void run("Поиск существующего Vault", async () =>
+    void run("Поиск вашей библиотеки", async () =>
       setCandidates(await call("discover_vaults", { session_id })),
     );
   }, [
@@ -380,29 +378,42 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
   return (
     <section className="panel">
       <div className="section-title">
-        <h2>Vault</h2>
+        <h2>Музыкальная библиотека</h2>
         <span
           className={`badge ${model.status?.mode === "ONLINE_READY" ? "good" : ""}`}
         >
-          {model.status?.mode}
+          {(
+            {
+              ONLINE_READY: "Подключена",
+              SYNCING: "Обновляется",
+              RECONNECTING: "Нет подключения",
+              AUTH_REQUIRED: "Нужен вход",
+              DISCOVERING: "Поиск библиотеки",
+              DEGRADED_READONLY: "Только чтение",
+            } as Record<string, string>
+          )[model.status?.mode ?? ""] ?? "Подключение"}
         </span>
       </div>
       {model.status?.context.vault_id && (
-        <p className="mono small">
-          {model.status.context.vault_id}
-          <br />
-          Chat: {boundChat ?? "—"}
-        </p>
+        <details>
+          <summary>Сведения о подключении</summary>
+          <p className="mono small">
+            {model.status.context.vault_id}
+            <br />
+            Канал: {boundChat ?? "—"}
+          </p>
+        </details>
       )}
       {model.info?.creation && (
         <p className="notice">
-          Незавершённое создание: {model.info.creation.stage}. Продолжение
-          использует этот же канал.
+          Настройка не завершена:{" "}
+          {phaseNames[model.info.creation.stage] ?? "готовим библиотеку"}.
+          Продолжение использует этот же канал.
         </p>
       )}
       {model.progress && (
         <p className="progress-label" role="status">
-          {phaseNames[model.progress.phase] ?? model.progress.phase}
+          {phaseNames[model.progress.phase] ?? "Обновляем библиотеку"}
           {model.progress.total !== null
             ? ` · ${model.progress.completed}/${model.progress.total}`
             : ""}
@@ -412,7 +423,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
         <button
           disabled={!ready || !!busy}
           onClick={() =>
-            void run("Поиск Vault", async () =>
+            void run("Поиск библиотеки", async () =>
               setCandidates(await call("discover_vaults", { session_id })),
             )
           }
@@ -422,7 +433,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
         <button
           disabled={!ready || !!busy}
           onClick={() =>
-            void run("Расширенный поиск Vault", async () =>
+            void run("Расширенный поиск библиотеки", async () =>
               setCandidates(await call("discover_vaults_deep", { session_id })),
             )
           }
@@ -446,14 +457,14 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
             disabled={!ready || !!busy || !(boundChat || validChat)}
             onClick={recover}
           >
-            Продолжить инициализацию
+            Продолжить настройку
           </button>
         )}
       </div>
       {candidates?.length === 0 && (
         <p className="muted">
-          Vault не найден в области поиска. Можно подключить известный chat_id
-          вручную; отсутствие результата не означает отсутствие канала.
+          Библиотека пока не найдена. Попробуйте расширенный поиск или
+          подключите канал вручную, если знаете его идентификатор.
         </p>
       )}
       {candidates?.map((candidate) => (
@@ -473,7 +484,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
               (!!boundChat && boundChat !== candidate.channel.chat_id)
             }
             onClick={() =>
-              void run("Подключение Vault", () =>
+              void run("Подключение библиотеки", () =>
                 call("attach_vault", {
                   session_id,
                   chat_id: candidate.channel.chat_id,
@@ -489,7 +500,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
         className="inline-form"
         onSubmit={(event) => {
           event.preventDefault();
-          void run("Подключение Vault", () =>
+          void run("Подключение библиотеки", () =>
             call("attach_vault", { session_id, chat_id: chat }),
           );
         }}
@@ -525,7 +536,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
       </form>
       {!locked && (
         <details>
-          <summary>Создать новый Vault</summary>
+          <summary>Создать новую библиотеку</summary>
           <p className="muted">
             Создаёт новый приватный канал. Для существующего хранилища
             используйте поиск или chat_id.
@@ -534,7 +545,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
             className="inline-form"
             onSubmit={(event) => {
               event.preventDefault();
-              void run("Создание Vault", () =>
+              void run("Создание библиотеки", () =>
                 call("create_vault", {
                   session_id,
                   ...(title.trim() ? { title: title.trim() } : {}),
@@ -551,7 +562,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
               />
             </label>
             <button className="primary" disabled={!ready || !!busy}>
-              Создать Vault
+              Создать библиотеку
             </button>
           </form>
         </details>
@@ -560,7 +571,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
         <div className="notice">
           <p>
             Локальная SQLite повреждена. Восстановление проверяет облачный
-            snapshot и сохраняет исходные файлы.
+            резервную копию и сохраняет исходные файлы.
           </p>
           <button
             disabled={!ready || !!busy}
@@ -570,7 +581,7 @@ export function VaultSetup({ runtime }: { runtime: Runtime }) {
               )
             }
           >
-            Восстановить из snapshot
+            Восстановить из резервной копии
           </button>
         </div>
       )}

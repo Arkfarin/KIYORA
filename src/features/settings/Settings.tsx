@@ -114,72 +114,6 @@ export function SettingsScreen({
       </section>
       <section className="settings-section">
         <div>
-          <h2>Воспроизведение</h2>
-          <p>Очередь и звук управляются одним плеером на устройстве.</p>
-        </div>
-        <div className="settings-panel">
-          <label>
-            Громкость
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.02}
-              defaultValue={model.info?.playback_volume ?? 1}
-              onPointerUp={(e) => {
-                const value = Number(e.currentTarget.value);
-                void run("Громкость", () =>
-                  call("control_playback", {
-                    session_id,
-                    action: { kind: "set_volume", value },
-                  }),
-                );
-              }}
-              onKeyUp={(e) => {
-                const value = Number(e.currentTarget.value);
-                void run("Громкость", () =>
-                  call("control_playback", {
-                    session_id,
-                    action: { kind: "set_volume", value },
-                  }),
-                );
-              }}
-            />
-          </label>
-          <p className="small muted">
-            Пробел — пауза · Ctrl K — поиск · Ctrl L — медиатека · Ctrl ← / → —
-            сменить композицию
-          </p>
-          <label>
-            Повтор
-            <select
-              value={model.queue?.repeat ?? "off"}
-              disabled={!model.queue}
-              onChange={(e) => {
-                const mode = e.target.value as "off" | "queue" | "track";
-                if (model.queue)
-                  void run(
-                    "Повтор",
-                    () =>
-                      call("edit_queue", {
-                        session_id,
-                        queue_id: model.queue!.queue_id,
-                        revision: model.queue!.revision,
-                        action: { kind: "repeat", mode },
-                      }),
-                    false,
-                  );
-              }}
-            >
-              <option value="off">Выключен</option>
-              <option value="queue">Вся очередь</option>
-              <option value="track">Один трек</option>
-            </select>
-          </label>
-        </div>
-      </section>
-      <section className="settings-section">
-        <div>
           <h2>Загрузки и кэш</h2>
           <p>
             Закреплённая музыка сохраняется для офлайна. Активный плеер защищает
@@ -200,7 +134,7 @@ export function SettingsScreen({
                   <dd>{storage.verified_cache.pinned_entries} файлов</dd>
                 </div>
                 <div>
-                  <dt>Хранилище TDLib</dt>
+                  <dt>Данные Telegram</dt>
                   <dd>{bytesLabel(storage.tdlib_files_bytes)}</dd>
                 </div>
                 <div>
@@ -257,15 +191,33 @@ export function SettingsScreen({
           </button>
         </div>
       </section>
+      <details className="settings-panel">
+        <summary>Управление с клавиатуры</summary>
+        <p>
+          Пробел — пауза и воспроизведение. Ctrl / ⌘ + ← / → — предыдущий и
+          следующий трек. Ctrl / ⌘ + K — поиск, Ctrl / ⌘ + L — медиатека. Alt +
+          ← — назад. Escape — закрыть открытое представление.
+        </p>
+        <p className="muted">При вводе текста сочетания плеера отключены.</p>
+      </details>
       <section className="settings-section">
         <div>
-          <h2>Telegram и Vault</h2>
+          <h2>Аккаунт и синхронизация</h2>
           <p>Профиль, сессия и синхронизация вашей музыки.</p>
         </div>
         <div className="settings-panel">
-          <Profiles runtime={runtime} />
-          <Authorization key={session_id} runtime={runtime} />
-          <VaultSetup key={session_id} runtime={runtime} />
+          <details>
+            <summary>Профили на этом устройстве</summary>
+            <Profiles runtime={runtime} />
+          </details>
+          <details>
+            <summary>Подключение Telegram</summary>
+            <Authorization key={session_id} runtime={runtime} />
+          </details>
+          <details>
+            <summary>Музыкальная библиотека</summary>
+            <VaultSetup key={session_id} runtime={runtime} />
+          </details>
           <button
             className="danger-text"
             disabled={
@@ -331,7 +283,7 @@ export function SettingsScreen({
               )
             }
           >
-            Создать снимок в Vault
+            Сохранить резервную копию в облаке
           </button>
         </div>
       </section>
@@ -428,7 +380,7 @@ export function SettingsScreen({
           }
         >
           Для следующего подключения потребуется авторизация. Музыка в Telegram
-          Vault останется на месте.
+          останется на месте.
         </Confirm>
       )}
       {restoring && (
@@ -450,8 +402,8 @@ export function SettingsScreen({
             })
           }
         >
-          Архив будет проверен backend. Восстановление может добавить данные в
-          подключённый Vault.
+          Приложение проверит архив перед восстановлением. Восстановление может
+          добавить данные в подключённую библиотеку.
         </Confirm>
       )}
     </>

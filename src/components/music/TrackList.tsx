@@ -17,6 +17,7 @@ import { call, duration, mutate } from "../../backend";
 import type { Track } from "../../backend";
 import type { Runtime } from "../../useBackend";
 import type { Navigate } from "../../app/navigation";
+import { resumePlayback } from "../../services/playback";
 import { Cover } from "./Cover";
 import { Empty, IconButton } from "../ui/Primitives";
 type Sort = "title" | "performer" | "album" | "recent";
@@ -54,6 +55,8 @@ export function TrackList({
   const [grid, setGrid] = useState(false);
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const held = useRef(false);
+  const pressOrigin = useRef<{ x: number; y: number } | null>(null);
   const press = useRef<ReturnType<typeof setTimeout> | null>(null);
   const list = useMemo(
     () =>
@@ -94,6 +97,18 @@ export function TrackList({
     );
   }, [tracks]);
   const play = (track: Track) => {
+    const playback = runtime.playbackStore?.getSnapshot() ?? model.playback;
+    if (
+      playback.track_id === track.track_id &&
+      model.queue?.current_track_id === track.track_id
+    ) {
+      void run(
+        "Воспроизведение",
+        () => resumePlayback(session_id, playback, model.queue),
+        false,
+      );
+      return;
+    }
     const ids = playIds ?? list.map((t) => t.track_id);
     void run(
       "Воспроизведение",
@@ -264,12 +279,35 @@ export function TrackList({
                     e.preventDefault();
                     onMenu(track);
                   }}
+                  onClickCapture={(e) => {
+                    if (held.current) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      held.current = false;
+                    }
+                  }}
                   onPointerDown={(e) => {
-                    if (e.pointerType === "touch")
-                      press.current = setTimeout(() => onMenu(track), 550);
+                    held.current = false;
+                    if (
+                      e.pointerType === "touch" &&
+                      !(e.target as HTMLElement).closest(".track-actions,input")
+                    ) {
+                      pressOrigin.current = { x: e.clientX, y: e.clientY };
+                      press.current = setTimeout(() => {
+                        held.current = true;
+                        onMenu(track);
+                      }, 550);
+                    }
                   }}
                   onPointerUp={stopPress}
-                  onPointerMove={stopPress}
+                  onPointerMove={(e) => {
+                    const start = pressOrigin.current;
+                    if (
+                      start &&
+                      Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10
+                    )
+                      stopPress();
+                  }}
                   onPointerCancel={stopPress}
                 >
                   {!compact && !grid && (
@@ -315,7 +353,11 @@ export function TrackList({
                         onClick={() => play(track)}
                         title={track.metadata.title}
                       >
-                        {track.metadata.title || "Без названия"}
+                        <span>{track.metadata.title || "Без названия"}</span>
+                        <small className="touch-artist">
+                          {track.metadata.performer ||
+                            "Неизвестный исполнитель"}
+                        </small>
                       </button>
                       <button
                         className="track-artist"

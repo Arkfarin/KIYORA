@@ -25,6 +25,8 @@ enum NativeControl {
     Pause,
     Resume,
     Stop,
+    Next,
+    Previous,
     Seek { position_ms: u64 },
 }
 
@@ -66,6 +68,8 @@ impl<R: Runtime> PlaybackPlatform for AndroidMedia<R> {
                 NativeControl::Pause => controls.pause(),
                 NativeControl::Resume => controls.resume(),
                 NativeControl::Stop => controls.stop(),
+                NativeControl::Next => controls.next(),
+                NativeControl::Previous => controls.previous(),
                 NativeControl::Seek { position_ms } => controls.seek(position_ms),
             };
             // A closed/full worker cannot accept the control; report failure to
@@ -99,6 +103,12 @@ impl<R: Runtime> PlatformPlaybackSession for MediaSession<R> {
         self.call(
             "preparePlayback",
             serde_json::json!({"owner": self.owner, "metadata": metadata}),
+        )
+    }
+    fn artwork(&mut self, track_id: Uuid, bytes: &[u8]) -> Result<(), PlaybackError> {
+        self.call(
+            "setNativeArtwork",
+            serde_json::json!({"owner": self.owner, "track_id": track_id, "bytes": bytes}),
         )
     }
     fn pause(&mut self) -> Result<(), PlaybackError> {

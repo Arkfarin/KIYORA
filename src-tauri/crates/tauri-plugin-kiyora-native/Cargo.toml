@@ -24,6 +24,13 @@ zeroize = "1"
 tokio.workspace = true
 ndk-context = "0.1"
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+souvlaki = "0.8.3"
+vault-media.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
 [dev-dependencies]
 tauri = { version = "2", default-features = false, features = ["test"] }
 serde_json.workspace = true

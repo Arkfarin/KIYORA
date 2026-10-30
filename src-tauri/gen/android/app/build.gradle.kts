@@ -71,15 +71,20 @@ android {
             }
         }
         getByName("release") {
-            signingConfigs.findByName("release")?.let { signingConfig = it }
-            isMinifyEnabled = true
-            proguardFiles(
-                *fileTree(".") {
-                  include("**/*.pro")
-                  exclude("build/**")
-                }.files.toTypedArray()
-            )
-        }
+    signingConfigs.findByName("release")?.let {
+        signingConfig = it
+    }
+
+    isMinifyEnabled = true
+
+    proguardFiles(
+        getDefaultProguardFile("proguard-android-optimize.txt"),
+        *fileTree(".") {
+            include("**/*.pro")
+            exclude("build/**")
+        }.files.toTypedArray()
+    )
+}
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8

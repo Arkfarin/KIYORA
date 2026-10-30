@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useEffect, useState } from "react";
 import { AlertCircle, X } from "lucide-react";
-import { call, errorHelp, mutate, uuid } from "./backend";
+import { errorHelp, mutate, uuid } from "./backend";
 import type { Track } from "./backend";
 import { useBackend } from "./useBackend";
 import { usePreferences } from "./hooks/usePreferences";
-import type { Route } from "./app/navigation";
+import { useNavigation } from "./hooks/useNavigation";
 import { Shell } from "./components/layout/Shell";
 import { Confirm, IconButton } from "./components/ui/Primitives";
 import { TrackActions } from "./components/music/TrackActions";
@@ -27,11 +28,14 @@ import { SettingsScreen } from "./features/settings/Settings";
 import "@fontsource-variable/manrope";
 import "@fontsource-variable/space-grotesk";
 import "./styles/app.css";
+import "./styles/playback.css";
 export default function App() {
   const runtime = useBackend();
   const preferences = usePreferences();
   const { model, run } = runtime;
-  const [route, setRoute] = useState<Route>({ kind: "home" });
+  const { route, navigate, back, canGoBack } = useNavigation(
+    model.status?.context.session_id,
+  );
   const [allowLocal, setAllowLocal] = useState(false);
   const [menu, setMenu] = useState<Track | null>(null);
   const [editor, setEditor] = useState<Track | null>(null);
@@ -40,19 +44,13 @@ export default function App() {
   const [removing, setRemoving] = useState(false);
   const session = model.status?.context.session_id;
   const [openedSession, setOpenedSession] = useState<string>();
-  const navigate = (route: Route) => {
-    setRoute(route);
-    document.getElementById("main-content")?.scrollTo({ top: 0 });
-  };
-  const current = useRef({ runtime, navigate });
-  current.current = { runtime, navigate };
+  useKeyboardShortcuts(runtime, navigate);
   useEffect(() => {
     setMenu(null);
     setEditor(null);
     setDeleting([]);
     setCreatePlaylist(false);
     setAllowLocal(false);
-    setRoute({ kind: "home" });
   }, [session]);
   const usable =
     !!model.status?.context.vault_id &&
@@ -68,74 +66,6 @@ export default function App() {
   useEffect(() => {
     if (usable) setOpenedSession(session);
   }, [usable, session]);
-  useEffect(() => {
-    const key = (event: KeyboardEvent) => {
-      if (
-        event.repeat ||
-        event.altKey ||
-        document.querySelector("dialog[open]")
-      )
-        return;
-      const target = event.target as HTMLElement;
-      if (target.closest("input,textarea,select,[contenteditable=true]"))
-        return;
-      const { runtime, navigate } = current.current;
-      const session_id = runtime.model.status?.context.session_id;
-      if (!session_id) return;
-      if (event.ctrlKey || event.metaKey) {
-        if (event.key.toLowerCase() === "k") {
-          event.preventDefault();
-          navigate({ kind: "search" });
-        } else if (event.key.toLowerCase() === "l") {
-          event.preventDefault();
-          navigate({ kind: "library" });
-        } else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
-          event.preventDefault();
-          void runtime.run(
-            "Сменить композицию",
-            () =>
-              call("control_playback", {
-                session_id,
-                action: {
-                  kind: event.key === "ArrowRight" ? "next" : "previous",
-                },
-              }),
-            false,
-          );
-        }
-      } else if (event.code === "Space" && !target.closest("button,a")) {
-        event.preventDefault();
-        const playback = runtime.model.playback;
-        const queue = runtime.model.queue;
-        if (["playing", "paused", "buffering"].includes(playback.state))
-          void runtime.run(
-            "Пауза / воспроизведение",
-            () =>
-              call("control_playback", {
-                session_id,
-                action: {
-                  kind: playback.state === "playing" ? "pause" : "resume",
-                },
-              }),
-            false,
-          );
-        else if (queue?.current_track_id)
-          void runtime.run(
-            "Воспроизведение",
-            () =>
-              call("edit_queue", {
-                session_id,
-                queue_id: queue.queue_id,
-                revision: queue.revision,
-                action: { kind: "jump", index: queue.position ?? 0 },
-              }),
-            false,
-          );
-      }
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, []);
   const requestDelete = (tracks: Track[]) =>
     setDeleting(tracks.map((track) => ({ track, op: uuid() })));
   const common = {
@@ -153,10 +83,16 @@ export default function App() {
       <Shell
         runtime={runtime}
         route={route}
+        back={canGoBack ? back : undefined}
         navigate={navigate}
         createPlaylist={() => setCreatePlaylist(true)}
         player={
-          <Player runtime={runtime} onMenu={setMenu} onEdit={setEditor} />
+          <Player
+            key={session}
+            runtime={runtime}
+            onMenu={setMenu}
+            onEdit={setEditor}
+          />
         }
       >
         {model.error && (
@@ -193,7 +129,9 @@ export default function App() {
         ].includes(route.kind) && (
           <CollectionScreen {...common} route={route} />
         )}
-        {route.kind === "search" && <SearchScreen {...common} />}
+        <div hidden={route.kind !== "search"}>
+          <SearchScreen {...common} active={route.kind === "search"} />
+        </div>
         {route.kind === "playlists" && (
           <PlaylistsScreen
             runtime={runtime}
@@ -210,7 +148,9 @@ export default function App() {
           />
         )}
         {route.kind === "imports" && <ImportsScreen runtime={runtime} />}
-        {route.kind === "downloads" && <DownloadsScreen runtime={runtime} />}
+        {route.kind === "downloads" && (
+          <DownloadsScreen runtime={runtime} navigate={navigate} />
+        )}
         {route.kind === "settings" && (
           <SettingsScreen runtime={runtime} preferences={preferences} />
         )}

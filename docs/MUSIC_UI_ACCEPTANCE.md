@@ -7,6 +7,14 @@ It does not turn earlier backend/platform reports into acceptance of this UI.
 The latest increment adds synchronized custom playlist covers and durable playlist
 editor/create drafts. Details and changed modules: [playlist artwork implementation](PLAYLIST_ARTWORK_IMPLEMENTATION.md).
 
+## UX overhaul increment (2026-10-29)
+
+The implemented player/navigation/native-media changes, current verification results,
+comparison screenshots and remaining device acceptance are recorded in
+[UX_OVERHAUL_REPORT.md](UX_OVERHAUL_REPORT.md). That report supersedes the player
+composition, volume UI and lyrics presentation described below; release remains blocked
+on device acceptance. Earlier test results below describe their original increment.
+
 ## Implemented paths
 
 - Native bootstrap and profile/session/Vault recovery; welcome, QR/phone/code/2FA

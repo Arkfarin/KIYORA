@@ -302,7 +302,7 @@ impl Backend {
             vault: None,
         };
         let session = Session {
-            queue: queue::Queue::default(),
+            queue: queue::Queue::load_preferences(&lease),
             playback_id: None,
             playback_ticket: Uuid::nil(),
             playback_cancel: CancellationToken::new(),
@@ -705,13 +705,16 @@ impl Backend {
         }
         if session.playback.is_none() {
             let platform = self.playback_platform.clone();
-            let engine = tokio::task::spawn_blocking(move || match platform {
+            let mut engine = tokio::task::spawn_blocking(move || match platform {
                 Some(platform) => vault_media::PlaybackEngine::open_with_platform(platform),
                 None => vault_media::PlaybackEngine::open(),
             })
             .await
             .map_err(|_| ApiError::new(ErrorCode::Internal))??;
             let mut changes = engine.state_changes();
+            let mut navigation = engine
+                .take_navigation()
+                .ok_or_else(|| ApiError::new(ErrorCode::Internal))?;
             let events = self.events.clone();
             let context = session.context.clone();
             let weak_session = Arc::downgrade(&self.session);
@@ -723,26 +726,51 @@ impl Backend {
             let playback_platform = self.playback_platform.clone();
             let native_path = self.native_path.clone();
             tokio::spawn(async move {
-                while changes.changed().await.is_ok() {
+                loop {
+                    let action = tokio::select! {
+                        changed = changes.changed() => {
+                            if changed.is_err() { break; }
+                            None
+                        },
+                        direction = navigation.recv(), if !navigation.is_closed() => direction,
+                    };
+                    let Some(session) = weak_session.upgrade() else {
+                        break;
+                    };
+                    let backend = Backend {
+                        store: store.clone(),
+                        secrets: secrets.clone(),
+                        playback_platform: playback_platform.clone(),
+                        native_path: native_path.clone(),
+                        events: events.clone(),
+                        session,
+                        session_transition: session_transition.clone(),
+                        job_access: job_access.clone(),
+                        import_resolver: import_resolver.clone(),
+                    };
+                    if let Some(forward) = action {
+                        if let Err(error) = backend
+                            .control_playback(
+                                context.session_id,
+                                if forward {
+                                    PlaybackAction::Next
+                                } else {
+                                    PlaybackAction::Previous
+                                },
+                            )
+                            .await
+                        {
+                            events.emit(&context, EventData::Warning(error));
+                        }
+                        continue;
+                    }
                     let value = changes.borrow_and_update().clone();
                     events.emit(&context, EventData::Playback(value.clone()));
                     if let vault_media::PlaybackState::Ended {
                         playback_id,
                         track_id,
                     } = value
-                        && let Some(session) = weak_session.upgrade()
                     {
-                        let backend = Backend {
-                            store: store.clone(),
-                            secrets: secrets.clone(),
-                            playback_platform: playback_platform.clone(),
-                            native_path: native_path.clone(),
-                            events: events.clone(),
-                            session,
-                            session_transition: session_transition.clone(),
-                            job_access: job_access.clone(),
-                            import_resolver: import_resolver.clone(),
-                        };
                         let reader = {
                             let guard = backend.session.lock().await;
                             guard
@@ -791,6 +819,35 @@ impl Backend {
                 .play_input_identified(metadata, input)
                 .map_err(ApiError::from)?,
         );
+        drop(guard);
+        if self.playback_platform.is_some() && track.metadata.artwork.is_some() {
+            let backend = self.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                let artwork = tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    backend.artwork(session_id, track_id, &cancel),
+                )
+                .await;
+                if let Ok(Ok(Some(artwork))) = artwork {
+                    let thumbnail = tokio::task::spawn_blocking(move || {
+                        vault_media::playback_thumbnail(&artwork.bytes)
+                    })
+                    .await;
+                    if let Ok(Ok(bytes)) = thumbnail {
+                        let guard = backend.session.lock().await;
+                        if let Some(s) = guard.as_ref().filter(|s| {
+                            s.context.session_id == session_id
+                                && s.playback_ticket == ticket
+                                && !cancel.is_cancelled()
+                        }) && let Some(engine) = &s.playback
+                        {
+                            let _ = engine.set_artwork(track_id, bytes);
+                        }
+                    }
+                }
+            });
+        }
         Ok(())
     }
     pub async fn playback_state(
@@ -813,6 +870,26 @@ impl Backend {
         session_id: Uuid,
         action: PlaybackAction,
     ) -> Result<vault_media::PlaybackState, ApiError> {
+        if action == PlaybackAction::Previous {
+            let guard = self.session.lock().await;
+            let s = guard
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::NoProfile))?;
+            check_session(s, session_id)?;
+            if let Some(engine) = &s.playback {
+                let state = engine.state();
+                if let vault_media::PlaybackState::Playing { position_ms, .. }
+                | vault_media::PlaybackState::Paused { position_ms, .. }
+                | vault_media::PlaybackState::Buffering { position_ms, .. } = state
+                    && (position_ms > 3000
+                        || (s.queue.info().position == Some(0)
+                            && s.queue.info().repeat != RepeatMode::Queue))
+                {
+                    engine.seek(0)?;
+                    return Ok(state);
+                }
+            }
+        }
         if matches!(action, PlaybackAction::Next | PlaybackAction::Previous) {
             self.advance_queue(session_id, action == PlaybackAction::Next, None)
                 .await?;

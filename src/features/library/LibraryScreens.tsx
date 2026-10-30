@@ -1,5 +1,6 @@
+import { LibraryTabs } from "./LibraryTabs";
 import { PlaylistCover } from "../playlists/Playlists";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Heart,
@@ -92,23 +93,24 @@ export function HomeScreen(props: Props) {
             onClick={() =>
               void run(
                 "Случайная подборка",
-                () => {
-                  const ids = tracks.map((t) => t.track_id);
-                  const random = new Uint32Array(ids.length);
-                  // WebCrypto limits each call to 65,536 bytes.
-                  for (let start = 0; start < random.length; start += 16384)
-                    crypto.getRandomValues(
-                      random.subarray(start, start + 16384),
-                    );
-                  for (let i = ids.length - 1; i > 0; i--) {
-                    const j = random[i] % (i + 1);
-                    [ids[i], ids[j]] = [ids[j], ids[i]];
-                  }
-                  return call("set_queue", {
+                async () => {
+                  const queue = await call("set_queue", {
                     session_id,
-                    track_ids: ids,
+                    track_ids: tracks.map((t) => t.track_id),
                     position: 0,
-                    autoplay: true,
+                    autoplay: false,
+                  });
+                  const shuffled = await call("edit_queue", {
+                    session_id,
+                    queue_id: queue.queue_id,
+                    revision: queue.revision,
+                    action: { kind: "shuffle", enabled: true },
+                  });
+                  await call("edit_queue", {
+                    session_id,
+                    queue_id: shuffled.queue_id,
+                    revision: shuffled.revision,
+                    action: { kind: "jump", index: 0 },
                   });
                 },
                 false,
@@ -222,6 +224,7 @@ export function HomeScreen(props: Props) {
                   <ArrowRight size={16} />
                 </button>
               </div>
+
               <div className="album-grid">
                 {albums.slice(0, 6).map((a) => (
                   <button
@@ -295,6 +298,16 @@ export function CollectionScreen({
   const collection = useCollection(runtime);
   const { model, run } = runtime;
   const session_id = model.status!.context.session_id;
+  const [groupPage, setGroupPage] = useState(0);
+  useEffect(() => setGroupPage(0), [route.kind, session_id]);
+  const groupCount =
+    route.kind === "albums"
+      ? collection.albums.length
+      : collection.artists.length;
+  const currentGroupPage = Math.min(
+    groupPage,
+    Math.max(0, Math.ceil(groupCount / 60) - 1),
+  );
   let tracks = collection.tracks;
   let title = "Медиатека";
   if (route.kind === "favorites") {
@@ -321,50 +334,76 @@ export function CollectionScreen({
           title={route.kind === "albums" ? "Альбомы" : "Исполнители"}
           subtitle="Из вашей личной коллекции"
         />
+        <LibraryTabs kind={route.kind} navigate={navigate} />
         <div className="album-grid">
           {route.kind === "albums"
-            ? collection.albums.map((a) => (
-                <button
-                  className="album-card"
-                  key={JSON.stringify([a.title, a.artist])}
-                  onClick={() =>
-                    navigate({
-                      kind: "album",
-                      title: a.title,
-                      artist: a.artist,
-                    })
-                  }
-                >
-                  <Cover
-                    session={session_id}
-                    track={
-                      a.tracks.find((t) => t.metadata.artwork) ?? a.tracks[0]
+            ? collection.albums
+                .slice(currentGroupPage * 60, (currentGroupPage + 1) * 60)
+                .map((a) => (
+                  <button
+                    className="album-card"
+                    key={JSON.stringify([a.title, a.artist])}
+                    onClick={() =>
+                      navigate({
+                        kind: "album",
+                        title: a.title,
+                        artist: a.artist,
+                      })
                     }
-                  />
-                  <strong>{a.title}</strong>
-                  <span>
-                    {a.artist || "Неизвестный исполнитель"} · {a.tracks.length}{" "}
-                    треков
-                  </span>
-                </button>
-              ))
-            : collection.artists.map((a) => (
-                <button
-                  className="album-card artist-card"
-                  key={a.name}
-                  onClick={() => navigate({ kind: "artist", name: a.name })}
-                >
-                  <Cover
-                    session={session_id}
-                    track={
-                      a.tracks.find((t) => t.metadata.artwork) ?? a.tracks[0]
-                    }
-                  />
-                  <strong>{a.name}</strong>
-                  <span>{a.tracks.length} треков</span>
-                </button>
-              ))}
+                  >
+                    <Cover
+                      session={session_id}
+                      track={
+                        a.tracks.find((t) => t.metadata.artwork) ?? a.tracks[0]
+                      }
+                    />
+                    <strong>{a.title}</strong>
+                    <span>
+                      {a.artist || "Неизвестный исполнитель"} ·{" "}
+                      {a.tracks.length} треков
+                    </span>
+                  </button>
+                ))
+            : collection.artists
+                .slice(currentGroupPage * 60, (currentGroupPage + 1) * 60)
+                .map((a) => (
+                  <button
+                    className="album-card artist-card"
+                    key={a.name}
+                    onClick={() => navigate({ kind: "artist", name: a.name })}
+                  >
+                    <Cover
+                      session={session_id}
+                      track={
+                        a.tracks.find((t) => t.metadata.artwork) ?? a.tracks[0]
+                      }
+                    />
+                    <strong>{a.name}</strong>
+                    <span>{a.tracks.length} треков</span>
+                  </button>
+                ))}
         </div>
+        {groupCount > 60 && (
+          <div className="pagination">
+            <button
+              disabled={!currentGroupPage}
+              onClick={() => setGroupPage(currentGroupPage - 1)}
+            >
+              Назад
+            </button>
+            <span>
+              {currentGroupPage * 60 + 1}–
+              {Math.min((currentGroupPage + 1) * 60, groupCount)} из{" "}
+              {groupCount}
+            </span>
+            <button
+              disabled={(currentGroupPage + 1) * 60 >= groupCount}
+              onClick={() => setGroupPage(currentGroupPage + 1)}
+            >
+              Далее
+            </button>
+          </div>
+        )}
         {(route.kind === "albums"
           ? !collection.albums.length
           : !collection.artists.length) && (
@@ -429,31 +468,17 @@ export function CollectionScreen({
           </div>
         </div>
       )}
-      <div className="library-tabs">
-        {(
-          [
-            ["library", "Треки"],
-            ["albums", "Альбомы"],
-            ["artists", "Исполнители"],
-            ["playlists", "Плейлисты"],
-            ["favorites", "Любимые"],
-            ["downloads", "Загрузки"],
-          ] as const
-        ).map(([kind, label]) => (
-          <button
-            key={kind}
-            aria-current={route.kind === kind ? "page" : undefined}
-            onClick={() => navigate({ kind })}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <LibraryTabs kind={route.kind} navigate={navigate} />
       <TrackList {...props} tracks={tracks} />
     </>
   );
 }
-export function SearchScreen(props: Props) {
+export function SearchScreen(props: Props & { active?: boolean }) {
+  const searchInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (props.active !== false)
+      searchInput.current?.focus({ preventScroll: true });
+  }, [props.active]);
   const { runtime, navigate } = props;
   const [query, setQuery] = useState("");
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -507,7 +532,9 @@ export function SearchScreen(props: Props) {
       <label className="search-field global-search">
         <Search />
         <input
-          autoFocus
+          ref={searchInput}
+          type="search"
+          enterKeyHint="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           maxLength={256}

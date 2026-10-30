@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   Home,
   Search,
   Library,
@@ -39,6 +40,7 @@ export function Shell({
   children,
   player,
   createPlaylist,
+  back,
 }: {
   runtime: Runtime;
   route: Route;
@@ -46,6 +48,7 @@ export function Shell({
   children: ReactNode;
   player: ReactNode;
   createPlaylist: () => void;
+  back?: () => void;
 }) {
   const [compact, setCompact] = useState(false);
   const { model } = runtime;
@@ -62,7 +65,20 @@ export function Shell({
         : "Без подключения";
   const playlists = Object.values(model.projection?.state.playlists ?? {});
   return (
-    <div className={`app-shell ${compact ? "sidebar-compact" : ""}`}>
+    <div
+      className={`app-shell ${compact ? "sidebar-compact" : ""}`}
+      onContextMenu={(event) => {
+        const target = event.target;
+        if (
+          target instanceof HTMLElement &&
+          !target.closest(
+            "input,textarea,[contenteditable=true],.lyrics-lines.plain",
+          ) &&
+          target.closest("button,.cover,.player")
+        )
+          event.preventDefault();
+      }}
+    >
       <a className="skip-link" href="#main-content">
         К содержимому
       </a>
@@ -86,7 +102,22 @@ export function Shell({
             <button
               key={kind}
               title={label}
-              aria-current={route.kind === kind ? "page" : undefined}
+              aria-current={
+                route.kind === kind ||
+                (kind === "library" &&
+                  [
+                    "album",
+                    "artist",
+                    "albums",
+                    "artists",
+                    "favorites",
+                    "playlists",
+                    "playlist",
+                    "downloads",
+                  ].includes(route.kind))
+                  ? "page"
+                  : undefined
+              }
               onClick={() => navigate({ kind })}
             >
               <Icon />
@@ -106,7 +137,7 @@ export function Shell({
             </IconButton>
           </div>
           <div className="playlist-shortcuts">
-            {playlists.map((p) => (
+            {playlists.slice(0, 30).map((p) => (
               <button
                 key={p.playlist_id}
                 title={p.title}
@@ -130,6 +161,11 @@ export function Shell({
                 <span>{p.title}</span>
               </button>
             ))}
+            {playlists.length > 30 && (
+              <button onClick={() => navigate({ kind: "playlists" })}>
+                Все плейлисты ({playlists.length})
+              </button>
+            )}
             {!playlists.length && (
               <p className="muted small">Соберите музыку для любого момента.</p>
             )}
@@ -150,6 +186,11 @@ export function Shell({
       </aside>
       <div className="workspace">
         <header className="topbar">
+          {back && (
+            <IconButton label="Назад" onClick={back}>
+              <ArrowLeft />
+            </IconButton>
+          )}
           <button
             className="wordmark mobile-wordmark"
             onClick={() => navigate({ kind: "home" })}
@@ -165,6 +206,13 @@ export function Shell({
             <kbd>Ctrl K</kbd>
           </button>
           <div className="topbar-actions">
+            <IconButton
+              label="Настройки и профиль"
+              className="mobile-profile"
+              onClick={() => navigate({ kind: "settings" })}
+            >
+              <Settings />
+            </IconButton>
             <button
               className={`connection ${online ? "connected" : ""}`}
               onClick={() => navigate({ kind: "settings" })}
@@ -195,13 +243,26 @@ export function Shell({
       {player}
       <nav className="mobile-nav" aria-label="Навигация телефона">
         {destinations
-          .filter((d) =>
-            ["home", "search", "library", "settings"].includes(d.kind),
-          )
+          .filter((d) => ["home", "search", "library"].includes(d.kind))
           .map(({ kind, label, Icon }) => (
             <button
               key={kind}
-              aria-current={route.kind === kind ? "page" : undefined}
+              aria-current={
+                route.kind === kind ||
+                (kind === "library" &&
+                  [
+                    "album",
+                    "artist",
+                    "albums",
+                    "artists",
+                    "favorites",
+                    "playlists",
+                    "playlist",
+                    "downloads",
+                  ].includes(route.kind))
+                  ? "page"
+                  : undefined
+              }
               onClick={() => navigate({ kind })}
             >
               <Icon />

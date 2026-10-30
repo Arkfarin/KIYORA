@@ -1,3 +1,5 @@
+import { LibraryTabs } from "../library/LibraryTabs";
+import type { Navigate } from "../../app/navigation";
 import { useEffect, useState } from "react";
 import { HardDrive, Pin, RefreshCw, Trash2, X } from "lucide-react";
 import { bytesLabel, call, errorOf, uuid } from "../../backend";
@@ -5,7 +7,13 @@ import type { CacheStats } from "../../backend";
 import type { Runtime } from "../../useBackend";
 import { Cover } from "../../components/music/Cover";
 import { Empty, IconButton, PageHeading } from "../../components/ui/Primitives";
-export function DownloadsScreen({ runtime }: { runtime: Runtime }) {
+export function DownloadsScreen({
+  runtime,
+  navigate,
+}: {
+  runtime: Runtime;
+  navigate: Navigate;
+}) {
   const { model, run } = runtime;
   const session_id = model.status!.context.session_id;
   const [cached, setCached] = useState<
@@ -52,6 +60,7 @@ export function DownloadsScreen({ runtime }: { runtime: Runtime }) {
           <RefreshCw />
         </IconButton>
       </PageHeading>
+      <LibraryTabs kind="downloads" navigate={navigate} />
       {stats && (
         <div className="storage-summary">
           <HardDrive />

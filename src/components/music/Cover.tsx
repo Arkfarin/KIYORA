@@ -60,6 +60,7 @@ export const Cover = memo(function Cover({
         <img
           src={url}
           alt=""
+          draggable={false}
           loading="lazy"
           decoding="async"
           onError={() => setUrl(undefined)}

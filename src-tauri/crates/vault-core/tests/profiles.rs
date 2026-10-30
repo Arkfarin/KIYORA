@@ -504,6 +504,22 @@ async fn playback_queue_keeps_captured_order_and_skips_remotely_deleted_tracks()
         .await
         .unwrap();
     assert_eq!(queue.current_track_id, Some(a));
+    backend.shutdown().await.unwrap();
+    let session = backend
+        .switch_profile(profile.profile_id)
+        .await
+        .unwrap()
+        .context
+        .session_id;
+    let restored = backend.playback_queue(session, 0, 500).await.unwrap();
+    assert_eq!(restored.track_ids, vec![a, b]);
+    assert_eq!(restored.info.current_track_id, Some(a));
+    assert_ne!(restored.info.queue_id, queue.queue_id);
+    assert!(matches!(
+        backend.playback_state(session).await.unwrap(),
+        vault_media::PlaybackState::Idle
+    ));
+    let queue = restored.info;
     db.apply_record(
         MessageId::new(6).unwrap(),
         &vault_protocol::Record::Event(Box::new(Event {

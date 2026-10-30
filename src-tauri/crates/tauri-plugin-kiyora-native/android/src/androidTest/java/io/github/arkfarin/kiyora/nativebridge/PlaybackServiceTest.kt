@@ -109,6 +109,43 @@ class PlaybackServiceTest {
         eventually("stop removes notification") { notifications.activeNotifications.isEmpty() }
     }
 
+    @Test fun nextPreviousAndHeadsetButtonsUseTheExistingSession() {
+        val controller = prepare()
+        assertTrue(controller.playbackState!!.actions and PlaybackState.ACTION_SKIP_TO_NEXT != 0L)
+        controller.transportControls.skipToNext()
+        assertEquals("next", controls.poll(3, TimeUnit.SECONDS)?.first)
+        controller.transportControls.skipToPrevious()
+        assertEquals("previous", controls.poll(3, TimeUnit.SECONDS)?.first)
+        controller.dispatchMediaButtonEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_NEXT))
+        controller.dispatchMediaButtonEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_NEXT))
+        assertEquals("next", controls.poll(3, TimeUnit.SECONDS)?.first)
+        main { NativePlayback.pause(owner) }
+        assertTrue(controller.playbackState!!.actions and PlaybackState.ACTION_PLAY_PAUSE != 0L)
+    }
+
+    @Test fun notificationArtworkRejectsLateTracksAndClearsOnNextTrack() {
+        val controller = prepare()
+        val bitmap = android.graphics.Bitmap.createBitmap(32, 32, android.graphics.Bitmap.Config.ARGB_8888)
+        val output = java.io.ByteArrayOutputStream()
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output)
+        main { NativePlayback.requireOwner(owner).service!!.setArtwork(track, output.toByteArray()) }
+        assertNotNull(checkNotNull(controller.metadata).getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART))
+        main { NativePlayback.requireOwner(owner).service!!.setArtwork(UUID.randomUUID().toString(), output.toByteArray()) }
+        main { assertEquals(track, NativePlayback.requireOwner(owner).metadata.optString("track_id")) }
+        val ready = CountDownLatch(1)
+        main { NativePlayback.prepare(owner, JSONObject().put("track_id", UUID.randomUUID().toString()).put("title", "Next")
+            .put("performer", "Test").put("duration_ms", 1000)) { ready.countDown() } }
+        assertTrue(ready.await(10, TimeUnit.SECONDS))
+        assertNull(checkNotNull(controller.metadata).getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART))
+    }
+
+    @Test fun headphoneDisconnectPausesWithoutAutomaticResume() {
+        prepare()
+        context.sendBroadcast(Intent(AudioManager.ACTION_AUDIO_BECOMING_NOISY).setPackage(context.packageName))
+        assertEquals("pause", controls.poll(3, TimeUnit.SECONDS)?.first)
+        main { assertEquals("paused", NativePlayback.requireOwner(owner).state.optString("state")) }
+    }
+
     @Test fun staleOwnersAndStaleTrackUpdatesCannotControlNewPlayback() {
         val controller = prepare()
         main {
@@ -130,6 +167,7 @@ class PlaybackServiceTest {
                 assertEquals("pause", controls.poll(3, TimeUnit.SECONDS)?.first)
                 main { assertEquals("paused", NativePlayback.requireOwner(owner).state.getString("state")) }
             } finally { main { audio.abandonAudioFocusRequest(competing) } }
+            assertEquals("focus gain resumes interrupted playback", "resume", controls.poll(3, TimeUnit.SECONDS)?.first)
         }
     }
 

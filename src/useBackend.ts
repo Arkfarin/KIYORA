@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { bootstrap, call, errorOf, sessionInfo } from "./backend";
+import { createPlaybackStore } from "./services/playbackState";
 import type {
   ApiError,
   Auth,
@@ -57,15 +58,13 @@ const upsert = <T>(items: T[], value: T, key: (item: T) => string) => [
 ];
 
 export function useBackend() {
+  const [playbackStore] = useState(() => createPlaybackStore(empty.playback));
   const [model, setModel] = useState<Model>(empty);
   const [busy, setBusy] = useState<string | null>(null);
   const current = useRef(model);
   const refreshRef = useRef<() => Promise<void>>(async () => {});
   const alive = useRef(false);
   const actionId = useRef(0);
-  useEffect(() => {
-    current.current = model;
-  }, [model]);
 
   useEffect(() => {
     let disposed = false;
@@ -83,6 +82,7 @@ export function useBackend() {
       if (disposed) return;
       const next = change(current.current);
       current.current = next;
+      playbackStore.publish(next.playback);
       setModel(next);
     };
     const schedule = () => {
@@ -125,9 +125,21 @@ export function useBackend() {
         case "vault.operation.progress":
           update((m) => ({ ...m, progress: event.payload as Progress }));
           break;
-        case "playback.state":
-          update((m) => ({ ...m, playback: event.payload as Playback }));
+        case "playback.state": {
+          const playback = event.payload as Playback;
+          const previous = current.current.playback;
+          current.current = { ...current.current, playback };
+          playbackStore.publish(playback);
+          // Position ticks belong only to subscribed player/lyrics/editor views.
+          if (
+            previous.state !== playback.state ||
+            previous.track_id !== playback.track_id ||
+            previous.duration_ms !== playback.duration_ms ||
+            previous.code !== playback.code
+          )
+            setModel(current.current);
           break;
+        }
         case "playback.queue.changed":
           update((m) => ({ ...m, queue: event.payload as Queue }));
           break;
@@ -323,7 +335,11 @@ export function useBackend() {
     refreshRef.current = refresh;
     const attach = async () => {
       try {
-        for (const name of ["kiyora://backend", "kiyora://resync-required"]) {
+        for (const name of [
+          "kiyora://backend",
+          "kiyora://resync-required",
+          "tauri://resumed",
+        ]) {
           const off =
             name === "kiyora://backend"
               ? await listen<BackendEvent>(name, ({ payload }) => {
@@ -353,13 +369,18 @@ export function useBackend() {
     };
     void attach();
     const fallback = setInterval(schedule, 60_000);
+    const visible = () => {
+      if (!document.hidden) schedule();
+    };
     window.addEventListener("focus", schedule);
+    document.addEventListener("visibilitychange", visible);
     return () => {
       disposed = true;
       alive.current = false;
       clearInterval(fallback);
       if (timer !== undefined) clearTimeout(timer);
       window.removeEventListener("focus", schedule);
+      document.removeEventListener("visibilitychange", visible);
       for (const off of unlisten) off();
       // Only frontend subscriptions end here. Backend, jobs and audio stay alive.
     };
@@ -401,6 +422,8 @@ export function useBackend() {
     current.current = { ...current.current, error: null };
     setModel(current.current);
   }, []);
-  return { model, busy, run, refresh, clearError };
+  return { model, busy, run, refresh, clearError, playbackStore };
 }
-export type Runtime = ReturnType<typeof useBackend>;
+export type Runtime = Omit<ReturnType<typeof useBackend>, "playbackStore"> & {
+  playbackStore?: ReturnType<typeof createPlaybackStore>;
+};

@@ -180,6 +180,21 @@ class KiyoraNativePlugin(activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun setNativeArtwork(invoke: Invoke) = media(invoke) {
+        val args = invoke.getArgs()
+        val active = NativePlayback.requireOwner(args.getString("owner"))
+        val array = args.getJSONArray("bytes")
+        require(array.length() <= 256 * 1024)
+        val bytes = ByteArray(array.length()) { index ->
+            val value = array.getInt(index)
+            require(value in 0..255)
+            value.toByte()
+        }
+        active.service?.setArtwork(args.getString("track_id"), bytes)
+        invoke.resolve()
+    }
+
+    @Command
     fun stopNativePlayback(invoke: Invoke) = media(invoke) {
         NativePlayback.stop(invoke.getArgs().getString("owner"))
         invoke.resolve()

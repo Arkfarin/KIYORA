@@ -14,6 +14,11 @@ mod documents;
 #[cfg(target_os = "android")]
 pub use documents::AndroidDocuments;
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod desktop_media;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub use desktop_media::DesktopMedia;
+
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     tauri::plugin::Builder::new("kiyora-native")
         // Defense in depth: deny even if a future capability grants the native

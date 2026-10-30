@@ -1,3 +1,4 @@
+import { LibraryTabs } from "../library/LibraryTabs";
 import { useEffect, useState } from "react";
 import {
   ArrowDown,
@@ -73,6 +74,11 @@ export function PlaylistsScreen({
   const playlists = Object.values(
     runtime.model.projection?.state.playlists ?? {},
   );
+  const [page, setPage] = useState(0);
+  const currentPage = Math.min(
+    page,
+    Math.max(0, Math.ceil(playlists.length / 60) - 1),
+  );
   return (
     <>
       <PageHeading title="Плейлисты" subtitle="Коллекции для ваших моментов">
@@ -85,6 +91,7 @@ export function PlaylistsScreen({
           Создать
         </button>
       </PageHeading>
+      <LibraryTabs kind="playlists" navigate={navigate} />
       {!playlists.length ? (
         <Empty
           title="Музыка, собранная вами"
@@ -97,22 +104,47 @@ export function PlaylistsScreen({
             </button>
           }
         >
-          Добавляйте композиции из меню трека. Изменения синхронизируются через
-          Vault.
+          Добавляйте композиции из меню трека. Плейлисты доступны на всех ваших
+          устройствах.
         </Empty>
       ) : (
         <div className="album-grid">
-          {playlists.map((p) => (
-            <button
-              key={p.playlist_id}
-              className="album-card"
-              onClick={() => navigate({ kind: "playlist", id: p.playlist_id })}
-            >
-              <PlaylistCover runtime={runtime} playlist={p} />
-              <strong>{p.title}</strong>
-              <span>Ваш плейлист</span>
-            </button>
-          ))}
+          {playlists
+            .slice(currentPage * 60, (currentPage + 1) * 60)
+            .map((p) => (
+              <button
+                key={p.playlist_id}
+                className="album-card"
+                onClick={() =>
+                  navigate({ kind: "playlist", id: p.playlist_id })
+                }
+              >
+                <PlaylistCover runtime={runtime} playlist={p} />
+                <strong>{p.title}</strong>
+                <span>Ваш плейлист</span>
+              </button>
+            ))}
+        </div>
+      )}
+      {playlists.length > 60 && (
+        <div className="pagination">
+          <button
+            disabled={!currentPage}
+            onClick={() => setPage(currentPage - 1)}
+          >
+            Назад
+          </button>
+          <span>
+            {currentPage * 60 + 1}–
+            {Math.min((currentPage + 1) * 60, playlists.length)} из{" "}
+            {playlists.length}
+          </span>
+          <button
+            disabled={(currentPage + 1) * 60 >= playlists.length}
+            onClick={() => setPage(currentPage + 1)}
+          >
+            Далее
+          </button>
         </div>
       )}
     </>

@@ -128,3 +128,31 @@ pub fn write_tags(
     }
     Ok(())
 }
+
+/// Small OS notification image, decoded off the audio and Android main threads.
+pub fn playback_thumbnail(bytes: &[u8]) -> Result<Vec<u8>, MediaError> {
+    if bytes.len() > MAX_ARTWORK_BYTES {
+        return Err(MediaError::Artwork);
+    }
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| MediaError::Artwork)?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let thumbnail = reader
+        .decode()
+        .map_err(|_| MediaError::Artwork)?
+        .thumbnail(256, 256)
+        .to_rgb8();
+    let mut output = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 85)
+        .encode_image(&thumbnail)
+        .map_err(|_| MediaError::Artwork)?;
+    if output.len() > 256 * 1024 {
+        return Err(MediaError::Artwork);
+    }
+    Ok(output)
+}

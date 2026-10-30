@@ -15,6 +15,8 @@ internal object NativePlayback {
     const val OWNER = "kiyora.media.owner"
     const val RESUME = "kiyora.media.resume"
     const val PAUSE = "kiyora.media.pause"
+    const val NEXT = "kiyora.media.next"
+    const val PREVIOUS = "kiyora.media.previous"
     const val STOP = "kiyora.media.stop"
     private val main = Handler(Looper.getMainLooper())
     // Owns only applicationContext and the currently running service, released
@@ -113,7 +115,8 @@ internal object NativePlayback {
         active.service = service
         service.attach(active)
         when (action) {
-            PAUSE -> control(active, "pause")
+            PAUSE -> { service.cancelFocusResume(); control(active, "pause") }
+            NEXT, PREVIOUS -> { service.cancelFocusResume(); service.promote(); control(active, if (action == NEXT) "next" else "previous") }
             STOP -> control(active, "stop")
             RESUME -> {
                 // A foreground PendingIntent must publish its notification now,

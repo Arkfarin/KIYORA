@@ -16,9 +16,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_kiyora_native::init())
         .setup(|app| {
             #[cfg(not(target_os = "android"))]
-            let backend = std::sync::Arc::new(vault_core::Backend::default_backend_with_resources(
-                Some(&app.path().resource_dir()?),
-            )?);
+            let backend = vault_core::Backend::default_backend_with_resources(Some(
+                &app.path().resource_dir()?,
+            ))?;
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            let backend = backend.with_playback_platform(std::sync::Arc::new(
+                tauri_plugin_kiyora_native::DesktopMedia::new(app.handle().clone()),
+            ));
+            #[cfg(not(target_os = "android"))]
+            let backend = std::sync::Arc::new(backend);
             #[cfg(target_os = "android")]
             let backend = {
                 let secrets = app.state::<tauri_plugin_kiyora_native::AndroidSecrets<tauri::Wry>>();

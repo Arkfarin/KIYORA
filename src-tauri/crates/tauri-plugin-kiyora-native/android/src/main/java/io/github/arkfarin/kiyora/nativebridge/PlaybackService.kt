@@ -1,5 +1,7 @@
 package io.github.arkfarin.kiyora.nativebridge
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -39,6 +41,10 @@ class PlaybackService : Service() {
     private var focusRequest: AudioFocusRequest? = null
     private var focusEpoch = Any()
     private var focused = false
+    private var resumeOnFocusGain = false
+    private var artwork: Bitmap? = null
+    private var artworkTrack: String? = null
+    private val transportActions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_STOP or PlaybackState.ACTION_SEEK_TO or PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS
     private var foreground = false
     private var receiverRegistered = false
     private var pausedAt: Long? = null
@@ -60,6 +66,7 @@ class PlaybackService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val registration = active ?: return
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && NativePlayback.owns(registration, this@PlaybackService)) {
+                cancelFocusResume()
                 NativePlayback.control(registration, "pause")
                 pausePlayback()
             }
@@ -110,22 +117,51 @@ class PlaybackService : Service() {
                         promote()
                         NativePlayback.control(registration, "resume")
                     }
-                    override fun onPause() { NativePlayback.control(registration, "pause") }
+                    override fun onPause() { cancelFocusResume(); NativePlayback.control(registration, "pause") }
+                    override fun onSkipToNext() {
+                        if (!NativePlayback.owns(registration, this@PlaybackService)) return
+                        cancelFocusResume(); promote(); NativePlayback.control(registration, "next")
+                    }
+                    override fun onSkipToPrevious() {
+                        if (!NativePlayback.owns(registration, this@PlaybackService)) return
+                        cancelFocusResume(); promote(); NativePlayback.control(registration, "previous")
+                    }
                     override fun onStop() { NativePlayback.control(registration, "stop") }
                     override fun onSeekTo(pos: Long) {
                         if (pos >= 0) NativePlayback.control(registration, "seek", pos)
                     }
                 }, main)
+                setPlaybackToLocal(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                 isActive = true
             }
         }
-        val metadata = registration.metadata
-        session?.setMetadata(MediaMetadata.Builder()
+        val trackId = registration.metadata.optString("track_id")
+        if (trackId != artworkTrack) { artwork = null; artworkTrack = trackId }
+        publishMetadata()
+        updatePlayback(publishNotification = false)
+    }
+
+    private fun publishMetadata() {
+        val metadata = active?.metadata ?: return
+        val builder = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, metadata.optString("title"))
             .putString(MediaMetadata.METADATA_KEY_ARTIST, metadata.optString("performer"))
             .putLong(MediaMetadata.METADATA_KEY_DURATION, metadata.optLong("duration_ms", 0))
-            .build())
-        updatePlayback(publishNotification = false)
+        artwork?.let { builder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
+        session?.setMetadata(builder.build())
+    }
+
+    internal fun setArtwork(trackId: String, bytes: ByteArray) {
+        val registration = active ?: return
+        if (!NativePlayback.owns(registration, this) || registration.metadata.optString("track_id") != trackId) return
+        require(bytes.size <= 256 * 1024)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        require(bounds.outWidth in 1..256 && bounds.outHeight in 1..256)
+        artwork = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
+        artworkTrack = trackId
+        publishMetadata()
+        if (foreground) promote() else notifications.notify(NOTIFICATION, notification())
     }
 
     internal fun promote() {
@@ -138,18 +174,35 @@ class PlaybackService : Service() {
     internal fun acquirePlaybackFocus(): Boolean {
         promote()
         if (!focused) {
+            // Explicit playback while focus is still interrupted supersedes the
+            // previous request. Do not leave an abandoned listener in the stack.
+            releaseFocus()
             val registration = checkNotNull(active)
             val epoch = Any().also { focusEpoch = it }
             val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
             val listener = AudioManager.OnAudioFocusChangeListener { change ->
                 // Binder may deliver an old request's callback after stop/resume
                 // or a profile change. It must never pause the replacement.
-                if (active === registration && focusEpoch === epoch &&
-                    (change == AudioManager.AUDIOFOCUS_LOSS ||
-                        change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ||
-                        change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)) {
-                    NativePlayback.control(registration, "pause")
-                    pausePlayback()
+                if (active === registration && focusEpoch === epoch && NativePlayback.owns(registration, this)) {
+                    when (change) {
+                        AudioManager.AUDIOFOCUS_GAIN -> {
+                            focused = true
+                            if (resumeOnFocusGain) {
+                                resumeOnFocusGain = false
+                                promote()
+                                NativePlayback.control(registration, "resume")
+                            }
+                        }
+                        AudioManager.AUDIOFOCUS_LOSS,
+                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                            resumeOnFocusGain = change != AudioManager.AUDIOFOCUS_LOSS &&
+                                (resumeOnFocusGain || registration.state.optString("state") in listOf("playing", "buffering"))
+                            focused = false
+                            NativePlayback.control(registration, "pause")
+                            pausePlayback()
+                        }
+                    }
                 }
             }
             val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -174,7 +227,7 @@ class PlaybackService : Service() {
             else -> PlaybackState.STATE_STOPPED
         }
         session?.setPlaybackState(PlaybackState.Builder()
-            .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_STOP or PlaybackState.ACTION_SEEK_TO)
+            .setActions(transportActions)
             .setState(code, state.optLong("position_ms", 0), if (kind == "playing") 1f else 0f, SystemClock.elapsedRealtime()).build())
         // Attaching for a notification command must not repeat pause/stop side
         // effects before that command has even reached the Rust player.
@@ -191,11 +244,11 @@ class PlaybackService : Service() {
 
     internal fun pausePlayback() {
         if (pausedAt == null) pausedAt = SystemClock.elapsedRealtime()
-        releaseFocus()
+        if (!resumeOnFocusGain) releaseFocus()
         if (wake.isHeld) wake.release()
         active?.state?.put("state", "paused")
         session?.setPlaybackState(PlaybackState.Builder()
-            .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_STOP or PlaybackState.ACTION_SEEK_TO)
+            .setActions(transportActions)
             .setState(PlaybackState.STATE_PAUSED, active?.state?.optLong("position_ms", 0) ?: 0, 0f, SystemClock.elapsedRealtime()).build())
         if (foreground) {
             // startForeground posts through ActivityManager asynchronously.
@@ -223,7 +276,10 @@ class PlaybackService : Service() {
         stopSelf()
     }
 
+    internal fun cancelFocusResume() { resumeOnFocusGain = false }
+
     private fun releaseFocus() {
+        resumeOnFocusGain = false
         focusEpoch = Any()
         focusRequest?.let { audio.abandonAudioFocusRequest(it) }
         focusRequest = null
@@ -241,7 +297,7 @@ class PlaybackService : Service() {
             .setData(android.net.Uri.parse("kiyora://media/$owner/$name"))
             .putExtra(NativePlayback.OWNER, owner)
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        val pending = if (name == NativePlayback.RESUME) PendingIntent.getForegroundService(this, 0, intent, flags)
+        val pending = if (name in listOf(NativePlayback.RESUME, NativePlayback.NEXT, NativePlayback.PREVIOUS)) PendingIntent.getForegroundService(this, 0, intent, flags)
         else PendingIntent.getService(this, 0, intent, flags)
         if (!pendingIntents.contains(pending)) pendingIntents.add(pending)
         return pending
@@ -261,8 +317,11 @@ class PlaybackService : Service() {
             .setDeleteIntent(action(NativePlayback.STOP))
             .addAction(if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
                 if (playing) "Pause" else "Play", action(if (playing) NativePlayback.PAUSE else NativePlayback.RESUME))
+            .addAction(android.R.drawable.ic_media_previous, "Previous", action(NativePlayback.PREVIOUS))
+            .addAction(android.R.drawable.ic_media_next, "Next", action(NativePlayback.NEXT))
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", action(NativePlayback.STOP))
-        session?.let { builder.setStyle(Notification.MediaStyle().setMediaSession(it.sessionToken).setShowActionsInCompactView(0, 1)) }
+        artwork?.let { builder.setLargeIcon(it) }
+        session?.let { builder.setStyle(Notification.MediaStyle().setMediaSession(it.sessionToken).setShowActionsInCompactView(1, 0, 2)) }
         packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
             builder.setContentIntent(PendingIntent.getActivity(this, 1, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
         }
@@ -276,6 +335,7 @@ class PlaybackService : Service() {
         if (receiverRegistered) unregisterReceiver(noisy)
         session?.release()
         session = null
+        artwork = null
         pendingIntents.forEach { it.cancel() }
         pendingIntents.clear()
         notifications.cancel(NOTIFICATION)

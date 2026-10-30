@@ -48,6 +48,20 @@ fn imports_probe_real_audio_metadata_and_hash_full_source() {
     );
 }
 
+#[test]
+fn notification_thumbnail_is_bounded_and_rejects_malformed_images() {
+    let source = image::RgbImage::from_pixel(1024, 512, image::Rgb([20, 80, 120]));
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    source
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let bytes = vault_media::playback_thumbnail(encoded.get_ref()).unwrap();
+    let thumbnail = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((thumbnail.width(), thumbnail.height()), (256, 128));
+    assert!(bytes.len() <= 256 * 1024);
+    assert!(vault_media::playback_thumbnail(b"not an image").is_err());
+}
+
 #[tokio::test(start_paused = true)]
 async fn downloads_honor_telegram_flood_wait_before_retrying() {
     let dir = tempdir().unwrap();

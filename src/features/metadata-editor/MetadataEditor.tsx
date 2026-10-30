@@ -1,3 +1,4 @@
+import { usePlayback } from "../../services/playbackState";
 import { useEffect, useRef, useState } from "react";
 import { Check, Save } from "lucide-react";
 import { assertApplied, call, errorOf, uuid } from "../../backend";
@@ -38,6 +39,7 @@ export function MetadataEditor({
   onClose: () => void;
   onImport?: (edit: MediaEdit, writeTags: boolean) => Promise<void>;
 }) {
+  const livePlayback = usePlayback(runtime);
   const initial = track?.metadata ?? preview!.metadata;
   const context = runtime.model.status!.context;
   const key = `${context.profile_id}:${context.vault_id}:${track?.track_id ?? preview!.preview_id}`;
@@ -446,7 +448,7 @@ export function MetadataEditor({
                 disabled={saving || lockedAttempt}
                 position={
                   runtime.model.playback.track_id === track?.track_id
-                    ? runtime.model.playback.position_ms
+                    ? livePlayback.position_ms
                     : undefined
                 }
                 onChange={(lyrics) =>
