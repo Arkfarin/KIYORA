@@ -1,0 +1,37 @@
+[package]
+name = "kiyora-flutter-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Typed Flutter boundary for the existing KIYORA backend"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.13.0"
+vault-core.workspace = true
+vault-domain.workspace = true
+vault-db.workspace = true
+vault-media.workspace = true
+vault-security.workspace = true
+vault-sync.workspace = true
+vault-telegram.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+zeroize = "1"
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
+vault-protocol.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

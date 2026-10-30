@@ -189,6 +189,14 @@ impl Backend {
             Some(path) => ProfileStore::at(path)?,
             None => ProfileStore::default_location()?,
         };
+        Self::with_store_and_resources(store, resources)
+    }
+    /// Reuse the installed native-library lookup with an explicitly selected
+    /// profile store (for native clients and isolated integration tests).
+    pub fn with_store_and_resources(
+        store: ProfileStore,
+        resources: Option<&std::path::Path>,
+    ) -> Result<Self, ApiError> {
         Ok(Self::new(
             store,
             crate::native_location::resolve(resources)?,

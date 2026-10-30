@@ -1,0 +1,6 @@
+rust_input: crate::api
+rust_root: ../src-tauri/crates/kiyora-flutter-bridge
+dart_output: lib/core/bridge/generated
+web: false
+full_dep: false
+stop_on_error: true
